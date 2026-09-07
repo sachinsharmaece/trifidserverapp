@@ -9,6 +9,10 @@ import { healthRouter } from './routes/health.js';
 import { identityRouter } from './modules/identity/identity.routes.js';
 import { adminRouter } from './modules/admin/admin.routes.js';
 import { fileRouter } from './modules/file/file.routes.js';
+import { territoryRouter } from './modules/territory/territory.routes.js';
+import { exclusionRouter } from './modules/exclusion/exclusion.routes.js';
+import { catalogRouter } from './modules/catalog/catalog.routes.js';
+import { onboardingRouter } from './modules/onboarding/onboarding.routes.js';
 
 const API_PREFIX = '/api/v1';
 
@@ -30,6 +34,10 @@ export function createApp(): Express {
   app.use(API_PREFIX, identityRouter);
   app.use(API_PREFIX, adminRouter);
   app.use(API_PREFIX, fileRouter);
+  app.use(API_PREFIX, territoryRouter);
+  app.use(API_PREFIX, exclusionRouter);
+  app.use(API_PREFIX, catalogRouter);
+  app.use(API_PREFIX, onboardingRouter);
 
   app.use(notFound);
   app.use(errorHandler);
