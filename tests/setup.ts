@@ -1,0 +1,13 @@
+import { afterAll, beforeAll } from 'vitest';
+import { connectToDatabase, disconnectFromDatabase } from '../src/db/connect.js';
+import { seedRolesAndPermissions } from '../src/db/seedRoles.js';
+import { env } from '../src/config/env.js';
+
+beforeAll(async () => {
+  await connectToDatabase(env.mongodbUri);
+  await seedRolesAndPermissions();
+}, 30000);
+
+afterAll(async () => {
+  await disconnectFromDatabase();
+});
