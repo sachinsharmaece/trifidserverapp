@@ -14,24 +14,33 @@ import { join } from 'node:path';
  * fields (e.g. `Employee.active`, a staff account's own enabled/disabled
  * flag, which has nothing to do with buyer/seller dormancy). Those are
  * enforced by design-review against DATA_MODEL.md instead of by this script.
+ *
+ * Matching is done on *whole identifier words*, not raw substrings: every
+ * identifier in the file is split at camelCase/snake_case boundaries before
+ * comparison. A naive substring check on the lowercased file text once
+ * flagged `tradePosition` as containing `deposit` (…tra-"deposit"-ion…) —
+ * a real false positive caught while building this. Splitting first means
+ * `trade_position` never collides with `deposit`, because the underscore
+ * inserted at the word boundary breaks the accidental run of letters.
  */
 const MODELS_DIR = join(process.cwd(), 'src', 'models');
 
-const FORBIDDEN_NAMES = [
+const FORBIDDEN_PHRASES = [
   'buyer_districts',
-  'buyerDistricts',
   'deposit',
   'col_source',
-  'colSource',
   'leg1_col',
-  'leg1Col',
   'leg2_col',
-  'leg2Col',
   'virtual_sku',
-  'virtualSku',
   'dormancy',
   'debtors',
 ];
+
+const IDENTIFIER_PATTERN = /[A-Za-z_][A-Za-z0-9_]*/g;
+
+function toSnakeCase(identifier: string): string {
+  return identifier.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+}
 
 function listModelFiles(): string[] {
   return readdirSync(MODELS_DIR)
@@ -39,16 +48,21 @@ function listModelFiles(): string[] {
     .map((name) => join(MODELS_DIR, name));
 }
 
-function checkFile(path: string): string[] {
-  const content = readFileSync(path, 'utf8').toLowerCase();
-  return FORBIDDEN_NAMES.filter((name) => content.includes(name.toLowerCase()));
+function findForbiddenPhrasesInFile(path: string): string[] {
+  const content = readFileSync(path, 'utf8');
+  const identifiers = content.match(IDENTIFIER_PATTERN) ?? [];
+  const normalized = new Set(identifiers.map(toSnakeCase));
+
+  return FORBIDDEN_PHRASES.filter((phrase) =>
+    [...normalized].some((identifier) => identifier.includes(phrase)),
+  );
 }
 
 function main(): void {
   const violations: Array<{ file: string; names: string[] }> = [];
 
   for (const file of listModelFiles()) {
-    const found = checkFile(file);
+    const found = findForbiddenPhrasesInFile(file);
     if (found.length > 0) {
       violations.push({ file, names: found });
     }

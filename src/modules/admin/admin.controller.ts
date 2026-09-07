@@ -27,7 +27,39 @@ export async function postEmployee(req: Request, res: Response): Promise<void> {
       password: string;
       desk?: string;
       roleKeys: string[];
+      laneKeys?: string[];
     },
+    { employeeId: req.auth!.employeeId!, correlationId: req.correlationId },
+  );
+  ok(res, req, result, 201);
+}
+
+export async function getLanes(req: Request, res: Response): Promise<void> {
+  ok(res, req, await adminService.listLaneBoard());
+}
+
+export async function postBookAssignment(req: Request, res: Response): Promise<void> {
+  const { buyerId, ownerEmployeeId, reason } = req.body as {
+    buyerId: string;
+    ownerEmployeeId: string;
+    reason?: string;
+  };
+  const result = await adminService.assignBook(
+    { buyerId, ownerEmployeeId, reason },
+    { employeeId: req.auth!.employeeId!, correlationId: req.correlationId },
+  );
+  ok(res, req, result, 201);
+}
+
+export async function postAbsence(req: Request, res: Response): Promise<void> {
+  const { employeeId, from, returnDate, coveredBy } = req.body as {
+    employeeId: string;
+    from: Date;
+    returnDate: Date;
+    coveredBy: string;
+  };
+  const result = await adminService.createAbsence(
+    { employeeId, from, returnDate, coveredBy },
     { employeeId: req.auth!.employeeId!, correlationId: req.correlationId },
   );
   ok(res, req, result, 201);

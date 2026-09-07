@@ -1,0 +1,62 @@
+import { z } from 'zod';
+
+export const createManufacturerSchema = z
+  .object({
+    name: z.string().min(1),
+  })
+  .strict();
+
+export const listManufacturersQuerySchema = z
+  .object({
+    technical: z.string().min(1),
+  })
+  .strict();
+
+export const listProductsQuerySchema = z
+  .object({
+    technical: z.string().min(1),
+    manufacturer: z.string().optional(),
+  })
+  .strict();
+
+export const createProductSchema = z
+  .object({
+    brand: z.string().min(1),
+    technical: z.string().min(1),
+    manufacturerId: z.string().min(1),
+    hsn: z.string().min(1),
+    class: z.enum(['A', 'B', 'C']).optional(),
+  })
+  .strict();
+
+export const updateProductSchema = z
+  .object({
+    brand: z.string().min(1).optional(),
+    technical: z.string().min(1).optional(),
+    manufacturerId: z.string().min(1).optional(),
+    hsn: z.string().min(1).optional(),
+    class: z.enum(['A', 'B', 'C']).optional(),
+    active: z.boolean().optional(),
+  })
+  .strict();
+
+// Deliberately loose on packSize/unitsPerBox/baseUnit here (z.unknown()) —
+// BR-055's rejection is about the *value* being wrong (not a positive
+// number, or baseUnit not one of LTR/KG/PC), not the request shape being
+// wrong, and the whole point of the import is to report that row-by-row
+// rather than failing the request at the validation boundary.
+export const skuImportRowSchema = z
+  .object({
+    packLabel: z.string().min(1),
+    packSize: z.unknown(),
+    baseUnit: z.unknown(),
+    unitsPerBox: z.unknown(),
+  })
+  .strict();
+
+export const skuImportSchema = z
+  .object({
+    productId: z.string().min(1),
+    rows: z.array(skuImportRowSchema).min(1),
+  })
+  .strict();

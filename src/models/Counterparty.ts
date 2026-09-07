@@ -1,17 +1,20 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
 
 /**
- * ENT-01 `counterparty` — minimal shape for M1/M2 only.
+ * ENT-01 `counterparty`. The firm. One GSTIN is one firm is one account
+ * (`BR-240`). A firm may be both a buyer and a seller (`BR-092`).
  *
- * DATA_MODEL.md ENT-01 defines the full future shape (firm, ownerName,
- * licenceNo, terms acceptance, etc.) — that is M3 registration work. This
- * session needs only enough to authenticate a counterparty and place it
- * behind the pending/active/rejected gate (ST-10).
+ * `licenceExpiry` is deliberately **not** on this schema — `DATA_MODEL.md`
+ * ENT-01 marks it pending `QR-019`, and M3's interim position is to capture
+ * only what is already confirmed (licence *number*, not an expiry date).
  */
 const counterpartySchema = new Schema(
   {
-    mobile: { type: String, required: true, unique: true },
     gstin: { type: String, unique: true, sparse: true },
+    firm: { type: String },
+    ownerName: { type: String },
+    mobile: { type: String, required: true, unique: true },
+    licenceNo: { type: String },
     kind: { type: String, enum: ['buyer', 'seller', 'both'], required: true },
     status: {
       type: String,
@@ -19,6 +22,12 @@ const counterpartySchema = new Schema(
       required: true,
       default: 'pending',
     },
+    termsVersion: { type: String },
+    termsAcceptedAt: { type: Date },
+    // Referral code only, immutable, decays at 45 days (BR-330) — decay is
+    // read-time (compare acquiredAt against now), not a background job.
+    acquiredBy: { type: String, default: null },
+    acquiredAt: { type: Date, default: null },
     deletedAt: { type: Date, default: null },
   },
   { timestamps: true },

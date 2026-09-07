@@ -63,6 +63,15 @@ export const env = {
   fileStorageSecretKey: process.env.FILE_STORAGE_SECRET_KEY ?? 'replace-me',
   fileMaxBytes: optionalNumber('FILE_MAX_BYTES', 5242880),
 
+  // Developer addition, not in ARCHITECTURE.md §10.1 — added in M3 for
+  // BankDetail.accountEncrypted (ARCHITECTURE.md §8: encrypted at rest).
+  // 32 raw bytes, base64-encoded. The dev default below is for local/test
+  // use only and must never be reused anywhere real.
+  bankDetailEncryptionKey: required(
+    'BANK_DETAIL_ENCRYPTION_KEY',
+    'C5AaiVbyfQH2zjw2fCPmUnvU9MebeT13CUFfsuCka4c=',
+  ),
+
   queueUrl: process.env.QUEUE_URL ?? '',
   workerHeartbeatSeconds: optionalNumber('WORKER_HEARTBEAT_SECONDS', 60),
 

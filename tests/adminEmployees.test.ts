@@ -33,12 +33,26 @@ describe('GET /admin/employees', () => {
       .send({ email, password: 'CorrectHorse123' });
     const token = loginRes.body.data.accessToken as string;
 
-    const listRes = await request(app)
+    const firstPage = await request(app)
       .get('/api/v1/admin/employees?limit=10')
       .set('Authorization', `Bearer ${token}`);
+    expect(firstPage.status).toBe(200);
+    expect(Array.isArray(firstPage.body.data)).toBe(true);
 
-    expect(listRes.status).toBe(200);
-    expect(Array.isArray(listRes.body.data)).toBe(true);
-    expect(listRes.body.data.some((item: { email: string }) => item.email === email)).toBe(true);
+    // The suite shares one database across many test files, so by the time
+    // this file runs there may be more than 10 employees — the one just
+    // created here, with the newest _id, is not guaranteed to land on the
+    // first page. Walk every page via `nextCursor` rather than assume it does.
+    let found = firstPage.body.data.some((item: { email: string }) => item.email === email);
+    let cursor: string | undefined = firstPage.body.meta.nextCursor;
+    while (!found && cursor) {
+      const page = await request(app)
+        .get(`/api/v1/admin/employees?limit=10&cursor=${cursor}`)
+        .set('Authorization', `Bearer ${token}`);
+      found = page.body.data.some((item: { email: string }) => item.email === email);
+      cursor = page.body.meta.nextCursor;
+    }
+
+    expect(found).toBe(true);
   });
 });
