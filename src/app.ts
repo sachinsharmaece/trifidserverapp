@@ -22,7 +22,8 @@ export function createApp(): Express {
   app.use(requestId);
   app.use(
     cors({
-      origin: env.corsAllowedOrigins,
+      // origin: env.corsAllowedOrigins,
+      origin: true,
       credentials: true,
     }),
   );
