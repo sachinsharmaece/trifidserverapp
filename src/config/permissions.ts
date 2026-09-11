@@ -18,6 +18,26 @@ export const PERMISSIONS = {
   BANK_DETAIL_READ: 'bank_detail:read',
   BANK_DETAIL_WRITE: 'bank_detail:write',
   BOOK_ASSIGN: 'book:assign',
+  // M4 additions — BUSINESS_RULES.md §2–§4, §17.
+  MARGIN_MATRIX_READ: 'margin_matrix:read',
+  MARGIN_MATRIX_WRITE: 'margin_matrix:write',
+  CHAIN_READ: 'chain:read',
+  SO_CREATE: 'so:create',
+  SO_REDUCE_QUANTITY: 'so:reduce_quantity',
+  PO_CREATE: 'po:create',
+  PO_EDIT: 'po:edit',
+  RECEIPT_READ: 'receipt:read',
+  RECEIPT_ALLOCATE: 'receipt:allocate',
+  BANK_POST: 'bank:post',
+  BANK_REPOST: 'bank:repost',
+  PAYOUT_BUILD: 'payout:build',
+  PAYOUT_RELEASE: 'payout:release',
+  PAYOUT_READ: 'payout:read',
+  MARG_KEY: 'marg:key',
+  DAY_CLOSE_RUN: 'day_close:run',
+  DOCK_INSPECT: 'dock:inspect',
+  MOVEMENT_WRITE: 'movement:write',
+  REGISTER_READ: 'register:read',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -36,6 +56,11 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.TERRITORY_WRITE,
       PERMISSIONS.ONBOARDING_READ,
       PERMISSIONS.ONBOARDING_APPROVE,
+      PERMISSIONS.MARGIN_MATRIX_READ,
+      PERMISSIONS.CHAIN_READ,
+      PERMISSIONS.PO_CREATE,
+      PERMISSIONS.PO_EDIT,
+      PERMISSIONS.REGISTER_READ,
     ],
   },
   {
@@ -45,13 +70,37 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.ONBOARDING_READ,
       PERMISSIONS.ONBOARDING_APPROVE,
       PERMISSIONS.BOOK_ASSIGN,
+      PERMISSIONS.MARGIN_MATRIX_READ,
+      PERMISSIONS.CHAIN_READ,
+      PERMISSIONS.SO_CREATE,
+      PERMISSIONS.SO_REDUCE_QUANTITY,
+      PERMISSIONS.RECEIPT_READ,
+      PERMISSIONS.RECEIPT_ALLOCATE,
+      PERMISSIONS.REGISTER_READ,
     ],
   },
-  { key: 'transport_logistics', label: 'Transport & Logistics', permissionKeys: [] },
+  {
+    key: 'transport_logistics',
+    label: 'Transport & Logistics',
+    // Q9a — the dock operator. This role was seeded empty in M1/M2; M4 gives
+    // it its first real permissions.
+    permissionKeys: [PERMISSIONS.CHAIN_READ, PERMISSIONS.DOCK_INSPECT, PERMISSIONS.MOVEMENT_WRITE],
+  },
   {
     key: 'accounts',
     label: 'Accounts',
-    permissionKeys: [PERMISSIONS.BANK_DETAIL_READ, PERMISSIONS.BANK_DETAIL_WRITE],
+    permissionKeys: [
+      PERMISSIONS.BANK_DETAIL_READ,
+      PERMISSIONS.BANK_DETAIL_WRITE,
+      PERMISSIONS.CHAIN_READ,
+      PERMISSIONS.RECEIPT_READ,
+      PERMISSIONS.BANK_POST,
+      PERMISSIONS.PAYOUT_BUILD,
+      PERMISSIONS.PAYOUT_READ,
+      PERMISSIONS.MARG_KEY,
+      PERMISSIONS.DAY_CLOSE_RUN,
+      PERMISSIONS.REGISTER_READ,
+    ],
   },
   {
     key: 'controller',
@@ -63,26 +112,25 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.TERRITORY_READ,
       PERMISSIONS.ONBOARDING_READ,
       PERMISSIONS.BANK_DETAIL_READ,
+      PERMISSIONS.MARGIN_MATRIX_READ,
+      PERMISSIONS.CHAIN_READ,
+      PERMISSIONS.RECEIPT_READ,
+      PERMISSIONS.BANK_REPOST,
+      PERMISSIONS.PAYOUT_READ,
+      PERMISSIONS.PAYOUT_RELEASE,
+      PERMISSIONS.REGISTER_READ,
     ],
   },
   {
     key: 'admin',
     label: 'Admin',
-    permissionKeys: [
-      PERMISSIONS.CONFIG_READ,
-      PERMISSIONS.CONFIG_WRITE,
-      PERMISSIONS.EMPLOYEE_READ,
-      PERMISSIONS.EMPLOYEE_WRITE,
-      PERMISSIONS.FILE_READ,
-      PERMISSIONS.CATALOG_WRITE,
-      PERMISSIONS.TERRITORY_READ,
-      PERMISSIONS.TERRITORY_WRITE,
-      PERMISSIONS.ONBOARDING_READ,
-      PERMISSIONS.ONBOARDING_APPROVE,
-      PERMISSIONS.BANK_DETAIL_READ,
-      PERMISSIONS.BANK_DETAIL_WRITE,
-      PERMISSIONS.BOOK_ASSIGN,
-    ],
+    // Super admin — every permission that exists, always, including ones
+    // added by a later milestone. Admin is the one role the Charter treats
+    // as "configures the system" without a narrower desk boundary (CH
+    // §17.1), so an explicit per-permission list here would only ever be a
+    // maintenance trap: someone adds a new PERMISSIONS key for a new desk
+    // and forgets to also add it here, and Admin quietly loses access.
+    permissionKeys: Object.values(PERMISSIONS),
   },
   {
     key: 'founder',
@@ -94,6 +142,10 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.TERRITORY_READ,
       PERMISSIONS.ONBOARDING_READ,
       PERMISSIONS.BANK_DETAIL_READ,
+      PERMISSIONS.MARGIN_MATRIX_READ,
+      PERMISSIONS.CHAIN_READ,
+      PERMISSIONS.PAYOUT_READ,
+      PERMISSIONS.REGISTER_READ,
     ],
   },
 ];
