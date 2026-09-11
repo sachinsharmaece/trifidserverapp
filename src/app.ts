@@ -1,7 +1,6 @@
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express, { type Express } from 'express';
-import { env } from './config/env.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { notFound } from './middleware/not-found.js';
 import { requestId } from './middleware/requestId.js';
@@ -13,6 +12,12 @@ import { territoryRouter } from './modules/territory/territory.routes.js';
 import { exclusionRouter } from './modules/exclusion/exclusion.routes.js';
 import { catalogRouter } from './modules/catalog/catalog.routes.js';
 import { onboardingRouter } from './modules/onboarding/onboarding.routes.js';
+import { pricingRouter } from './modules/pricing/pricing.routes.js';
+import { chainRouter } from './modules/chain/chain.routes.js';
+import { paymentRouter } from './modules/payment/payment.routes.js';
+import { margRouter } from './modules/marg/marg.routes.js';
+import { dockRouter } from './modules/dock/dock.routes.js';
+import { movementRouter } from './modules/movement/movement.routes.js';
 
 const API_PREFIX = '/api/v1';
 
@@ -39,6 +44,12 @@ export function createApp(): Express {
   app.use(API_PREFIX, exclusionRouter);
   app.use(API_PREFIX, catalogRouter);
   app.use(API_PREFIX, onboardingRouter);
+  app.use(API_PREFIX, pricingRouter);
+  app.use(API_PREFIX, chainRouter);
+  app.use(API_PREFIX, paymentRouter);
+  app.use(API_PREFIX, margRouter);
+  app.use(API_PREFIX, dockRouter);
+  app.use(API_PREFIX, movementRouter);
 
   app.use(notFound);
   app.use(errorHandler);
