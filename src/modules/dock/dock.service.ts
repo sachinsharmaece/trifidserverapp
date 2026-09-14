@@ -9,7 +9,7 @@ import { SellerBill } from '../../models/SellerBill.js';
 import { DebitNote } from '../../models/DebitNote.js';
 import { ReturnNote } from '../../models/ReturnNote.js';
 import { AppError } from '../../shared/errors.js';
-import { computeLineMoney, type PlaceOfSupply } from '../../shared/pricing.js';
+import { computeSellerLineMoney, type PlaceOfSupply } from '../../shared/pricing.js';
 import { assertInspectionNotYetSubmitted } from '../chain/chain.guards.js';
 import { writeChainEvent } from '../chain/chain.events.js';
 import { writeAuditLog } from '../../shared/audit.js';
@@ -118,13 +118,13 @@ export async function applyInspection(
   }
 
   const placeOfSupply = so.placeOfSupply as PlaceOfSupply;
-  const billedFull = computeLineMoney(
+  const billedFull = computeSellerLineMoney(
     poLine.boxes,
     soLine.baseUnitsPerBoxAtOrder,
     poLine.sellerNetPaise,
     placeOfSupply,
   );
-  const accepted = computeLineMoney(
+  const accepted = computeSellerLineMoney(
     inspection.casesAccepted,
     soLine.baseUnitsPerBoxAtOrder,
     poLine.sellerNetPaise,

@@ -38,6 +38,8 @@ export const PERMISSIONS = {
   DOCK_INSPECT: 'dock:inspect',
   MOVEMENT_WRITE: 'movement:write',
   REGISTER_READ: 'register:read',
+  // M5 additions — BUSINESS_RULES.md §7–§9.
+  POOL_RESOLVE_SHORTFALL: 'pool:resolve_shortfall',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -61,6 +63,7 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.PO_CREATE,
       PERMISSIONS.PO_EDIT,
       PERMISSIONS.REGISTER_READ,
+      PERMISSIONS.POOL_RESOLVE_SHORTFALL,
     ],
   },
   {

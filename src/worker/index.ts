@@ -4,6 +4,8 @@ import { env } from '../config/env.js';
 import { connectToDatabase, disconnectFromDatabase } from '../db/connect.js';
 import { logger } from '../shared/logger.js';
 import { writeHeartbeat } from './heartbeat.js';
+import { JOB_CONFIRM_PILE_FANOUT } from './agendaProducer.js';
+import { runConfirmPileFanout } from '../modules/demand/pileFanout.job.js';
 
 /**
  * CH §25.2 — background work does not run inside the web framework. This is
@@ -29,6 +31,15 @@ async function startWorker(): Promise<void> {
 
   agenda.define(HEARTBEAT_JOB_NAME, async () => {
     await writeHeartbeat();
+  });
+
+  // BR-137 — the deferred-commit half of a seller's pile confirm. Scheduled
+  // by the API server (worker/agendaProducer.ts) 5 seconds out; an undo
+  // inside that window cancels this job before it ever reaches here.
+  agenda.define(JOB_CONFIRM_PILE_FANOUT, async (job: { attrs: { data?: { pileId?: string } } }) => {
+    const pileId = job.attrs.data?.pileId;
+    if (!pileId) return;
+    await runConfirmPileFanout(pileId);
   });
 
   agenda.on('ready', () => {

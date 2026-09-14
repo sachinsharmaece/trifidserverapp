@@ -1,4 +1,4 @@
-import type { Types } from 'mongoose';
+import type { ClientSession, Types } from 'mongoose';
 import { withTransaction } from '../../db/transaction.js';
 import { Chain } from '../../models/Chain.js';
 import { So, type SoState } from '../../models/So.js';
@@ -19,8 +19,8 @@ import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import type { Paise } from '../../shared/money.js';
 import {
-  computeBuyerRatePaise,
-  computeLineMoney,
+  computeBuyerInclusiveRatePaise,
+  computeBuyerLineMoney,
   type PlaceOfSupply,
 } from '../../shared/pricing.js';
 import {
@@ -45,14 +45,17 @@ export interface StaffActor {
   correlationId: string;
 }
 
-function toRateTier(buyer: { isTrader: boolean; tradePosition?: string | null }): RateTier {
+// Exported — modules/listing.service.ts needs the identical buyer-tier
+// derivation to compute what a buyer is shown in the feed/buy screen,
+// **before** M5 existed. Kept here rather than duplicated (BR-043).
+export function toRateTier(buyer: { isTrader: boolean; tradePosition?: string | null }): RateTier {
   if (buyer.isTrader) return 'Trader';
   // BR-044 — an unclassified buyer sees the Retailer rate, marked indicative.
   const position = buyer.tradePosition ?? 'retailer';
   return (position.charAt(0).toUpperCase() + position.slice(1)) as RateTier;
 }
 
-async function resolveSkuClass(skuId: Types.ObjectId | string): Promise<{
+export async function resolveSkuClass(skuId: Types.ObjectId | string): Promise<{
   skuClass: SkuClass;
   baseUnitsPerBox: number;
   baseUnit: 'LTR' | 'KG' | 'PC';
@@ -85,6 +88,9 @@ interface CreateSoInput {
   placeOfSupply: PlaceOfSupply;
   overrideRatePaise?: Paise;
   overrideReasonCode?: RateOverrideReasonCode;
+  // BR-156 — a pool's payment window is 16h, not the standard 24h (BR-032).
+  // Callers outside modules/pool never need to set this.
+  payDeadlineHours?: number;
 }
 
 /**
@@ -101,6 +107,23 @@ export async function createSo(
   input: CreateSoInput,
   actor: StaffActor,
 ): Promise<{ soId: string; soNo: string }> {
+  return withTransaction((session) => createSoInSession(input, actor, session));
+}
+
+/**
+ * The session-taking half of `createSo` — every validation and write below
+ * assumes it is already inside a transaction the caller opened. Split out
+ * so `modules/pile`'s WF-05 fan-out (M5) can create N sales orders, one per
+ * buyer on a confirmed pile, inside **one** enclosing transaction rather
+ * than N independent ones — WF-05's own "nine steps in one transaction"
+ * requirement. `createSo` above is unchanged for M4's direct staff-action
+ * callers.
+ */
+export async function createSoInSession(
+  input: CreateSoInput,
+  actor: StaffActor,
+  session: ClientSession,
+): Promise<{ soId: string; soNo: string }> {
   if (input.boxes < 1) {
     throw new AppError({
       code: 'VALIDATION_FAILED',
@@ -108,9 +131,9 @@ export async function createSo(
     });
   }
 
-  const buyer = await Buyer.findById(input.buyerId);
+  const buyer = await Buyer.findById(input.buyerId).session(session);
   if (!buyer) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Buyer not found.' });
-  const buyerCounterparty = await Counterparty.findById(buyer.counterpartyId);
+  const buyerCounterparty = await Counterparty.findById(buyer.counterpartyId).session(session);
   if (buyerCounterparty?.status !== 'active') {
     throw new AppError({
       code: 'ACCOUNT_NOT_ACTIVE',
@@ -118,9 +141,9 @@ export async function createSo(
     });
   }
 
-  const seller = await Seller.findById(input.sellerId);
+  const seller = await Seller.findById(input.sellerId).session(session);
   if (!seller) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Seller not found.' });
-  const sellerCounterparty = await Counterparty.findById(seller.counterpartyId);
+  const sellerCounterparty = await Counterparty.findById(seller.counterpartyId).session(session);
   if (sellerCounterparty?.status !== 'active') {
     throw new AppError({
       code: 'ACCOUNT_NOT_ACTIVE',
@@ -133,7 +156,7 @@ export async function createSo(
 
   // BR-040/QR-007 — throws MARGIN_CELL_MISSING rather than guessing.
   const cell = await resolveMarginMatrixCell(skuClass, tier);
-  const prefillRatePaise = computeBuyerRatePaise(input.sellerNetPaise, cell.pct);
+  const prefillRatePaise = computeBuyerInclusiveRatePaise(input.sellerNetPaise, cell.pct);
 
   let ratePaise = prefillRatePaise;
   let marginPctAtOrder = cell.pct;
@@ -157,11 +180,11 @@ export async function createSo(
     marginPctAtOrder = ratePaise / input.sellerNetPaise - 1;
   }
 
-  const line = computeLineMoney(input.boxes, baseUnitsPerBox, ratePaise, input.placeOfSupply);
+  const line = computeBuyerLineMoney(input.boxes, baseUnitsPerBox, ratePaise, input.placeOfSupply);
   const now = new Date();
-  const payDeadline = new Date(now.getTime() + 24 * 60 * 60 * 1000); // BR-032.
+  const payDeadline = new Date(now.getTime() + (input.payDeadlineHours ?? 24) * 60 * 60 * 1000); // BR-032/BR-156.
 
-  const result = await withTransaction(async (session) => {
+  {
     const chainNo = await nextChainNo(session);
     const [chain] = await Chain.create(
       [{ chainNo, source: 'inquiry', stage: 'so', openedAt: now }],
@@ -255,9 +278,7 @@ export async function createSo(
     );
 
     return { soId: (so._id as Types.ObjectId).toString(), soNo };
-  });
-
-  return result;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -478,7 +499,7 @@ export async function reduceSoQuantity(
   }
 
   const oldTotalPaise = soLine.totalPaise;
-  const newLine = computeLineMoney(
+  const newLine = computeBuyerLineMoney(
     input.newBoxes,
     soLine.baseUnitsPerBoxAtOrder,
     soLine.ratePaise,

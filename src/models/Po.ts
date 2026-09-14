@@ -34,6 +34,10 @@ const poSchema = new Schema(
     paid: { type: Boolean, required: true, default: false },
     failed: { type: Boolean, required: true, default: false },
     requoteCount: { type: Number, required: true, default: 0 },
+    // New — API-076. A lifeline flag for the desk queue; not a state change
+    // and not auto-actioned — Logistics/Purchase reviews it manually.
+    extensionRequestedAt: { type: Date, default: null },
+    extensionReason: { type: String, default: null },
   },
   { timestamps: true },
 );
