@@ -23,7 +23,7 @@ import { BuyerLocation } from '../../models/BuyerLocation.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import type { Paise } from '../../shared/money.js';
-import { computeBuyerRatePaise } from '../../shared/pricing.js';
+import { computeBuyerInclusiveRatePaise } from '../../shared/pricing.js';
 import { resolveMarginMatrixCell } from '../pricing/pricing.service.js';
 import { resolveSkuClass, toRateTier } from '../chain/chain.service.js';
 import { resolveVisibility, type SellerBlockLookup } from '../territory/resolver.js';
@@ -51,7 +51,7 @@ export async function computeBuyerFacingRatePaise(
     const { skuClass } = await resolveSkuClass(skuId);
     const tier = toRateTier(buyer);
     const cell = await resolveMarginMatrixCell(skuClass, tier);
-    return computeBuyerRatePaise(sellerNetPaise, cell.pct);
+    return computeBuyerInclusiveRatePaise(sellerNetPaise, cell.pct);
   } catch (error) {
     if (error instanceof AppError && error.code === 'MARGIN_CELL_MISSING') return null;
     throw error;

@@ -19,8 +19,8 @@ import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import type { Paise } from '../../shared/money.js';
 import {
-  computeBuyerRatePaise,
-  computeLineMoney,
+  computeBuyerInclusiveRatePaise,
+  computeBuyerLineMoney,
   type PlaceOfSupply,
 } from '../../shared/pricing.js';
 import {
@@ -156,7 +156,7 @@ export async function createSoInSession(
 
   // BR-040/QR-007 — throws MARGIN_CELL_MISSING rather than guessing.
   const cell = await resolveMarginMatrixCell(skuClass, tier);
-  const prefillRatePaise = computeBuyerRatePaise(input.sellerNetPaise, cell.pct);
+  const prefillRatePaise = computeBuyerInclusiveRatePaise(input.sellerNetPaise, cell.pct);
 
   let ratePaise = prefillRatePaise;
   let marginPctAtOrder = cell.pct;
@@ -180,7 +180,7 @@ export async function createSoInSession(
     marginPctAtOrder = ratePaise / input.sellerNetPaise - 1;
   }
 
-  const line = computeLineMoney(input.boxes, baseUnitsPerBox, ratePaise, input.placeOfSupply);
+  const line = computeBuyerLineMoney(input.boxes, baseUnitsPerBox, ratePaise, input.placeOfSupply);
   const now = new Date();
   const payDeadline = new Date(now.getTime() + (input.payDeadlineHours ?? 24) * 60 * 60 * 1000); // BR-032/BR-156.
 
@@ -499,7 +499,7 @@ export async function reduceSoQuantity(
   }
 
   const oldTotalPaise = soLine.totalPaise;
-  const newLine = computeLineMoney(
+  const newLine = computeBuyerLineMoney(
     input.newBoxes,
     soLine.baseUnitsPerBoxAtOrder,
     soLine.ratePaise,

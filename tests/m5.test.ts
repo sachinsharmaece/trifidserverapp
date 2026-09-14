@@ -224,8 +224,11 @@ describe('WF-03 resolver / BR-060 wall — buyer feed and buy screen', () => {
       .set('Authorization', `Bearer ${inScopeToken}`);
     expect(buyRes.status).toBe(200);
 
-    // Dealer, class B, 3.5% margin per the seeded demo matrix.
-    const expectedBuyerRate = Math.round(sellerNetPaise * 1.035);
+    // Dealer, class B, 3.5% margin per the seeded demo matrix. The buyer's
+    // rate is GST-inclusive (DEC-045): margin on the taxable seller net,
+    // then grossed up by 18% GST.
+    const expectedTaxable = Math.round(sellerNetPaise * 1.035);
+    const expectedBuyerRate = Math.round((expectedTaxable * 118) / 100);
     expect(buyRes.body.data.ratePaise).toBe(expectedBuyerRate);
 
     const raw = JSON.stringify(buyRes.body);
