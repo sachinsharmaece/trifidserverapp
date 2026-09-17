@@ -9,14 +9,14 @@ import { Complaint, type ComplaintCategory } from '../../models/Complaint.js';
 import { Refund, type RefundReasonCode } from '../../models/Refund.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
-import { transitionToDispatchedLeg1 } from '../chain/chain.service.js';
-import { writeChainEvent } from '../chain/chain.events.js';
 import {
-  toBuyerSoDto,
-  toSellerPoDto,
-  type BuyerSoDto,
-  type SellerPoDto,
-} from './orders.dto.js';
+  transitionToDispatchedLeg1,
+  acceptPromotionOffer,
+  rejectPromotionOffer,
+} from '../chain/chain.service.js';
+import { PromotionOffer } from '../../models/PromotionOffer.js';
+import { writeChainEvent } from '../chain/chain.events.js';
+import { toBuyerSoDto, toSellerPoDto, type BuyerSoDto, type SellerPoDto } from './orders.dto.js';
 
 async function requireBuyer(buyerCounterpartyId: string) {
   const buyer = await Buyer.findOne({ counterpartyId: buyerCounterpartyId });
@@ -52,6 +52,43 @@ export async function getBuyerOrder(
   if (!so) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Order not found.' });
   const leg1 = await Movement.findOne({ chainId: so.chainId, leg: 1 });
   return toBuyerSoDto(so, leg1);
+}
+
+// ---------------------------------------------------------------------------
+// WF-11 / API-071 (repurposed, QR-045) — the promoted-fallback screen (IC-14).
+// ---------------------------------------------------------------------------
+
+export interface PromotionOfferDto {
+  // BR-060's wall holds here too — never the two rates, never the delta.
+  // The buyer's own price is unchanged; this only tells him a different
+  // seller will now supply it, and by when he must decide.
+  expiresAt: string;
+}
+
+export async function getPromotionOffer(
+  buyerCounterpartyId: string,
+  soId: string,
+): Promise<PromotionOfferDto | null> {
+  const buyer = await requireBuyer(buyerCounterpartyId);
+  const so = await So.findOne({ _id: soId, buyerId: buyer._id });
+  if (!so) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Order not found.' });
+  const offer = await PromotionOffer.findOne({ soId: so._id, status: 'pending' });
+  if (!offer) return null;
+  return { expiresAt: offer.expiresAt.toISOString() };
+}
+
+export async function acceptPromotion(
+  buyerCounterpartyId: string,
+  soId: string,
+  correlationId: string,
+): Promise<void> {
+  await requireBuyer(buyerCounterpartyId);
+  await acceptPromotionOffer(soId, buyerCounterpartyId, correlationId);
+}
+
+export async function rejectPromotion(buyerCounterpartyId: string, soId: string): Promise<void> {
+  await requireBuyer(buyerCounterpartyId);
+  await rejectPromotionOffer(soId, buyerCounterpartyId);
 }
 
 // ---------------------------------------------------------------------------

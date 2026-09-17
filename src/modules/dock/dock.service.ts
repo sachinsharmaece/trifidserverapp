@@ -89,7 +89,13 @@ export async function recordInspection(
 export async function applyInspection(
   poId: string,
   actor: StaffActor,
-): Promise<{ soState: string; sellerBillId?: string; debitNoteId?: string; refundId?: string }> {
+): Promise<{
+  soState: string;
+  sellerBillId?: string;
+  debitNoteId?: string;
+  refundId?: string;
+  promotionOfferId?: string;
+}> {
   const po = await Po.findById(poId);
   if (!po) throw new AppError({ code: 'NOT_FOUND', messageEn: 'PO not found.' });
   const inspection = await Inspection.findOne({ poId: po._id });
@@ -107,14 +113,21 @@ export async function applyInspection(
     throw new AppError({ code: 'NOT_FOUND', messageEn: 'Order line not found.' });
 
   if (inspection.casesAccepted === 0) {
-    // BR-186/WF-11 — whole-lot rejection is a supply failure, not a part rejection.
-    const { refundId } = await transitionToSupplyFailed(
+    // BR-186/WF-11 — whole-lot rejection is a supply failure, not a part
+    // rejection. A refund is now only one of two outcomes: WF-11 tries a
+    // replacement seller first (`promotionOfferId`) and only refunds
+    // outright when no affordable one exists (`refundId`).
+    const { refundId, promotionOfferId } = await transitionToSupplyFailed(
       (so._id as Types.ObjectId).toString(),
       (po._id as Types.ObjectId).toString(),
       actor,
     );
     await createReturnNoteIfNeeded(po, inspection, actor);
-    return { soState: 'supply_failed', refundId };
+    return {
+      soState: promotionOfferId ? 'promotion_offered' : 'supply_failed',
+      refundId,
+      promotionOfferId,
+    };
   }
 
   const placeOfSupply = so.placeOfSupply as PlaceOfSupply;

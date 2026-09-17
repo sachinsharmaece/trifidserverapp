@@ -40,6 +40,17 @@ export const PERMISSIONS = {
   REGISTER_READ: 'register:read',
   // M5 additions — BUSINESS_RULES.md §7–§9.
   POOL_RESOLVE_SHORTFALL: 'pool:resolve_shortfall',
+  // M6 additions — BUSINESS_RULES.md §12, §15.
+  CONDUCT_RECORD: 'conduct:record',
+  CONDUCT_ADVANCE: 'conduct:advance',
+  CONDUCT_DISPUTES_READ: 'conduct:disputes_read',
+  DEMAND_READ: 'demand:read',
+  NON_ORDER_REASON_RECORD: 'non_order_reason:record',
+  ABSORPTION_READ: 'absorption:read',
+  PULSE_READ: 'pulse:read',
+  RETENTION_READ: 'retention:read',
+  MSP_RESPOND: 'msp:respond',
+  COMPLAINT_READ: 'complaint:read',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -64,6 +75,12 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.PO_EDIT,
       PERMISSIONS.REGISTER_READ,
       PERMISSIONS.POOL_RESOLVE_SHORTFALL,
+      // M6 — BUSINESS_RULES.md §15 (Purchase's own funnel/desk surfaces).
+      PERMISSIONS.DEMAND_READ,
+      PERMISSIONS.NON_ORDER_REASON_RECORD,
+      PERMISSIONS.ABSORPTION_READ,
+      PERMISSIONS.CONDUCT_RECORD,
+      PERMISSIONS.CONDUCT_ADVANCE,
     ],
   },
   {
@@ -80,6 +97,13 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.RECEIPT_READ,
       PERMISSIONS.RECEIPT_ALLOCATE,
       PERMISSIONS.REGISTER_READ,
+      // M6 — BUSINESS_RULES.md §15/§19 (Sales's own desk surfaces).
+      PERMISSIONS.PULSE_READ,
+      PERMISSIONS.RETENTION_READ,
+      PERMISSIONS.MSP_RESPOND,
+      PERMISSIONS.COMPLAINT_READ,
+      PERMISSIONS.CONDUCT_RECORD,
+      PERMISSIONS.CONDUCT_ADVANCE,
     ],
   },
   {
@@ -122,6 +146,8 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.PAYOUT_READ,
       PERMISSIONS.PAYOUT_RELEASE,
       PERMISSIONS.REGISTER_READ,
+      // M6 — BR-218's disagree queue is Controller-visible (QR-025).
+      PERMISSIONS.CONDUCT_DISPUTES_READ,
     ],
   },
   {

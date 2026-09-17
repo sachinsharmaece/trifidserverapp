@@ -32,6 +32,10 @@ export const SO_STATES = [
   'closed',
   'cancelled',
   'supply_failed',
+  // New — M6, WF-11. A live, affordable replacement seller was found; the
+  // buyer has 24h to accept or the SO resolves to `supply_failed` +
+  // full refund on silence/reject (see modules/chain PromotionOffer flow).
+  'promotion_offered',
   'disputed',
 ] as const;
 export type SoState = (typeof SO_STATES)[number];
@@ -41,6 +45,11 @@ const soSchema = new Schema(
     soNo: { type: String, required: true, unique: true },
     chainId: { type: Schema.Types.ObjectId, ref: 'Chain', required: true },
     buyerId: { type: Schema.Types.ObjectId, ref: 'Buyer', required: true },
+    // New — M6, WF-11's "restored to standing demand" path. Set only when
+    // this SO was created from an accepted ask/quote (demand.service.ts
+    // `acceptAskFill`); null for the direct listing/pile path, which has no
+    // ask to restore to. Read-only after creation.
+    askId: { type: Schema.Types.ObjectId, ref: 'Ask', default: null },
     // BR-060 — the wall is enforced at the DTO layer (TD-008), not by
     // omitting this from storage: every seller-side module (chain.service.ts
     // `createPo`, dock, marg, movement) needs it to place the PO, and

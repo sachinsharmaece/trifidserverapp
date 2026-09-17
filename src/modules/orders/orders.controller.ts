@@ -89,6 +89,27 @@ export async function getMyRefunds(req: Request, res: Response): Promise<void> {
   ok(res, req, await ordersService.listBuyerRefunds(req.auth!.counterpartyId!));
 }
 
+// API-071 (repurposed, QR-045) — 👤B. WF-11's promoted-fallback screen (IC-14).
+export async function getPromotionOffer(req: Request, res: Response): Promise<void> {
+  ok(
+    res,
+    req,
+    await ordersService.getPromotionOffer(req.auth!.counterpartyId!, req.params.id as string),
+  );
+}
+export async function postAcceptPromotion(req: Request, res: Response): Promise<void> {
+  await ordersService.acceptPromotion(
+    req.auth!.counterpartyId!,
+    req.params.id as string,
+    req.correlationId,
+  );
+  ok(res, req, { accepted: true });
+}
+export async function postRejectPromotion(req: Request, res: Response): Promise<void> {
+  await ordersService.rejectPromotion(req.auth!.counterpartyId!, req.params.id as string);
+  ok(res, req, { rejected: true });
+}
+
 // API-077 — 👤B / 👤S — ownership resolved server-side, see orders.service.ts.
 export async function getDocuments(req: Request, res: Response): Promise<void> {
   const result = await ordersService.getOrderDocuments(
