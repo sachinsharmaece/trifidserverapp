@@ -53,3 +53,15 @@ ordersRouter.get('/orders/:id/documents', authenticate, controller.getDocuments)
 
 // New — 👤B.
 ordersRouter.get('/me/refunds', authenticate, controller.getMyRefunds);
+
+// API-071 (repurposed, QR-045) — 👤B. :id is a soId. WF-11's promoted-fallback
+// accept/decline (IC-14). The 24h clock's own expiry is enforced server-side
+// on accept, not by this route.
+ordersRouter.get('/orders/:id/promotion-offer', authenticate, controller.getPromotionOffer);
+ordersRouter.post(
+  '/orders/:id/requote/accept',
+  authenticate,
+  requireIdempotencyKey(),
+  controller.postAcceptPromotion,
+);
+ordersRouter.post('/orders/:id/requote/reject', authenticate, controller.postRejectPromotion);

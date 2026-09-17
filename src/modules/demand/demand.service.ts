@@ -17,9 +17,11 @@ import { Config } from '../../models/Config.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { addHours, addWorkingHours } from '../../shared/clock.js';
+import { assertCounterpartyActive } from '../../shared/guards.js';
 import type { Paise } from '../../shared/money.js';
 import { createSo } from '../chain/chain.service.js';
 import { computeBuyerFacingRatePaise } from '../listing/listing.service.js';
+import { recordPulseEvent } from '../desk/sales/sales.service.js';
 import { getAgendaProducer, JOB_CONFIRM_PILE_FANOUT } from '../../worker/agendaProducer.js';
 import { runConfirmPileFanout } from './pileFanout.job.js';
 
@@ -63,6 +65,7 @@ export async function raiseAsk(
   input: RaiseAskInput,
 ): Promise<{ askId: string }> {
   const buyer = await requireActiveBuyer(buyerCounterpartyId);
+  await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new asks.
   if (!input.skuId && !input.productId) {
     throw new AppError({ code: 'VALIDATION_FAILED', messageEn: 'A SKU or a product is required.' });
   }
@@ -82,6 +85,22 @@ export async function raiseAsk(
     ttlAt: addHours(now, OPEN_DEMAND_TTL_DAYS * 24),
     state: 'open',
   });
+
+  // BR-278/BR-279 — the market pulse. Organic (fromOurPush defaults false):
+  // the buyer raised this on his own initiative, not because a desk called him.
+  let pulseProductId = input.productId as unknown as Types.ObjectId | undefined;
+  if (!pulseProductId && input.skuId) {
+    const { Sku } = await import('../../models/Sku.js');
+    const sku = await Sku.findById(input.skuId);
+    pulseProductId = sku?.productId as Types.ObjectId | undefined;
+  }
+  if (pulseProductId) {
+    await recordPulseEvent({
+      buyerId: buyer._id as Types.ObjectId,
+      productId: pulseProductId,
+      kind: 'ask',
+    });
+  }
 
   return { askId: (ask._id as Types.ObjectId).toString() };
 }
@@ -200,6 +219,7 @@ export async function acceptAskFill(
         boxes: quote.qtyAvailable,
         sellerNetPaise: quote.ratePaiseForIndore,
         placeOfSupply: 'intra_state',
+        askId: (ask._id as Types.ObjectId).toString(),
       },
       actor,
     );
@@ -302,6 +322,7 @@ export async function postQuote(
   input: PostQuoteInput,
 ): Promise<{ quoteId: string }> {
   const seller = await requireActiveSeller(sellerCounterpartyId);
+  await assertCounterpartyActive(sellerCounterpartyId); // QR-015 — blacklist blocks new quotes.
   const ask = await Ask.findById(askId);
   if (!ask || ask.state === 'converted' || ask.state === 'withdrawn' || ask.state === 'lapsed') {
     throw new AppError({ code: 'NOT_FOUND', messageEn: 'This ask is no longer open.' });

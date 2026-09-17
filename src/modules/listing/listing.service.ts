@@ -22,6 +22,7 @@ import { PileRequest } from '../../models/PileRequest.js';
 import { BuyerLocation } from '../../models/BuyerLocation.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
+import { assertCounterpartyActive } from '../../shared/guards.js';
 import type { Paise } from '../../shared/money.js';
 import { computeBuyerInclusiveRatePaise } from '../../shared/pricing.js';
 import { resolveMarginMatrixCell } from '../pricing/pricing.service.js';
@@ -178,6 +179,7 @@ export async function createListing(
 ): Promise<{ listingId: string; lineIds: string[] }> {
   const seller = await Seller.findOne({ counterpartyId: sellerCounterpartyId });
   if (!seller) throw new AppError({ code: 'PERMISSION_DENIED', messageEn: 'Sellers only.' });
+  await assertCounterpartyActive(sellerCounterpartyId); // QR-015 — blacklist blocks new listings.
 
   const ownAreaCount = await SellerArea.countDocuments({ sellerId: seller._id });
   if (ownAreaCount === 0) {
@@ -734,6 +736,7 @@ export async function createPileRequest(
   input: InquireInput,
 ): Promise<{ pileId: string }> {
   const { buyer, counterparty } = await requireActiveBuyer(buyerCounterpartyId);
+  await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new inquiries.
   const line = await ListingLine.findById(listingLineId);
   const listing = line ? await Listing.findById(line.listingId) : null;
   if (!line || !listing || listing.state !== 'live') {

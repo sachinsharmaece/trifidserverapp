@@ -23,6 +23,8 @@ import { demandRouter } from './modules/demand/demand.routes.js';
 import { poolRouter } from './modules/pool/pool.routes.js';
 import { ordersRouter } from './modules/orders/orders.routes.js';
 import { conductRouter } from './modules/conduct/conduct.routes.js';
+import { purchaseRouter } from './modules/desk/purchase/purchase.routes.js';
+import { salesRouter } from './modules/desk/sales/sales.routes.js';
 
 const API_PREFIX = '/api/v1';
 
@@ -60,6 +62,8 @@ export function createApp(): Express {
   app.use(API_PREFIX, poolRouter);
   app.use(API_PREFIX, ordersRouter);
   app.use(API_PREFIX, conductRouter);
+  app.use(API_PREFIX, purchaseRouter);
+  app.use(API_PREFIX, salesRouter);
 
   app.use(notFound);
   app.use(errorHandler);

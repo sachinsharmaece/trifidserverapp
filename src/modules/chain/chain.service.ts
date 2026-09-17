@@ -15,12 +15,20 @@ import { Counterparty } from '../../models/Counterparty.js';
 import { Sku } from '../../models/Sku.js';
 import { Product } from '../../models/Product.js';
 import { Refund } from '../../models/Refund.js';
+import { Ask } from '../../models/Ask.js';
+import { Listing } from '../../models/Listing.js';
+import { ListingLine } from '../../models/ListingLine.js';
+import { PromotionOffer } from '../../models/PromotionOffer.js';
+import { SellerDebit } from '../../models/SellerDebit.js';
+import { recordFailure } from '../conduct/conduct.service.js';
+import { ensureBookAssignment, recordPulseEvent } from '../desk/sales/sales.service.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import type { Paise } from '../../shared/money.js';
 import {
   computeBuyerInclusiveRatePaise,
   computeBuyerLineMoney,
+  computeAbsorptionCapPaise,
   type PlaceOfSupply,
 } from '../../shared/pricing.js';
 import {
@@ -91,6 +99,10 @@ interface CreateSoInput {
   // BR-156 — a pool's payment window is 16h, not the standard 24h (BR-032).
   // Callers outside modules/pool never need to set this.
   payDeadlineHours?: number;
+  // M6, WF-11 — set only by the ask/quote acceptance path, so a later
+  // supply failure can restore the ask to standing demand instead of
+  // dead-ending it. The direct listing/pile path leaves this undefined.
+  askId?: string;
 }
 
 /**
@@ -152,6 +164,7 @@ export async function createSoInSession(
   }
 
   const { skuClass, baseUnitsPerBox, baseUnit } = await resolveSkuClass(input.skuId);
+  const sku = await Sku.findById(input.skuId).session(session);
   const tier = toRateTier(buyer);
 
   // BR-040/QR-007 — throws MARGIN_CELL_MISSING rather than guessing.
@@ -199,6 +212,7 @@ export async function createSoInSession(
           soNo,
           chainId: chain._id,
           buyerId: buyer._id,
+          askId: input.askId ?? null,
           sellerId: seller._id,
           tierAtOrder: tier,
           placeOfSupply: input.placeOfSupply,
@@ -232,6 +246,19 @@ export async function createSoInSession(
       { session, ordered: true },
     );
     if (!soLine) throw new Error('SoLine.create returned no document.');
+
+    await ensureBookAssignment(buyer._id as Types.ObjectId, session); // BR-276.
+    if (sku?.productId) {
+      // BR-278/BR-279 — organic, not from our own push.
+      await recordPulseEvent(
+        {
+          buyerId: buyer._id as Types.ObjectId,
+          productId: sku.productId as Types.ObjectId,
+          kind: 'order',
+        },
+        session,
+      );
+    }
 
     if (usingOverride) {
       const [override] = await RateOverride.create(
@@ -615,29 +642,104 @@ export async function transitionToInspected(soId: string, poId: string): Promise
   await Po.updateOne({ _id: poId }, { $set: { received: true, inspected: true } });
 }
 
+// ---------------------------------------------------------------------------
+// WF-11 — the fallback/absorption workflow (M6). BR-021/BR-034/BR-131.
+// ---------------------------------------------------------------------------
+
+interface PromotionCandidate {
+  sellerId: Types.ObjectId;
+  sellerNetPaise: Paise;
+  deltaPaise: Paise;
+}
+
 /**
- * BR-186/WF-11 — whole-lot rejection is a supply failure, not a part
- * rejection. BR-034 — the buyer is refunded in full, never partially, never
- * netted against anything. The "next-best live quote" promotion WF-11
- * otherwise describes has no listing board to promote from yet (M5) — see
- * this session's report; a full refund is the only resolution this
- * milestone can honestly implement.
+ * The next-best live listing on the same SKU, cheapest first, excluding the
+ * failed seller and anyone blacklisted — filtered down to only sellers whose
+ * rate can actually be afforded within the absorption cap (BR-021: the lower
+ * of 1% of order value and the margin on the line; zero margin is the hard
+ * maximum, no escalation path past it). `lines` is sorted ascending, so the
+ * first eligible, affordable entry is by construction the cheapest one.
+ *
+ * Condition-set matching (expiry/delivery/provenance) is deliberately not
+ * applied here — unlike `modules/pool`'s `findCurrentSupplier`, an SO/SoLine
+ * does not retain the buyer's original condition requirement (only the
+ * frozen rate and SKU survive onto the order). Matching on SKU alone is this
+ * session's own literal reading of "the next-best live quote," flagged in
+ * the session report as a real simplification, not a quoted rule.
  */
-export async function transitionToSupplyFailed(
-  soId: string,
-  poId: string,
-  actor: StaffActor,
+async function findPromotionCandidate(
+  so: InstanceType<typeof So>,
+  soLine: InstanceType<typeof SoLine>,
+  excludeSellerId: Types.ObjectId,
+): Promise<PromotionCandidate | null> {
+  const zeroMarginRate = computeBuyerInclusiveRatePaise(soLine.sellerNetPaise, 0);
+  const zeroMarginTotal = computeBuyerLineMoney(
+    soLine.boxes,
+    soLine.baseUnitsPerBoxAtOrder,
+    zeroMarginRate,
+    so.placeOfSupply as PlaceOfSupply,
+  ).totalPaise;
+  const marginOnLinePaise = so.totalPaise - zeroMarginTotal;
+  const cap = computeAbsorptionCapPaise(so.totalPaise, marginOnLinePaise);
+
+  const liveListings = await Listing.find({ state: 'live', sellerId: { $ne: excludeSellerId } });
+  const lines = await ListingLine.find({
+    listingId: { $in: liveListings.map((l) => l._id) },
+    skuId: soLine.skuId,
+  }).sort({ ratePaise: 1 });
+  const listingBySellerLine = new Map(
+    liveListings.map((l) => [(l._id as Types.ObjectId).toString(), l]),
+  );
+
+  for (const line of lines) {
+    const listing = listingBySellerLine.get((line.listingId as Types.ObjectId).toString());
+    if (!listing) continue;
+    const seller = await Seller.findById(listing.sellerId);
+    if (!seller) continue;
+    const sellerCounterparty = await Counterparty.findById(seller.counterpartyId);
+    if (sellerCounterparty?.status !== 'active') continue; // Never promote a blacklisted or pending seller.
+
+    const candidateZeroMarginRate = computeBuyerInclusiveRatePaise(line.ratePaise, 0);
+    const candidateZeroMarginTotal = computeBuyerLineMoney(
+      soLine.boxes,
+      soLine.baseUnitsPerBoxAtOrder,
+      candidateZeroMarginRate,
+      so.placeOfSupply as PlaceOfSupply,
+    ).totalPaise;
+    const deltaPaise = Math.max(candidateZeroMarginTotal - zeroMarginTotal, 0);
+    if (deltaPaise <= cap) {
+      return { sellerId: seller._id as Types.ObjectId, sellerNetPaise: line.ratePaise, deltaPaise };
+    }
+  }
+  return null;
+}
+
+/** BR-034 — always full, never partial, never netted against anything. */
+async function refundSoInFull(
+  so: InstanceType<typeof So>,
+  reasonCode: string,
+  summary: string,
+  actorId: string,
+  actorType: 'staff' | 'counterparty',
 ): Promise<{ refundId: string }> {
-  const so = await So.findById(soId);
-  if (!so) throw new AppError({ code: 'NOT_FOUND', messageEn: 'SO not found.' });
   const buyer = await Buyer.findById(so.buyerId);
   const buyerCounterparty = await Counterparty.findById(buyer!.counterpartyId);
 
-  const result = await withTransaction(async (session) => {
+  return withTransaction(async (session) => {
     so.state = 'supply_failed';
     await so.save({ session });
-    await Po.updateOne({ _id: poId }, { $set: { state: 'failed', failed: true } }, { session });
     await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'leg1' } }, { session });
+
+    if (so.askId) {
+      // WF-11 — restored to standing demand, not dead-ended. Only traceable
+      // for the ask/quote path (`acceptAskFill` stamps `askId`); the direct
+      // listing/pile path has no ask to restore to.
+      await Ask.updateOne(
+        { _id: so.askId, state: 'converted' },
+        { $set: { state: 'open' } },
+        { session },
+      );
+    }
 
     const [refund] = await Refund.create(
       [
@@ -645,7 +747,7 @@ export async function transitionToSupplyFailed(
           chainId: so.chainId,
           buyerId: so.buyerId,
           amountPaise: so.totalPaise,
-          reasonCode: 'supply_failure_full',
+          reasonCode,
           state: 'payable',
           targetAccountMasked: buyerCounterparty?.mobile ?? 'unknown',
         },
@@ -660,17 +762,247 @@ export async function transitionToSupplyFailed(
         type: 'supply_failed',
         refCollection: 'so',
         refId: so._id as Types.ObjectId,
-        actorId: actor.employeeId,
-        actorType: 'staff',
-        summary: `${so.soNo} — whole-lot rejection, full refund of ₹${so.totalPaise / 100} raised (BR-034).`,
+        actorId,
+        actorType,
+        summary,
       },
       session,
     );
 
     return { refundId: (refund._id as Types.ObjectId).toString() };
   });
+}
 
-  return result;
+/**
+ * BR-186/WF-11 — a seller's supply failure (whole-lot rejection at
+ * inspection, or a staff-recorded ghosting/non-dispatch). Before any refund,
+ * try to promote the next-best live, affordable seller (WF-11 step 1); the
+ * buyer then has 24 hours to accept that replacement (`IC-14`) before it
+ * becomes real — his own price never changes, only who is fulfilling it.
+ * Only when no affordable replacement exists does this resolve straight to
+ * a full refund (BR-034), exactly as the pre-M6 build always did.
+ */
+export async function transitionToSupplyFailed(
+  soId: string,
+  poId: string,
+  actor: StaffActor,
+): Promise<{ refundId?: string; promotionOfferId?: string }> {
+  const so = await So.findById(soId);
+  if (!so) throw new AppError({ code: 'NOT_FOUND', messageEn: 'SO not found.' });
+  const soLine = await SoLine.findOne({ soId: so._id });
+  if (!soLine) throw new AppError({ code: 'NOT_FOUND', messageEn: 'SO line not found.' });
+  const failedSellerId = so.sellerId as Types.ObjectId;
+
+  await Po.updateOne({ _id: poId }, { $set: { state: 'failed', failed: true } });
+
+  // BR-215 — whole-lot rejection for seller fault is a counted failure.
+  const failedSeller = await Seller.findById(failedSellerId);
+  if (failedSeller) {
+    await recordFailure(
+      {
+        counterpartyId: failedSeller.counterpartyId.toString(),
+        counterpartyKind: 'seller',
+        type: 'seller_whole_lot_rejection_fault',
+        chainId: (so.chainId as Types.ObjectId).toString(),
+      },
+      actor,
+    );
+  }
+
+  const candidate = await findPromotionCandidate(so, soLine, failedSellerId);
+  if (!candidate) {
+    const result = await refundSoInFull(
+      so,
+      'supply_failure_full',
+      `${so.soNo} — no affordable replacement seller found, full refund of ₹${so.totalPaise / 100} raised (BR-034).`,
+      actor.employeeId,
+      'staff',
+    );
+    return { refundId: result.refundId };
+  }
+
+  const now = new Date();
+  const offer = await PromotionOffer.create({
+    soId: so._id,
+    poId,
+    chainId: so.chainId,
+    failedSellerId,
+    promotedSellerId: candidate.sellerId,
+    promotedSellerNetPaise: candidate.sellerNetPaise,
+    deltaPaise: candidate.deltaPaise,
+    withinCap: true,
+    expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000), // BR-021 — 24h.
+  });
+  so.state = 'promotion_offered';
+  await so.save();
+
+  await writeChainEvent({
+    chainId: so.chainId as Types.ObjectId,
+    type: 'promotion_offered',
+    refCollection: 'so',
+    refId: so._id as Types.ObjectId,
+    actorId: actor.employeeId,
+    actorType: 'staff',
+    summary: `${so.soNo} — original seller failed; a replacement was found and offered to the buyer, 24h to decide.`,
+  });
+
+  return { promotionOfferId: (offer._id as Types.ObjectId).toString() };
+}
+
+/**
+ * API-071, repurposed — `ST-01`'s pre-payment `requote_offered` segment has
+ * no producer anywhere in the entities M5 actually built (`QR-045`); this
+ * milestone answers that question by retiring the dead segment and wiring
+ * the same endpoint paths to the real thing that needed them: WF-11's
+ * promoted-fallback accept/decline.
+ */
+export async function acceptPromotionOffer(
+  soId: string,
+  buyerCounterpartyId: string,
+  correlationId: string,
+): Promise<void> {
+  const so = await So.findById(soId);
+  if (!so) throw new AppError({ code: 'NOT_FOUND', messageEn: 'SO not found.' });
+  const buyer = await Buyer.findById(so.buyerId);
+  if (!buyer || (buyer.counterpartyId as Types.ObjectId).toString() !== buyerCounterpartyId) {
+    throw new AppError({ code: 'PERMISSION_DENIED', messageEn: 'Not your order.' });
+  }
+  const offer = await PromotionOffer.findOne({ soId: so._id, status: 'pending' });
+  if (!offer) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'There is no pending replacement offer on this order.',
+    });
+  }
+  if (offer.expiresAt.getTime() < Date.now()) {
+    await settlePromotionAsRefund(offer, so, 'expired');
+    throw new AppError({ code: 'VALIDATION_FAILED', messageEn: 'This offer has expired.' });
+  }
+
+  const po = await Po.findById(offer.poId);
+  const soLine = await SoLine.findOne({ soId: so._id });
+  if (!po || !soLine) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Order not found.' });
+
+  const now = new Date();
+  await withTransaction(async (session) => {
+    po.sellerId = offer.promotedSellerId;
+    po.state = 'released';
+    po.failed = false;
+    po.dispatchDueDate = now; // WF-11 — the clock starts at his acceptance, not the original PO release.
+    po.promisedOutOfIndoreBy = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+    await po.save({ session });
+
+    const { PoLine } = await import('../../models/PoLine.js');
+    await PoLine.updateOne(
+      { poId: po._id },
+      { $set: { sellerNetPaise: offer.promotedSellerNetPaise } },
+      { session },
+    );
+
+    so.sellerId = offer.promotedSellerId;
+    so.state = 'po_released';
+    await so.save({ session });
+    await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'po' } }, { session });
+
+    if (offer.deltaPaise > 0) {
+      // BR-021 — recovered from the ghosting seller's next settled lot, not
+      // from the buyer and not from the promoted seller.
+      await SellerDebit.create(
+        [
+          {
+            counterpartyId: offer.failedSellerId,
+            amountPaise: offer.deltaPaise,
+            reason: `WF-11 absorption on ${so.soNo} — a dearer replacement seller was promoted after this seller's supply failure.`,
+          },
+        ],
+        { session, ordered: true },
+      );
+    }
+
+    offer.status = 'accepted';
+    offer.decidedAt = now;
+    await offer.save({ session });
+
+    await writeChainEvent(
+      {
+        chainId: so.chainId as Types.ObjectId,
+        type: 'promotion_accepted',
+        refCollection: 'po',
+        refId: po._id as Types.ObjectId,
+        actorId: buyerCounterpartyId,
+        actorType: 'counterparty',
+        summary: `${so.soNo} — buyer accepted the replacement seller. PO re-released; 48h dispatch clock restarted.`,
+      },
+      session,
+    );
+    await writeAuditLog(
+      {
+        actorId: buyerCounterpartyId,
+        actorType: 'counterparty',
+        entity: 'so',
+        entityId: so._id as Types.ObjectId,
+        field: 'promotion_accepted',
+        newValue: { promotedSellerId: offer.promotedSellerId.toString() },
+        correlationId,
+      },
+      session,
+    );
+  });
+}
+
+/** BR-021 — silence and an explicit decline resolve identically: full refund, ask restored. */
+export async function rejectPromotionOffer(
+  soId: string,
+  buyerCounterpartyId: string,
+): Promise<void> {
+  const so = await So.findById(soId);
+  if (!so) throw new AppError({ code: 'NOT_FOUND', messageEn: 'SO not found.' });
+  const buyer = await Buyer.findById(so.buyerId);
+  if (!buyer || (buyer.counterpartyId as Types.ObjectId).toString() !== buyerCounterpartyId) {
+    throw new AppError({ code: 'PERMISSION_DENIED', messageEn: 'Not your order.' });
+  }
+  const offer = await PromotionOffer.findOne({ soId: so._id, status: 'pending' });
+  if (!offer) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'There is no pending replacement offer on this order.',
+    });
+  }
+  await settlePromotionAsRefund(offer, so, 'rejected');
+}
+
+/**
+ * Shared by an explicit decline and a lazy expiry check (there is no
+ * scheduled job walking pending offers — same "on-demand, not scheduled"
+ * gap class already flagged on the three payout runs and the 7-day
+ * auto-close; `getPromotionOffer`-style reads should call this first when
+ * they find a `pending` offer whose `expiresAt` has passed).
+ */
+async function settlePromotionAsRefund(
+  offer: InstanceType<typeof PromotionOffer>,
+  so: InstanceType<typeof So>,
+  outcome: 'rejected' | 'expired',
+): Promise<void> {
+  await refundSoInFull(
+    so,
+    'supply_failure_full',
+    `${so.soNo} — buyer ${outcome === 'rejected' ? 'declined' : 'did not respond to'} the replacement seller within 24h; full refund of ₹${so.totalPaise / 100} raised (BR-021).`,
+    (so.buyerId as Types.ObjectId).toString(),
+    'counterparty',
+  );
+  offer.status = outcome;
+  offer.decidedAt = new Date();
+  await offer.save();
+}
+
+/** Staff/worklist visibility helper — resolves any offer whose 24h has lapsed. */
+export async function resolveExpiredPromotionOffers(): Promise<number> {
+  const expired = await PromotionOffer.find({ status: 'pending', expiresAt: { $lt: new Date() } });
+  for (const offer of expired) {
+    const so = await So.findById(offer.soId);
+    if (so) await settlePromotionAsRefund(offer, so, 'expired');
+  }
+  return expired.length;
 }
 
 export async function transitionToBilledInMarg(soId: string): Promise<void> {

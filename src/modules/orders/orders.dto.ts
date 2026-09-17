@@ -46,6 +46,11 @@ const SO_STATE_TO_RUNG: Record<SoState, OrderRung> = {
   closed: 'closed',
   cancelled: 'stopped',
   supply_failed: 'stopped',
+  // M6/WF-11 — a replacement seller is being arranged; not stopped (a
+  // resolution is actively in flight) and not yet a real "seller confirmed"
+  // either. Closest existing rung until IC-14's own screen (a dedicated
+  // interstitial, not a ladder state) fully replaces the need for one here.
+  promotion_offered: 'seller_confirmed',
   disputed: 'stopped',
 };
 

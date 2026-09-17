@@ -160,6 +160,15 @@ export async function commitToPool(
 ): Promise<{ poolId: string; isBinding: boolean }> {
   const buyer = await requireActiveBuyer(buyerCounterpartyId);
   const counterparty = await Counterparty.findById(buyer.counterpartyId);
+  if (counterparty?.status === 'blacklisted') {
+    // QR-015 — blacklist blocks new pool joins. `counterparty` is already in
+    // hand here, so this reads it directly rather than calling
+    // assertCounterpartyActive and re-fetching the same document.
+    throw new AppError({
+      code: 'ACCOUNT_NOT_ACTIVE',
+      messageEn: 'This account is blocked. Call the sales desk for help.',
+    });
+  }
   const pool = await Pool.findById(poolId);
   if (!pool || !pool.isActive)
     throw new AppError({ code: 'POOL_CLOSED', messageEn: 'This pool is not open.' });
