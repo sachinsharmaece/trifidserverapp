@@ -25,6 +25,11 @@ const askSchema = new Schema(
       deliveryBand: { type: String, enum: DELIVERY_BANDS, default: null },
     },
     visibleToAllAt: { type: Date, required: true }, // BR-122 — the 4-working-hour head start ends here.
+    // M8 — set once the head start has been closed out: at creation when there was
+    // no head start to wait for, otherwise by the 5-minute head-start job.
+    // `null` means "still inside the head start". Visibility itself is computed
+    // from `visibleToAllAt`; this only records that the transition happened.
+    headStartOpenedAt: { type: Date, default: null },
     ttlAt: { type: Date, required: true }, // BR-120 — 30-day Open Demand TTL.
     state: { type: String, enum: ASK_STATES, required: true, default: 'open' },
     holdExpiresAt: { type: Date, default: null }, // BR-126 — starts at the first quote, never restarts.

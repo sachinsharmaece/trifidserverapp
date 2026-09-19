@@ -56,6 +56,14 @@ export const env = {
   whatsappPhoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID ?? 'replace-me',
   whatsappAccessToken: process.env.WHATSAPP_ACCESS_TOKEN ?? 'replace-me',
   whatsappApiVersion: process.env.WHATSAPP_API_VERSION ?? 'v21.0',
+  // Developer additions, not in ARCHITECTURE.md §10.1 — M8. The business account id
+  // is what Meta's template-status endpoint is keyed on (BR-295's hourly poll); the
+  // app secret signs inbound delivery-status webhooks; the verify token answers
+  // Meta's one-time webhook handshake. All default to 'replace-me' so nothing is
+  // ever sent or trusted until a real value is configured.
+  whatsappBusinessAccountId: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID ?? 'replace-me',
+  whatsappAppSecret: process.env.WHATSAPP_APP_SECRET ?? 'replace-me',
+  whatsappVerifyToken: process.env.WHATSAPP_VERIFY_TOKEN ?? 'replace-me',
 
   fileStorageEndpoint: process.env.FILE_STORAGE_ENDPOINT ?? 'http://localhost:9000',
   fileStorageBucket: process.env.FILE_STORAGE_BUCKET ?? 'trifid-files',

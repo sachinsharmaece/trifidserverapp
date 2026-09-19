@@ -14,6 +14,7 @@ import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { isValidGstin, isValidIfsc } from '../../shared/validators.js';
 import { encryptAccountNumber } from '../../shared/encryption.js';
+import { enqueueNotification } from '../notification/notification.outbox.js';
 import { toBankDetailDto, type BankDetailDto } from './onboarding.dto.js';
 
 export interface StaffActor {
@@ -355,6 +356,16 @@ export async function approveBuyer(
     counterparty.status = 'active';
     await counterparty.save({ session });
 
+    await enqueueNotification(
+      {
+        counterpartyId: counterparty._id as Types.ObjectId,
+        templateKey: 'registration_invite',
+        params: { outcome: 'approved' },
+        correlationId: actor.correlationId,
+      },
+      session,
+    );
+
     await writeAuditLog(
       {
         actorId: actor.employeeId,
@@ -449,6 +460,16 @@ export async function approveSeller(
     counterparty.status = 'active';
     await counterparty.save({ session });
 
+    await enqueueNotification(
+      {
+        counterpartyId: counterparty._id as Types.ObjectId,
+        templateKey: 'registration_invite',
+        params: { outcome: 'approved' },
+        correlationId: actor.correlationId,
+      },
+      session,
+    );
+
     await writeAuditLog(
       {
         actorId: actor.employeeId,
@@ -482,19 +503,36 @@ export async function rejectRegistration(
     });
   }
 
-  counterparty.status = 'rejected';
-  await counterparty.save();
+  // TD-004 — the rejection, its audit line and the notification API-015 promises
+  // ("Fires a notification") commit together.
+  await withTransaction(async (session) => {
+    counterparty.status = 'rejected';
+    await counterparty.save({ session });
 
-  await writeAuditLog({
-    actorId: actor.employeeId,
-    actorType: 'staff',
-    entity: 'counterparty',
-    entityId: counterparty._id as Types.ObjectId,
-    field: 'status',
-    oldValue: 'pending',
-    newValue: 'rejected',
-    reason,
-    correlationId: actor.correlationId,
+    await enqueueNotification(
+      {
+        counterpartyId: counterparty._id as Types.ObjectId,
+        templateKey: 'registration_invite',
+        params: { outcome: 'rejected' }, // A coded outcome only — the free-text reason stays internal.
+        correlationId: actor.correlationId,
+      },
+      session,
+    );
+
+    await writeAuditLog(
+      {
+        actorId: actor.employeeId,
+        actorType: 'staff',
+        entity: 'counterparty',
+        entityId: counterparty._id as Types.ObjectId,
+        field: 'status',
+        oldValue: 'pending',
+        newValue: 'rejected',
+        reason,
+        correlationId: actor.correlationId,
+      },
+      session,
+    );
   });
 }
 

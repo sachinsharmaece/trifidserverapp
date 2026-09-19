@@ -16,6 +16,11 @@ import { AppError } from '../../shared/errors.js';
 import type { Paise } from '../../shared/money.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { writeChainEvent } from '../chain/chain.events.js';
+import {
+  enqueueNotification,
+  counterpartyIdForBuyer,
+  paiseToRupeesText,
+} from '../notification/notification.outbox.js';
 import { encryptAccountNumber, decryptAccountNumber } from '../../shared/encryption.js';
 import { isBankDetailPayable } from '../onboarding/onboarding.service.js';
 import {
@@ -339,6 +344,70 @@ export async function totalBuyerDebtorsPaise(): Promise<Paise> {
 }
 
 // ---------------------------------------------------------------------------
+// BR-026 — buyer money is a liability until delivered. A standing figure, never stored.
+// ---------------------------------------------------------------------------
+
+// An order in one of these states has been paid in full (INV-01: a PO only
+// releases on full payment) and the goods have not yet been delivered.
+const PAID_UNDELIVERED_SO_STATES = [
+  'po_released',
+  'dispatched_leg1',
+  'at_indore',
+  'inspected',
+  'billed_in_marg',
+  'dispatched_leg2',
+  'promotion_offered',
+] as const;
+
+export interface BuyerMoneyHeld {
+  heldPaise: Paise;
+  undeliveredOrdersPaise: Paise;
+  pendingRefundsPaise: Paise;
+  formula: string;
+}
+
+/**
+ * "That single number is what a bad week looks like before it arrives"
+ * (CH §10.16). Order value of every order paid in full and not yet delivered,
+ * plus every refund raised and not yet released — money we hold that the buyer
+ * has not yet received goods or a refund for.
+ *
+ * A refund whose order is `cancelled` is left out: `resolvePoolShortfall`
+ * cancels unpaid orders and raises a refund row against them, and counting
+ * that as money held would overstate the figure (see the M8 report — that
+ * refund looks suspect in its own right, and is not changed here).
+ */
+export async function getBuyerMoneyHeld(): Promise<BuyerMoneyHeld> {
+  const undelivered = await So.find({ state: { $in: [...PAID_UNDELIVERED_SO_STATES] } }).select(
+    'totalPaise',
+  );
+  const undeliveredOrdersPaise = undelivered.reduce((sum, so) => sum + so.totalPaise, 0);
+
+  const pendingRefunds = await Refund.find({
+    state: { $in: ['payable', 'in_batch', 'held_mismatch'] },
+  });
+  const cancelledChainIds = new Set(
+    (
+      await So.find({
+        chainId: { $in: pendingRefunds.map((r) => r.chainId) },
+        state: 'cancelled',
+      }).select('chainId')
+    ).map((so) => (so.chainId as Types.ObjectId).toString()),
+  );
+  const pendingRefundsPaise = pendingRefunds
+    .filter((refund) => !cancelledChainIds.has((refund.chainId as Types.ObjectId).toString()))
+    .reduce((sum, refund) => sum + refund.amountPaise, 0);
+
+  return {
+    heldPaise: undeliveredOrdersPaise + pendingRefundsPaise,
+    undeliveredOrdersPaise,
+    pendingRefundsPaise,
+    formula:
+      'Order value of every order paid in full and not yet delivered, plus every refund raised and not yet released.',
+  };
+}
+
+// ---------------------------------------------------------------------------
 // BR-017/INV-17 — payability, and BR-016/INV-16 — maker–checker on release
 // ---------------------------------------------------------------------------
 
@@ -538,6 +607,16 @@ export async function releasePaymentRun(
             actorId: actor.employeeId,
             actorType: 'staff',
             summary: `Refund of ₹${item.amountPaise / 100} released.`,
+          },
+          session,
+        );
+        // CH §21.8 #11 — "Refund on the run."
+        await enqueueNotification(
+          {
+            counterpartyId: await counterpartyIdForBuyer(item.partyId, session),
+            templateKey: 'refund_released',
+            params: { amountRupees: paiseToRupeesText(item.amountPaise) },
+            correlationId: actor.correlationId,
           },
           session,
         );

@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import * as purchaseService from './purchase.service.js';
+import { getFunnelReport as getFunnelReportFromService } from './purchase.funnel.js';
 import { nonOrderReasonSchema } from './purchase.validation.js';
 
 function ok(res: Response, req: Request, data: unknown, status = 200): void {
@@ -41,4 +42,8 @@ export async function getReturnNoteAgeing(req: Request, res: Response): Promise<
 
 export async function getSellerRecoveryQueue(req: Request, res: Response): Promise<void> {
   ok(res, req, await purchaseService.getSellerRecoveryQueue());
+}
+
+export async function getFunnelReport(req: Request, res: Response): Promise<void> {
+  ok(res, req, await getFunnelReportFromService());
 }

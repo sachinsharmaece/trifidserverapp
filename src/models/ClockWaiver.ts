@@ -19,4 +19,8 @@ const clockWaiverSchema = new Schema(
 );
 
 export type ClockWaiverDocument = InferSchemaType<typeof clockWaiverSchema>;
-export const ClockWaiver = model<ClockWaiverDocument>('ClockWaiver', clockWaiverSchema, 'clock_waiver');
+export const ClockWaiver = model<ClockWaiverDocument>(
+  'ClockWaiver',
+  clockWaiverSchema,
+  'clock_waiver',
+);

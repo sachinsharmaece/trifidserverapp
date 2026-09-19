@@ -18,7 +18,11 @@ export const dispatchLeg1Schema = z
   .superRefine((input, ctx) => {
     if (input.mode === 'transport') {
       if (!input.transporter) {
-        ctx.addIssue({ code: 'custom', path: ['transporter'], message: 'Transporter is required.' });
+        ctx.addIssue({
+          code: 'custom',
+          path: ['transporter'],
+          message: 'Transporter is required.',
+        });
       }
       if (!input.lr) {
         ctx.addIssue({ code: 'custom', path: ['lr'], message: 'LR number is required (BR-176).' });

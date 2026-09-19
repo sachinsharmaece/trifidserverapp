@@ -14,6 +14,11 @@ import { ClockWaiver } from '../../models/ClockWaiver.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { getReturnNoteAgeing } from '../desk/purchase/purchase.service.js';
+import { withTransaction } from '../../db/transaction.js';
+import {
+  enqueueNotification,
+  counterpartyIdForSeller,
+} from '../notification/notification.outbox.js';
 
 export interface StaffActor {
   employeeId: string;
@@ -264,36 +269,68 @@ export async function grantBulkLifeline(
     failed: false,
   });
   const extensionMs = extensionHours * 60 * 60 * 1000;
-  let extendedPoCount = 0;
-  let newDispatchDueDate = new Date();
-  for (const po of openPos) {
-    po.dispatchDueDate = new Date(po.dispatchDueDate.getTime() + extensionMs);
-    newDispatchDueDate = po.dispatchDueDate;
-    await po.save();
-    extendedPoCount += 1;
-  }
 
-  const waiver = await ClockWaiver.create({
-    entityIds: openPos.map((po) => po._id),
-    hoursExtended: extensionHours,
-    reason,
-    raisedBy: actor.employeeId,
-    approvedBy: actor.checkerEmployeeId,
+  // TD-004 — every clock extension, the waiver record and every affected
+  // seller's `lifeline_granted` commit together (this loop was not transactional
+  // before M8; a failure halfway would have left some clocks extended and no waiver).
+  return withTransaction(async (session) => {
+    let extendedPoCount = 0;
+    let newDispatchDueDate = new Date();
+    for (const po of openPos) {
+      po.dispatchDueDate = new Date(po.dispatchDueDate.getTime() + extensionMs);
+      newDispatchDueDate = po.dispatchDueDate;
+      await po.save({ session });
+      extendedPoCount += 1;
+    }
+
+    const [waiver] = await ClockWaiver.create(
+      [
+        {
+          entityIds: openPos.map((po) => po._id),
+          hoursExtended: extensionHours,
+          reason,
+          raisedBy: actor.employeeId,
+          approvedBy: actor.checkerEmployeeId,
+        },
+      ],
+      { session, ordered: true },
+    );
+    if (!waiver) throw new Error('ClockWaiver.create returned no document.');
+
+    // CH §21.8 #12 — "A clock extended." One message per affected seller, however
+    // many of their POs moved. Only the dispatch clock exists to extend (BR-234, see
+    // above), so only sellers are told; the template's "Both" audience has no buyer-side
+    // clock to announce yet.
+    const sellerIds = new Set(openPos.map((po) => (po.sellerId as Types.ObjectId).toString()));
+    for (const sellerId of sellerIds) {
+      await enqueueNotification(
+        {
+          counterpartyId: await counterpartyIdForSeller(sellerId, session),
+          templateKey: 'lifeline_granted',
+          params: { extensionHours },
+          correlationId: actor.correlationId,
+        },
+        session,
+      );
+    }
+
+    await writeAuditLog(
+      {
+        actorId: actor.employeeId,
+        actorType: 'staff',
+        entity: 'clock_waiver',
+        entityId: waiver._id as Types.ObjectId,
+        field: 'dispatchDueDate',
+        newValue: { extensionHours, extendedPoCount, checkerEmployeeId: actor.checkerEmployeeId },
+        reason,
+        correlationId: actor.correlationId,
+      },
+      session,
+    );
+
+    return {
+      extendedPoCount,
+      newDispatchDueDate: newDispatchDueDate.toISOString(),
+    };
   });
-
-  await writeAuditLog({
-    actorId: actor.employeeId,
-    actorType: 'staff',
-    entity: 'clock_waiver',
-    entityId: waiver._id as Types.ObjectId,
-    field: 'dispatchDueDate',
-    newValue: { extensionHours, extendedPoCount, checkerEmployeeId: actor.checkerEmployeeId },
-    reason,
-    correlationId: actor.correlationId,
-  });
-
-  return {
-    extendedPoCount,
-    newDispatchDueDate: newDispatchDueDate.toISOString(),
-  };
 }

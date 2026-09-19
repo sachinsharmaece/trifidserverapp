@@ -12,7 +12,11 @@ import { Refund } from '../../models/Refund.js';
 import { So } from '../../models/So.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
-import { addHours } from '../../shared/clock.js';
+import { addHours, formatForDisplay } from '../../shared/clock.js';
+import {
+  enqueueNotification,
+  counterpartyIdForBuyer,
+} from '../notification/notification.outbox.js';
 import type { Paise } from '../../shared/money.js';
 import { createSoInSession } from '../chain/chain.service.js';
 import { computeBuyerFacingRatePaise } from '../listing/listing.service.js';
@@ -206,8 +210,8 @@ export async function commitToPool(
   // A joiner after trigger pays on joining, at the already-triggered rate,
   // within the same payment window as everyone else (BR-156).
   if (pool.status === 'triggered' && supplier) {
-    await withTransaction((session) =>
-      createSoInSession(
+    await withTransaction(async (session) => {
+      const { soNo } = await createSoInSession(
         {
           buyerId: (buyer._id as Types.ObjectId).toString(),
           sellerId: supplier.sellerId.toString(),
@@ -216,11 +220,22 @@ export async function commitToPool(
           sellerNetPaise: supplier.sellerNetPaise,
           placeOfSupply: 'intra_state',
           payDeadlineHours: PAY_WINDOW_HOURS,
+          skipPaymentDueNotice: true, // `pool_triggered` below is this SO's payment notice.
         },
         { employeeId: (buyer._id as Types.ObjectId).toString(), correlationId: `pool-${poolId}` },
         session,
-      ),
-    );
+      );
+      // CH §21.8 #6 — "Pay within 16 hours": a joiner after trigger pays on joining.
+      await enqueueNotification(
+        {
+          counterpartyId: buyer.counterpartyId as Types.ObjectId,
+          templateKey: 'pool_triggered',
+          params: { soNo, payBy: formatForDisplay(addHours(new Date(), PAY_WINDOW_HOURS)) },
+          correlationId: `pool-${poolId}`,
+        },
+        session,
+      );
+    });
   } else {
     await checkPoolThresholds(poolId);
   }
@@ -243,9 +258,28 @@ export async function checkPoolThresholds(poolId: string): Promise<void> {
   if (crossedThreshold && pool.status === 'open' && !pool.reconfirmRequestedAt) {
     // BR-154 — one re-confirmation request to every existing (still
     // non-binding) committer. New joiners from here on commit binding.
-    pool.status = 'reconfirm';
-    pool.reconfirmRequestedAt = new Date();
-    await pool.save();
+    // TD-004 — the threshold crossing and every `pool_75` commit together.
+    await withTransaction(async (session) => {
+      pool.status = 'reconfirm';
+      pool.reconfirmRequestedAt = new Date();
+      await pool.save({ session });
+
+      // CH §21.8 #5 — "Pool hits 75% — re-confirm or withdraw."
+      for (const commitment of commitments.filter((c) => !c.isBinding)) {
+        await enqueueNotification(
+          {
+            counterpartyId: await counterpartyIdForBuyer(
+              commitment.buyerId as Types.ObjectId,
+              session,
+            ),
+            templateKey: 'pool_75',
+            params: { poolId },
+            correlationId: `pool-${poolId}`,
+          },
+          session,
+        );
+      }
+    });
     return;
   }
 
@@ -277,7 +311,7 @@ async function triggerPool(poolId: string): Promise<void> {
         await commitment.save({ session });
         continue;
       }
-      const { soId } = await createSoInSession(
+      const { soId, soNo } = await createSoInSession(
         {
           buyerId: (commitment.buyerId as Types.ObjectId).toString(),
           sellerId: supplier.sellerId.toString(),
@@ -286,6 +320,7 @@ async function triggerPool(poolId: string): Promise<void> {
           sellerNetPaise: supplier.sellerNetPaise,
           placeOfSupply: 'intra_state',
           payDeadlineHours: PAY_WINDOW_HOURS,
+          skipPaymentDueNotice: true, // `pool_triggered` below is this SO's payment notice.
         },
         {
           employeeId: (commitment.buyerId as Types.ObjectId).toString(),
@@ -295,6 +330,21 @@ async function triggerPool(poolId: string): Promise<void> {
       );
       commitment.soId = soId as unknown as Types.ObjectId;
       await commitment.save({ session });
+
+      // BR-155 — inside the commit handler, at the threshold crossing, in the same
+      // transaction. CH §21.8 #6 — "Pay within 16 hours."
+      await enqueueNotification(
+        {
+          counterpartyId: await counterpartyIdForBuyer(
+            commitment.buyerId as Types.ObjectId,
+            session,
+          ),
+          templateKey: 'pool_triggered',
+          params: { soNo, payBy: formatForDisplay(addHours(new Date(), PAY_WINDOW_HOURS)) },
+          correlationId: `pool-${poolId}`,
+        },
+        session,
+      );
     }
 
     pool.status = 'triggered';

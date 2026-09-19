@@ -24,6 +24,11 @@ import { computeBuyerFacingRatePaise } from '../listing/listing.service.js';
 import { recordPulseEvent } from '../desk/sales/sales.service.js';
 import { getAgendaProducer, JOB_CONFIRM_PILE_FANOUT } from '../../worker/agendaProducer.js';
 import { runConfirmPileFanout } from './pileFanout.job.js';
+import { withTransaction } from '../../db/transaction.js';
+import {
+  enqueueNotification,
+  counterpartyIdForBuyer,
+} from '../notification/notification.outbox.js';
 
 const OPEN_DEMAND_TTL_DAYS = 30; // BR-120.
 const HEAD_START_HOURS = 4; // BR-122, working hours only (BR-231).
@@ -51,6 +56,16 @@ async function anyTrustedOrCommittedSellerExists(): Promise<boolean> {
   return count > 0;
 }
 
+/**
+ * BR-122 / BR-231 — when an ask opens to the whole board. With a Trusted or
+ * Committed seller in scope: four WORKING hours (09:30–19:00 IST, Mon–Sat)
+ * after it is raised. Otherwise immediately. Pure, so the boundary cases (a
+ * Saturday-evening ask, a Sunday) are tested directly.
+ */
+export function computeVisibleToAllAt(raisedAt: Date, hasHeadStartSeller: boolean): Date {
+  return hasHeadStartSeller ? addWorkingHours(raisedAt, HEAD_START_HOURS) : raisedAt;
+}
+
 interface RaiseAskInput {
   skuId?: string;
   productId?: string;
@@ -72,7 +87,7 @@ export async function raiseAsk(
 
   const now = new Date();
   const hasHeadStartSeller = await anyTrustedOrCommittedSellerExists();
-  const visibleToAllAt = hasHeadStartSeller ? addWorkingHours(now, HEAD_START_HOURS) : now;
+  const visibleToAllAt = computeVisibleToAllAt(now, hasHeadStartSeller);
 
   const ask = await Ask.create({
     buyerId: buyer._id,
@@ -82,6 +97,9 @@ export async function raiseAsk(
     qty: input.qty,
     conditionRequirement: input.conditionRequirement,
     visibleToAllAt,
+    // No head start to wait for → already open to the whole board, nothing for
+    // the head-start job to do. Otherwise `null` until that job closes it out.
+    headStartOpenedAt: hasHeadStartSeller ? null : now,
     ttlAt: addHours(now, OPEN_DEMAND_TTL_DAYS * 24),
     state: 'open',
   });
@@ -335,33 +353,53 @@ export async function postQuote(
     });
   }
   const now = new Date();
-  const quote = await Quote.create({
-    askId: ask._id,
-    sellerId: seller._id,
-    ratePaiseForIndore: input.ratePaiseForIndore,
-    qtyAvailable: input.qtyAvailable,
-    conditionSet: {
-      expiryBand: input.expiryBand,
-      expiryExact: input.expiryExact,
-      deliveryBand: input.deliveryBand,
-      provenance: input.provenance,
-      batch: input.batch ?? null,
-    },
-    daysToIndore: input.daysToIndore,
-    bindingUntil: addHours(now, BUYER_HOLD_HOURS),
-    status: 'live',
-    gapCodes: computeGapCodes(ask, input),
-  });
+  // TD-004 — the quote, the ask's state change and `rate_ready` commit together.
+  return withTransaction(async (session) => {
+    const [quote] = await Quote.create(
+      [
+        {
+          askId: ask._id,
+          sellerId: seller._id,
+          ratePaiseForIndore: input.ratePaiseForIndore,
+          qtyAvailable: input.qtyAvailable,
+          conditionSet: {
+            expiryBand: input.expiryBand,
+            expiryExact: input.expiryExact,
+            deliveryBand: input.deliveryBand,
+            provenance: input.provenance,
+            batch: input.batch ?? null,
+          },
+          daysToIndore: input.daysToIndore,
+          bindingUntil: addHours(now, BUYER_HOLD_HOURS),
+          status: 'live',
+          gapCodes: computeGapCodes(ask, input),
+        },
+      ],
+      { session, ordered: true },
+    );
+    if (!quote) throw new Error('Quote.create returned no document.');
 
-  if (ask.state === 'open') {
-    ask.state = 'quoted';
-    if (!ask.holdExpiresAt) {
-      ask.holdExpiresAt = addHours(now, BUYER_HOLD_HOURS); // BR-126 — first quote only, never restarts.
+    if (ask.state === 'open') {
+      ask.state = 'quoted';
+      if (!ask.holdExpiresAt) {
+        ask.holdExpiresAt = addHours(now, BUYER_HOLD_HOURS); // BR-126 — first quote only, never restarts.
+      }
+      await ask.save({ session });
+
+      // CH §21.8 #2 — "First quote lands on his ask." Only the first quote flips the
+      // ask from `open`, so this fires once per ask, never once per quote.
+      await enqueueNotification(
+        {
+          counterpartyId: await counterpartyIdForBuyer(ask.buyerId as Types.ObjectId, session),
+          templateKey: 'rate_ready',
+          params: { askId: (ask._id as Types.ObjectId).toString() },
+        },
+        session,
+      );
     }
-    await ask.save();
-  }
 
-  return { quoteId: (quote._id as Types.ObjectId).toString() };
+    return { quoteId: (quote._id as Types.ObjectId).toString() };
+  });
 }
 
 /** API-046. BR-063 — rank only on closed quotes; the winning rate is in no field. */
@@ -548,9 +586,25 @@ export async function requotePile(sellerCounterpartyId: string, pileId: string):
       messageEn: 'This pile has already been decided.',
     });
   }
-  pile.decision = 'requoted';
-  pile.decidedAt = new Date();
-  await pile.save();
+  // TD-004 — the decision and every buyer's `seller_requoted` commit together.
+  await withTransaction(async (session) => {
+    pile.decision = 'requoted';
+    pile.decidedAt = new Date();
+    await pile.save({ session });
+
+    // CH §21.8 #7 — "Seller revised — accept or cancel." One message per buyer on the pile.
+    const requests = await PileRequest.find({ pileId: pile._id }).session(session);
+    for (const request of requests) {
+      await enqueueNotification(
+        {
+          counterpartyId: await counterpartyIdForBuyer(request.buyerId as Types.ObjectId, session),
+          templateKey: 'seller_requoted',
+          params: { pileId: (pile._id as Types.ObjectId).toString() },
+        },
+        session,
+      );
+    }
+  });
 }
 
 /** API-050 decline. Free before payment (BR-035); listing line qty and pile are cleared. */

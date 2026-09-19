@@ -6,7 +6,8 @@ import { Schema, model, type InferSchemaType } from 'mongoose';
  * into one comparison only where all four match, on the same SKU.
  *
  * `deliveryBand` — answered `QR-012` (M4 session, `BR-104`): two values,
- * not four, tied to provenance. `QR-034` (this session) relabels the same
+ * not four, and independent of provenance (D-04 — any band on any provenance;
+ * the earlier "tied to provenance" wording was a misreading). `QR-034` (this session) relabels the same
  * stored value as end-to-end on the buyer surface without changing what is
  * stored or how the pool match key works — see `QR-043`.
  *
