@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import * as salesService from './sales.service.js';
+import type { ComplaintDestination } from './sales.service.js';
 import { requestMspSchema, respondToMspSchema } from './sales.validation.js';
 
 function ok(res: Response, req: Request, data: unknown, status = 200): void {
@@ -19,7 +20,7 @@ export async function getRetention(req: Request, res: Response): Promise<void> {
 }
 
 export async function getComplaintQueue(req: Request, res: Response): Promise<void> {
-  const destination = req.query.destination as 'purchase' | 'sales' | 'logistics' | undefined;
+  const destination = req.query.destination as ComplaintDestination | undefined;
   ok(res, req, await salesService.getComplaintQueue(destination));
 }
 

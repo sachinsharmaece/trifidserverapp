@@ -28,6 +28,11 @@ const poSchema = new Schema(
     dispatchDueDate: { type: Date, required: true },
     promisedOutOfIndoreBy: { type: Date, required: true },
     received: { type: Boolean, required: true, default: false },
+    // New — M7. The hub-position anchor: when goods physically arrived,
+    // distinct from `inspected` (BR-184's separate signed act) and from
+    // `Movement`'s own `dispatchedAt` on leg 1. Feeds hub dwell-time and the
+    // BR-177 18:00 cut-off, neither of which existed before M7.
+    receivedAt: { type: Date, default: null },
     inspected: { type: Boolean, required: true, default: false },
     billed: { type: Boolean, required: true, default: false },
     hold: { type: Boolean, required: true, default: false },

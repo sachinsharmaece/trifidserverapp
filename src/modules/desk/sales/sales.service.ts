@@ -272,21 +272,26 @@ export async function getRetentionCohorts(monthsBack = 6): Promise<RetentionCoho
 // Complaint routing — BR-201, five categories, each routed on intake.
 // ---------------------------------------------------------------------------
 
-export type ComplaintDestination = 'purchase' | 'sales' | 'logistics';
+export type ComplaintDestination = 'controller' | 'unhandled';
 
-// This session's own coded mapping, flagged rather than invented —
-// BUSINESS_RULES.md's BR-201 defines the five categories but not a
-// destination table. Seller-fault categories route to Purchase (the desk
-// with the seller relationship); a quantity dispute to Sales (the desk with
-// the buyer relationship); transport/inspection-caused categories to
-// Logistics, whose own desk is M7 — until it exists these surface on a
-// general, Controller-visible queue instead of silently nowhere.
+// Corrected M7 (QR-048) — the M6 session's own coded mapping sent categories
+// straight to an execution desk (Purchase/Sales/Logistics), but
+// BUSINESS_RULES.md's BR-206 is explicit: "Controller decides disputes.
+// Sales owns the conversation with the buyer, Purchase owns any recovery
+// from the seller, neither sees the other's number." Deciding was never a
+// desk's own call to make — `modules/controller`'s dispute queue is now the
+// single place fault gets decided for all four of these; Sales's complaint
+// queue below only reads the outcome for the buyer conversation, and
+// `desk/purchase`'s `getSellerRecoveryQueue` reads it for seller recovery.
+// `transit_damage` is deliberately excluded from `'controller'` — BR-180's
+// strike-on-refusal clause is untouched this session (`QR-050`), so it stays
+// `'unhandled'`: visible on the exception view, actionable by nobody yet.
 const COMPLAINT_ROUTING: Record<ComplaintCategory, ComplaintDestination> = {
-  transit_damage: 'logistics',
-  hidden_defect_sealed_case: 'purchase',
-  wrong_declared_by_seller: 'purchase',
-  wrong_missed_by_dock: 'logistics',
-  short_count_on_arrival: 'sales',
+  transit_damage: 'unhandled',
+  hidden_defect_sealed_case: 'controller',
+  wrong_declared_by_seller: 'controller',
+  wrong_missed_by_dock: 'controller',
+  short_count_on_arrival: 'controller',
 };
 
 export function destinationForComplaint(category: ComplaintCategory): ComplaintDestination {
@@ -300,6 +305,10 @@ export interface ComplaintQueueItem {
   destination: ComplaintDestination;
   state: string;
   createdAt: string;
+  // M7/BR-206 — the buyer-conversation half of a Controller decision. Never
+  // the seller's identity or net (that is `desk/purchase`'s own read).
+  disposition: string | null;
+  resolutionNote: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -382,10 +391,13 @@ export async function getMspQueue(): Promise<
   }));
 }
 
+// M7 — widened from `state: 'open'` alone: Sales's buyer-conversation duty
+// (BR-206) continues after Controller decides, so a resolved complaint stays
+// visible here too, now carrying the outcome to relay to the buyer.
 export async function getComplaintQueue(
   destination?: ComplaintDestination,
 ): Promise<ComplaintQueueItem[]> {
-  const complaints = await Complaint.find({ state: 'open' }).sort({ createdAt: -1 });
+  const complaints = await Complaint.find().sort({ createdAt: -1 }).limit(200);
   return complaints
     .map((c) => ({
       complaintId: (c._id as Types.ObjectId).toString(),
@@ -394,6 +406,8 @@ export async function getComplaintQueue(
       destination: destinationForComplaint(c.category as ComplaintCategory),
       state: c.state,
       createdAt: (c as unknown as { createdAt: Date }).createdAt.toISOString(),
+      disposition: c.disposition ?? null,
+      resolutionNote: c.resolutionNote ?? null,
     }))
     .filter((c) => !destination || c.destination === destination);
 }

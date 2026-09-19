@@ -25,6 +25,8 @@ import { ordersRouter } from './modules/orders/orders.routes.js';
 import { conductRouter } from './modules/conduct/conduct.routes.js';
 import { purchaseRouter } from './modules/desk/purchase/purchase.routes.js';
 import { salesRouter } from './modules/desk/sales/sales.routes.js';
+import { controllerRouter } from './modules/controller/controller.routes.js';
+import { logisticsRouter } from './modules/logistics/logistics.routes.js';
 
 const API_PREFIX = '/api/v1';
 
@@ -64,6 +66,8 @@ export function createApp(): Express {
   app.use(API_PREFIX, conductRouter);
   app.use(API_PREFIX, purchaseRouter);
   app.use(API_PREFIX, salesRouter);
+  app.use(API_PREFIX, controllerRouter);
+  app.use(API_PREFIX, logisticsRouter);
 
   app.use(notFound);
   app.use(errorHandler);

@@ -51,3 +51,11 @@ purchaseRouter.get(
   requirePermission(PERMISSIONS.DEMAND_READ),
   controller.getReturnNoteAgeing,
 );
+// New — M7, BR-206. The seller-recovery half of a Controller-decided
+// dispute — never the buyer, never the buyer's note (see purchase.service.ts).
+purchaseRouter.get(
+  '/staff/purchase/dispute-recovery',
+  authenticate,
+  requirePermission(PERMISSIONS.DISPUTE_RECOVERY_READ),
+  controller.getSellerRecoveryQueue,
+);

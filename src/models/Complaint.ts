@@ -14,6 +14,14 @@ export const COMPLAINT_CATEGORIES = [
 ] as const;
 export type ComplaintCategory = (typeof COMPLAINT_CATEGORIES)[number];
 
+// New — M7, BR-206: "Controller decides disputes." A decision assigns fault;
+// downstream execution (Purchase recovering from a seller, Sales carrying
+// the outcome back to the buyer) reads this, never decides it independently.
+// `transit_damage` never reaches a decision this session (QR-050) — see
+// `modules/desk/sales/sales.service.ts`'s routing table.
+export const COMPLAINT_DISPOSITIONS = ['seller_fault', 'dock_fault', 'no_fault'] as const;
+export type ComplaintDisposition = (typeof COMPLAINT_DISPOSITIONS)[number];
+
 const complaintSchema = new Schema(
   {
     soId: { type: Schema.Types.ObjectId, ref: 'So', required: true },
@@ -21,6 +29,11 @@ const complaintSchema = new Schema(
     category: { type: String, enum: COMPLAINT_CATEGORIES, required: true },
     note: { type: String, default: null },
     state: { type: String, enum: ['open', 'resolved'], required: true, default: 'open' },
+    disposition: { type: String, enum: COMPLAINT_DISPOSITIONS, default: null },
+    decidedByEmployeeId: { type: Schema.Types.ObjectId, default: null },
+    decidedAt: { type: Date, default: null },
+    resolutionNote: { type: String, default: null },
+    debitNoteId: { type: Schema.Types.ObjectId, ref: 'DebitNote', default: null },
   },
   { timestamps: true },
 );

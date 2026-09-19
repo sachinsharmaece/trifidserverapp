@@ -38,3 +38,7 @@ export async function postNonOrderReason(req: Request, res: Response): Promise<v
 export async function getReturnNoteAgeing(req: Request, res: Response): Promise<void> {
   ok(res, req, await purchaseService.getReturnNoteAgeing());
 }
+
+export async function getSellerRecoveryQueue(req: Request, res: Response): Promise<void> {
+  ok(res, req, await purchaseService.getSellerRecoveryQueue());
+}
