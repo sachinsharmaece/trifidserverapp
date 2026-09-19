@@ -149,18 +149,6 @@ function assertShelfLifeMeetsFloor(expiryBand: ExpiryBand, expiryExact: string |
   }
 }
 
-function assertProvenanceDeliveryMatch(provenance: Provenance, deliveryBand: DeliveryBand): void {
-  // BR-104 — provenance constrains which delivery band is selectable.
-  const allowed: Record<Provenance, DeliveryBand> = { auth: '48h', company: '2-5d' };
-  if (allowed[provenance] !== deliveryBand) {
-    throw new AppError({
-      code: 'PROVENANCE_DELIVERY_MISMATCH',
-      messageEn: `Provenance "${provenance}" only allows the "${allowed[provenance]}" delivery band.`,
-      field: 'deliveryBand',
-    });
-  }
-}
-
 function assertBatchRequiredForAuth(provenance: Provenance, batch: string | undefined): void {
   // BR-105 — batch is mandatory only on `auth` (My stock) listings.
   if (provenance === 'auth' && !batch) {
@@ -194,7 +182,6 @@ export async function createListing(
   }
   for (const line of input.lines) {
     assertShelfLifeMeetsFloor(line.expiryBand, line.expiryExact);
-    assertProvenanceDeliveryMatch(line.provenance, line.deliveryBand);
     assertBatchRequiredForAuth(line.provenance, line.batch);
     const sku = await Sku.findOne({ _id: line.skuId, productId: input.productId });
     if (!sku) {

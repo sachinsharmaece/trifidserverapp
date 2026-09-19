@@ -13,6 +13,7 @@ import { So } from '../../../models/So.js';
 import { Inspection } from '../../../models/Inspection.js';
 import { ReturnNote } from '../../../models/ReturnNote.js';
 import { PromotionOffer } from '../../../models/PromotionOffer.js';
+import { Complaint } from '../../../models/Complaint.js';
 import {
   NonOrderReason,
   SUPPLY_GAP_CODES,
@@ -310,6 +311,40 @@ export async function recordSupplyGapReason(
     recordedBy: actor.employeeId,
   });
   return { nonOrderReasonId: (row._id as Types.ObjectId).toString() };
+}
+
+// ---------------------------------------------------------------------------
+// Seller recovery — BR-206's other half of a Controller-decided dispute:
+// "Purchase owns any recovery from the seller... neither sees the other's
+// number." This reads only complaints Controller has already decided
+// `seller_fault`; it carries the seller and the debit note, never the buyer,
+// never the buyer's note, and never the disposition text Sales shows the
+// buyer (`desk/sales`'s `getComplaintQueue` is that side).
+// ---------------------------------------------------------------------------
+
+export interface SellerRecoveryItem {
+  complaintId: string;
+  sellerId: string;
+  debitNoteId: string | null;
+  decidedAt: string | null;
+}
+
+export async function getSellerRecoveryQueue(): Promise<SellerRecoveryItem[]> {
+  const complaints = await Complaint.find({ disposition: 'seller_fault' }).sort({ decidedAt: -1 });
+  const soIds = complaints.map((c) => c.soId);
+  const sos = await So.find({ _id: { $in: soIds } });
+  const soIdToSellerId = new Map(
+    sos.map((so) => [
+      (so._id as Types.ObjectId).toString(),
+      (so.sellerId as Types.ObjectId).toString(),
+    ]),
+  );
+  return complaints.map((c) => ({
+    complaintId: (c._id as Types.ObjectId).toString(),
+    sellerId: soIdToSellerId.get(c.soId.toString()) ?? '',
+    debitNoteId: c.debitNoteId ? c.debitNoteId.toString() : null,
+    decidedAt: c.decidedAt ? c.decidedAt.toISOString() : null,
+  }));
 }
 
 // ---------------------------------------------------------------------------

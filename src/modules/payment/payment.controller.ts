@@ -107,3 +107,16 @@ export async function getSellerLedger(req: Request, res: Response): Promise<void
   const ledgerPaise = await paymentService.computeSellerLedgerPaise(req.params.sellerId as string);
   ok(res, req, { ledgerPaise });
 }
+
+// New — M7, BR-023. 🏢 Accounts.
+export async function getGstUnfiledQueue(req: Request, res: Response): Promise<void> {
+  ok(res, req, await paymentService.getGstUnfiledQueue());
+}
+
+export async function postMarkSellerBillFiled(req: Request, res: Response): Promise<void> {
+  const result = await paymentService.markSellerBillFiled(
+    req.params.sellerBillId as string,
+    staffActor(req),
+  );
+  ok(res, req, result, 201);
+}

@@ -660,3 +660,50 @@ export async function getPurchaseRegister(): Promise<
     billed: po.billed,
   }));
 }
+
+/**
+ * New — M7, BR-023: "Seller bills are marked filed or unfiled and the
+ * unfiled list is a standing Accounts queue." `SellerBill.filed` has existed
+ * since M4 with nothing reading it — this is the one genuine new Accounts
+ * gap this milestone's own audit found; everything else already existed.
+ */
+export async function getGstUnfiledQueue(): Promise<
+  Array<{ sellerBillId: string; billNo: string; sellerId: string; totalPaise: Paise; date: string }>
+> {
+  const unfiled = await SellerBill.find({ booked: true, filed: false })
+    .sort({ date: 1 })
+    .limit(500);
+  return unfiled.map((bill) => ({
+    sellerBillId: (bill._id as Types.ObjectId).toString(),
+    billNo: bill.billNo,
+    sellerId: (bill.sellerId as Types.ObjectId).toString(),
+    totalPaise: bill.totalPaise,
+    date: bill.date.toISOString(),
+  }));
+}
+
+export async function markSellerBillFiled(
+  sellerBillId: string,
+  actor: { employeeId: string; correlationId: string },
+): Promise<{ filed: boolean }> {
+  const bill = await SellerBill.findById(sellerBillId);
+  if (!bill) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Seller bill not found.' });
+  if (bill.filed) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'This bill is already marked filed.',
+    });
+  }
+  bill.filed = true;
+  await bill.save();
+  await writeAuditLog({
+    actorId: actor.employeeId,
+    actorType: 'staff',
+    entity: 'seller_bill',
+    entityId: bill._id as Types.ObjectId,
+    field: 'filed',
+    newValue: { filed: true },
+    correlationId: actor.correlationId,
+  });
+  return { filed: true };
+}

@@ -51,6 +51,19 @@ export const PERMISSIONS = {
   RETENTION_READ: 'retention:read',
   MSP_RESPOND: 'msp:respond',
   COMPLAINT_READ: 'complaint:read',
+  // M7 additions — BUSINESS_RULES.md §10, §11, §14, §17.
+  LOGISTICS_READ: 'logistics:read',
+  TRANSPORTER_READ: 'transporter:read',
+  TRANSPORTER_WRITE: 'transporter:write',
+  CONSOLIDATION_WRITE: 'consolidation:write',
+  RETURN_NOTE_CLOSE: 'return_note:close',
+  GST_UNFILED_READ: 'gst_unfiled:read',
+  GST_MARK_FILED: 'gst_unfiled:mark_filed',
+  DISPUTE_READ: 'dispute:read',
+  DISPUTE_DECIDE: 'dispute:decide',
+  DISPUTE_RECOVERY_READ: 'dispute:recovery_read',
+  LIFELINE_GRANT: 'lifeline:grant',
+  EXCEPTION_READ: 'exception:read',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -81,6 +94,8 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.ABSORPTION_READ,
       PERMISSIONS.CONDUCT_RECORD,
       PERMISSIONS.CONDUCT_ADVANCE,
+      // M7 — the seller-recovery half of a Controller-decided dispute (BR-206).
+      PERMISSIONS.DISPUTE_RECOVERY_READ,
     ],
   },
   {
@@ -109,9 +124,19 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
   {
     key: 'transport_logistics',
     label: 'Transport & Logistics',
-    // Q9a — the dock operator. This role was seeded empty in M1/M2; M4 gives
-    // it its first real permissions.
-    permissionKeys: [PERMISSIONS.CHAIN_READ, PERMISSIONS.DOCK_INSPECT, PERMISSIONS.MOVEMENT_WRITE],
+    // Q9a — the dock operator. This role was seeded empty in M1/M2; M4 gave
+    // it its first real permissions. M7 gives it the full Logistics desk.
+    permissionKeys: [
+      PERMISSIONS.CHAIN_READ,
+      PERMISSIONS.DOCK_INSPECT,
+      PERMISSIONS.MOVEMENT_WRITE,
+      PERMISSIONS.LOGISTICS_READ,
+      PERMISSIONS.TRANSPORTER_READ,
+      PERMISSIONS.TRANSPORTER_WRITE,
+      PERMISSIONS.CONSOLIDATION_WRITE,
+      PERMISSIONS.RETURN_NOTE_CLOSE,
+      PERMISSIONS.REGISTER_READ,
+    ],
   },
   {
     key: 'accounts',
@@ -127,6 +152,9 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.MARG_KEY,
       PERMISSIONS.DAY_CLOSE_RUN,
       PERMISSIONS.REGISTER_READ,
+      // M7 — BR-023's standing unfiled-bills queue.
+      PERMISSIONS.GST_UNFILED_READ,
+      PERMISSIONS.GST_MARK_FILED,
     ],
   },
   {
@@ -148,6 +176,14 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.REGISTER_READ,
       // M6 — BR-218's disagree queue is Controller-visible (QR-025).
       PERMISSIONS.CONDUCT_DISPUTES_READ,
+      // M7 — BR-206 dispute adjudication, BR-234's bulk lifeline, the
+      // cross-desk exception view.
+      PERMISSIONS.DISPUTE_READ,
+      PERMISSIONS.DISPUTE_DECIDE,
+      PERMISSIONS.LIFELINE_GRANT,
+      PERMISSIONS.EXCEPTION_READ,
+      PERMISSIONS.LOGISTICS_READ,
+      PERMISSIONS.GST_UNFILED_READ,
     ],
   },
   {

@@ -822,6 +822,16 @@ export async function transitionToSupplyFailed(
   }
 
   const now = new Date();
+  // QR-051, M7 Step 0 (deliberately not built or removed this session) — if
+  // the client answers WF-11's deviation note the other way (BR-131 read
+  // literally: the *promoted seller* must separately reconfirm before his
+  // own dispatch clock starts, not just the buyer accepting the
+  // substitution), the call to the candidate seller's own accept/decline
+  // step — `API-047`, `POST /quotes/:id/accept-promotion` · `/decline-promotion`,
+  // still undefined anywhere in this codebase — belongs right here, before
+  // `PromotionOffer` is created below, gating whether a buyer-facing offer is
+  // even raised. Left un-stubbed beyond this comment on purpose: adding a
+  // dead route or an unused model field would misrepresent this as started.
   const offer = await PromotionOffer.create({
     soId: so._id,
     poId,

@@ -334,14 +334,6 @@ export async function postQuote(
       messageEn: 'Batch is required for "My stock" (BR-105).',
     });
   }
-  const allowedDelivery: Record<Provenance, DeliveryBand> = { auth: '48h', company: '2-5d' };
-  if (allowedDelivery[input.provenance] !== input.deliveryBand) {
-    throw new AppError({
-      code: 'PROVENANCE_DELIVERY_MISMATCH',
-      messageEn: `Provenance "${input.provenance}" only allows the "${allowedDelivery[input.provenance]}" delivery band.`,
-    });
-  }
-
   const now = new Date();
   const quote = await Quote.create({
     askId: ask._id,

@@ -440,8 +440,18 @@ describe('M6 — the wall, re-verified for Purchase and Sales', () => {
 });
 
 describe('M6 — complaint routing (BR-201)', () => {
+  // Corrected M7 (QR-048/BR-206): "Controller decides disputes" — four of
+  // the five categories now route to Controller's own dispute queue, not
+  // straight to an execution desk; `transit_damage` is `'unhandled'` this
+  // session (QR-050 — BR-180's strike-on-refusal clause untouched).
   it('routes each of the five categories to a fixed destination', () => {
     const destinations = COMPLAINT_CATEGORIES.map((c) => salesService.destinationForComplaint(c));
-    expect(destinations).toEqual(['logistics', 'purchase', 'purchase', 'logistics', 'sales']);
+    expect(destinations).toEqual([
+      'unhandled',
+      'controller',
+      'controller',
+      'controller',
+      'controller',
+    ]);
   });
 });

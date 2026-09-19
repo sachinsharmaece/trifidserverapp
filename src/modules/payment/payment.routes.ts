@@ -101,3 +101,18 @@ paymentRouter.get(
   requirePermission(PERMISSIONS.REGISTER_READ),
   controller.getSellerLedger,
 );
+
+// New — M7, BR-023. 🏢 Accounts. The one genuine new Accounts gap this
+// milestone's own audit found — the field has existed since M4.
+paymentRouter.get(
+  '/staff/accounts/gst-unfiled',
+  authenticate,
+  requirePermission(PERMISSIONS.GST_UNFILED_READ),
+  controller.getGstUnfiledQueue,
+);
+paymentRouter.post(
+  '/staff/accounts/seller-bills/:sellerBillId/mark-filed',
+  authenticate,
+  requirePermission(PERMISSIONS.GST_MARK_FILED),
+  controller.postMarkSellerBillFiled,
+);
