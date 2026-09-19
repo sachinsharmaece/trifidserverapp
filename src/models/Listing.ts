@@ -20,6 +20,11 @@ const listingSchema = new Schema(
     pausedAt: { type: Date, default: null },
     lastConfirmedAt: { type: Date, default: null },
     deletedAt: { type: Date, default: null },
+    // M8, BR-108 — "one reminder fires shortly before it drops". Set by the daily
+    // listing-dropping job the first time it fires, and never cleared, so the
+    // reminder goes once per listing rather than once per day.
+    // (A relist starts a fresh window, so `relistListing` clears it.)
+    dropReminderSentAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

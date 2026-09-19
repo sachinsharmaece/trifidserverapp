@@ -22,6 +22,14 @@ const counterpartySchema = new Schema(
       required: true,
       default: 'pending',
     },
+    // BR-296 — the language a notification is sent in. Nothing sets it yet (the
+    // header toggle is not persisted server-side); every counterparty defaults
+    // to `en` until it is — see QR-053.
+    preferredLanguage: { type: String, enum: ['en', 'hi'], required: true, default: 'en' },
+    // BR-283 — the one-WhatsApp-message-per-week cap. Claimed atomically inside
+    // the same transaction as the outbox write (notification.outbox.ts), so the
+    // cap is enforced in code, not only documented.
+    lastWhatsAppQueuedAt: { type: Date, default: null },
     termsVersion: { type: String },
     termsAcceptedAt: { type: Date },
     // Referral code only, immutable, decays at 45 days (BR-330) — decay is

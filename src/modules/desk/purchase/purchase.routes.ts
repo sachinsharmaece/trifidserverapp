@@ -51,6 +51,14 @@ purchaseRouter.get(
   requirePermission(PERMISSIONS.DEMAND_READ),
   controller.getReturnNoteAgeing,
 );
+// New — M8, BR-275. Funnel and leak analytics: counts, hours and percentages only —
+// no rupee figure and no buyer identity (BR-067/BR-069), each metric carrying its own formula.
+purchaseRouter.get(
+  '/staff/purchase/funnel',
+  authenticate,
+  requirePermission(PERMISSIONS.FUNNEL_READ),
+  controller.getFunnelReport,
+);
 // New — M7, BR-206. The seller-recovery half of a Controller-decided
 // dispute — never the buyer, never the buyer's note (see purchase.service.ts).
 purchaseRouter.get(

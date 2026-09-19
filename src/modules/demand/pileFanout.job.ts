@@ -9,6 +9,10 @@ import { Counterparty } from '../../models/Counterparty.js';
 import { AppError } from '../../shared/errors.js';
 import { createSoInSession } from '../chain/chain.service.js';
 import { writeAuditLog } from '../../shared/audit.js';
+import {
+  enqueueNotification,
+  counterpartyIdForBuyer,
+} from '../notification/notification.outbox.js';
 
 /**
  * WF-05's actual fan-out, run by the worker process 5 seconds after
@@ -57,7 +61,7 @@ export async function runConfirmPileFanout(pileId: string): Promise<void> {
     };
 
     for (const request of requests) {
-      await createSoInSession(
+      const { soNo } = await createSoInSession(
         {
           buyerId: (request.buyerId as Types.ObjectId).toString(),
           sellerId: (seller._id as Types.ObjectId).toString(),
@@ -67,6 +71,20 @@ export async function runConfirmPileFanout(pileId: string): Promise<void> {
           placeOfSupply: 'intra_state', // Refined once M6's tax-jurisdiction lookup exists; see CHANGELOG.
         },
         actor,
+        session,
+      );
+
+      // WF-05 step 8 — "Write N notification outbox rows", inside this same transaction.
+      // CH §21.8 #3 — "Seller confirms supply." Queued AFTER createSoInSession's own
+      // `payment_due` for this buyer, so where the weekly cap (BR-283) allows only one
+      // message it is the money deadline that goes out, not this one — see QR-054.
+      await enqueueNotification(
+        {
+          counterpartyId: await counterpartyIdForBuyer(request.buyerId as Types.ObjectId, session),
+          templateKey: 'order_confirmed',
+          params: { soNo },
+          correlationId: actor.correlationId,
+        },
         session,
       );
     }

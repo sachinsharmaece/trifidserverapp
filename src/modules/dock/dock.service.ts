@@ -14,6 +14,10 @@ import { assertInspectionNotYetSubmitted } from '../chain/chain.guards.js';
 import { writeChainEvent } from '../chain/chain.events.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { transitionToInspected, transitionToSupplyFailed } from '../chain/chain.service.js';
+import {
+  enqueueNotification,
+  counterpartyIdForSeller,
+} from '../notification/notification.outbox.js';
 
 export interface StaffActor {
   employeeId: string;
@@ -54,27 +58,60 @@ export async function recordInspection(
     });
   }
 
-  const inspection = await Inspection.create({
-    poId: po._id,
-    casesAccepted: input.casesAccepted,
-    casesRejected: input.casesRejected,
-    reasons: input.reasons,
-    photoRefs: input.photoRefs,
-    signedBy: actor.employeeId,
-    signedAt: new Date(),
-  });
+  // TD-004 — the finding, its audit line and the seller's `inspection_outcome` commit together.
+  return withTransaction(async (session) => {
+    const [inspection] = await Inspection.create(
+      [
+        {
+          poId: po._id,
+          casesAccepted: input.casesAccepted,
+          casesRejected: input.casesRejected,
+          reasons: input.reasons,
+          photoRefs: input.photoRefs,
+          signedBy: actor.employeeId,
+          signedAt: new Date(),
+        },
+      ],
+      { session, ordered: true },
+    );
+    if (!inspection) throw new Error('Inspection.create returned no document.');
 
-  await writeAuditLog({
-    actorId: actor.employeeId,
-    actorType: 'staff',
-    entity: 'inspection',
-    entityId: inspection._id as Types.ObjectId,
-    field: 'create',
-    newValue: { casesAccepted: input.casesAccepted, casesRejected: input.casesRejected },
-    correlationId: actor.correlationId,
-  });
+    await writeAuditLog(
+      {
+        actorId: actor.employeeId,
+        actorType: 'staff',
+        entity: 'inspection',
+        entityId: inspection._id as Types.ObjectId,
+        field: 'create',
+        newValue: { casesAccepted: input.casesAccepted, casesRejected: input.casesRejected },
+        correlationId: actor.correlationId,
+      },
+      session,
+    );
 
-  return { inspectionId: inspection.id as string };
+    // CH §21.8 #15 — "Accepted, part rejected, whole lot rejected." The dock records the
+    // physical finding (BR-190), and that finding is what the seller is told.
+    await enqueueNotification(
+      {
+        counterpartyId: await counterpartyIdForSeller(po.sellerId as Types.ObjectId, session),
+        templateKey: 'inspection_outcome',
+        params: { poNo: po.poNo, outcome: describeInspectionOutcome(input) },
+        correlationId: actor.correlationId,
+      },
+      session,
+    );
+
+    return { inspectionId: inspection.id as string };
+  });
+}
+
+function describeInspectionOutcome(input: {
+  casesAccepted: number;
+  casesRejected: number;
+}): 'accepted' | 'part_rejected' | 'whole_lot_rejected' {
+  if (input.casesAccepted === 0) return 'whole_lot_rejected';
+  if (input.casesRejected > 0) return 'part_rejected';
+  return 'accepted';
 }
 
 /**

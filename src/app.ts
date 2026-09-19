@@ -27,6 +27,8 @@ import { purchaseRouter } from './modules/desk/purchase/purchase.routes.js';
 import { salesRouter } from './modules/desk/sales/sales.routes.js';
 import { controllerRouter } from './modules/controller/controller.routes.js';
 import { logisticsRouter } from './modules/logistics/logistics.routes.js';
+import { notificationRouter } from './modules/notification/notification.routes.js';
+import { founderRouter } from './modules/founder/founder.routes.js';
 
 const API_PREFIX = '/api/v1';
 
@@ -41,7 +43,15 @@ export function createApp(): Express {
       credentials: true,
     }),
   );
-  app.use(express.json());
+  // `verify` keeps the raw bytes alongside the parsed body: Meta's webhook
+  // signature (notification.controller.ts) is computed over exactly those bytes.
+  app.use(
+    express.json({
+      verify: (req, _res, buf) => {
+        (req as { rawBody?: Buffer }).rawBody = buf;
+      },
+    }),
+  );
   app.use(cookieParser());
 
   app.use(healthRouter);
@@ -68,6 +78,8 @@ export function createApp(): Express {
   app.use(API_PREFIX, salesRouter);
   app.use(API_PREFIX, controllerRouter);
   app.use(API_PREFIX, logisticsRouter);
+  app.use(API_PREFIX, notificationRouter);
+  app.use(API_PREFIX, founderRouter);
 
   app.use(notFound);
   app.use(errorHandler);

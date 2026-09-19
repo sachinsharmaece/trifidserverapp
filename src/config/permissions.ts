@@ -64,6 +64,10 @@ export const PERMISSIONS = {
   DISPUTE_RECOVERY_READ: 'dispute:recovery_read',
   LIFELINE_GRANT: 'lifeline:grant',
   EXCEPTION_READ: 'exception:read',
+  // M8 additions — BUSINESS_RULES.md §15, §16.
+  NOTIFICATION_LOG_READ: 'notification:log_read',
+  FUNNEL_READ: 'funnel:read',
+  FOUNDER_OVERVIEW_READ: 'founder:overview_read',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -96,6 +100,8 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.CONDUCT_ADVANCE,
       // M7 — the seller-recovery half of a Controller-decided dispute (BR-206).
       PERMISSIONS.DISPUTE_RECOVERY_READ,
+      // M8 — BR-275, Purchase is measured on leaks closed.
+      PERMISSIONS.FUNNEL_READ,
     ],
   },
   {
@@ -184,6 +190,10 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.EXCEPTION_READ,
       PERMISSIONS.LOGISTICS_READ,
       PERMISSIONS.GST_UNFILED_READ,
+      // M8 — the notification log/worklist is a debugging read; the funnel is Purchase's
+      // own measure, visible to Controller because Controller sees every desk.
+      PERMISSIONS.NOTIFICATION_LOG_READ,
+      PERMISSIONS.FUNNEL_READ,
     ],
   },
   {
@@ -211,6 +221,8 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.CHAIN_READ,
       PERMISSIONS.PAYOUT_READ,
       PERMISSIONS.REGISTER_READ,
+      // M8 — the read-only Founder overview.
+      PERMISSIONS.FOUNDER_OVERVIEW_READ,
     ],
   },
 ];

@@ -58,9 +58,8 @@ async function seedPaidSo() {
   const { soId } = soRes.body.data as { soId: string };
   const so = await So.findById(soId);
 
-  const { createUpcomingReceipt, allocateUpcomingReceipt, postBankCredit } = await import(
-    '../src/modules/payment/payment.service.js'
-  );
+  const { createUpcomingReceipt, allocateUpcomingReceipt, postBankCredit } =
+    await import('../src/modules/payment/payment.service.js');
   const { upcomingReceiptId } = await createUpcomingReceipt(buyerId, {
     amountPaise: so!.totalPaise,
     method: 'utr',
@@ -72,7 +71,11 @@ async function seedPaidSo() {
   });
   await postBankCredit(
     upcomingReceiptId,
-    { utr: `STMT-${Date.now()}-${Math.random()}`, remitterAccountNumber: '1', remitterIfsc: 'HDFC0001234' },
+    {
+      utr: `STMT-${Date.now()}-${Math.random()}`,
+      remitterAccountNumber: '1',
+      remitterIfsc: 'HDFC0001234',
+    },
     { employeeId: accounts.employeeId, correlationId: 'test' },
   );
 
@@ -86,7 +89,9 @@ async function seedPaidSo() {
 
   const buyer = await Buyer.findById(buyerId);
   const seller = await Seller.findById(sellerId);
-  const buyerToken = await tokenForCounterparty((buyer!.counterpartyId as unknown as string).toString());
+  const buyerToken = await tokenForCounterparty(
+    (buyer!.counterpartyId as unknown as string).toString(),
+  );
   const sellerToken = await tokenForCounterparty(
     (seller!.counterpartyId as unknown as string).toString(),
   );

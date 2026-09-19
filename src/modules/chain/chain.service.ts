@@ -47,6 +47,13 @@ import {
   assertNoMargBillYet,
 } from './chain.guards.js';
 import { getPostedReceiptsPaiseForSo } from '../payment/payment.service.js';
+import {
+  enqueueNotification,
+  counterpartyIdForBuyer,
+  counterpartyIdForSeller,
+  paiseToRupeesText,
+} from '../notification/notification.outbox.js';
+import { addDays, formatForDisplay } from '../../shared/clock.js';
 
 export interface StaffActor {
   employeeId: string;
@@ -103,6 +110,10 @@ interface CreateSoInput {
   // supply failure can restore the ask to standing demand instead of
   // dead-ending it. The direct listing/pile path leaves this undefined.
   askId?: string;
+  // M8 — a pool's fan-out tells the buyer `pool_triggered` ("pay within 16 hours"),
+  // which IS that pool's payment notice; sending `payment_due` as well would be the
+  // same news twice against a one-message-a-week cap (BR-283). Only modules/pool sets this.
+  skipPaymentDueNotice?: boolean;
 }
 
 /**
@@ -247,6 +258,25 @@ export async function createSoInSession(
     );
     if (!soLine) throw new Error('SoLine.create returned no document.');
 
+    // CH §21.8 #4 — "24-hour window opens": the SO has just entered `awaiting_payment`.
+    // Written before any other notification for this SO, so where the weekly cap
+    // (BR-283) can only let one message through, it is the money deadline that wins.
+    if (!input.skipPaymentDueNotice) {
+      await enqueueNotification(
+        {
+          counterpartyId: buyer.counterpartyId as Types.ObjectId,
+          templateKey: 'payment_due',
+          params: {
+            soNo,
+            amountRupees: paiseToRupeesText(line.totalPaise),
+            payBy: formatForDisplay(payDeadline),
+          },
+          correlationId: actor.correlationId,
+        },
+        session,
+      );
+    }
+
     await ensureBookAssignment(buyer._id as Types.ObjectId, session); // BR-276.
     if (sku?.productId) {
       // BR-278/BR-279 — organic, not from our own push.
@@ -374,6 +404,17 @@ export async function createPo(
       so.state = 'po_released' satisfies SoState;
       await so.save({ session });
       await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'po' } }, { session });
+
+      // CH §21.8 #14 — "Dispatch due today" (BR-174): the seller's obligation starts now.
+      await enqueueNotification(
+        {
+          counterpartyId: seller.counterpartyId as Types.ObjectId,
+          templateKey: 'po_released',
+          params: { poNo },
+          correlationId: actor.correlationId,
+        },
+        session,
+      );
 
       await writeChainEvent(
         {
@@ -562,6 +603,21 @@ export async function reduceSoQuantity(
     );
     if (!refund) throw new Error('Refund.create returned no document.');
 
+    // CH §21.8 #10 — "What shipped and what is refunded."
+    await enqueueNotification(
+      {
+        counterpartyId: buyer!.counterpartyId as Types.ObjectId,
+        templateKey: 'short_dispatch',
+        params: {
+          soNo: so.soNo,
+          boxesShipped: input.newBoxes,
+          refundRupees: paiseToRupeesText(refundAmountPaise),
+        },
+        correlationId: actor.correlationId,
+      },
+      session,
+    );
+
     await writeChainEvent(
       {
         chainId: so.chainId as Types.ObjectId,
@@ -608,6 +664,9 @@ async function setSoAndPoState(
   soState: SoState,
   poState: PoState | null,
   stage: 'so' | 'payment' | 'po' | 'leg1' | 'marg' | 'dispatch' | 'done',
+  // M8 — anything that must commit or roll back together with this transition
+  // (its notifications) runs here, inside the same transaction.
+  alsoInTransaction?: (so: InstanceType<typeof So>, session: ClientSession) => Promise<void>,
 ): Promise<void> {
   await withTransaction(async (session) => {
     const so = await So.findById(soId).session(session);
@@ -618,6 +677,7 @@ async function setSoAndPoState(
     if (poId && poState) {
       await Po.updateOne({ _id: poId }, { $set: { state: poState } }, { session });
     }
+    if (alsoInTransaction) await alsoInTransaction(so, session);
   });
 }
 
@@ -914,6 +974,18 @@ export async function acceptPromotionOffer(
     await so.save({ session });
     await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'po' } }, { session });
 
+    // CH §21.8 #14 — the PO re-releases to the promoted seller (WORKFLOWS ST-01), and
+    // his 48h dispatch clock starts now: the same "Dispatch due today" event as a first release.
+    await enqueueNotification(
+      {
+        counterpartyId: await counterpartyIdForSeller(offer.promotedSellerId, session),
+        templateKey: 'po_released',
+        params: { poNo: po.poNo },
+        correlationId,
+      },
+      session,
+    );
+
     if (offer.deltaPaise > 0) {
       // BR-021 — recovered from the ghosting seller's next settled lot, not
       // from the buyer and not from the promoted seller.
@@ -1027,6 +1099,35 @@ export async function transitionToDispatchedLeg2(soId: string, poId: string): Pr
     'dispatched_leg2',
     'dispatched_leg2',
     'dispatch',
+    async (so, session) => {
+      const buyerCounterpartyId = await counterpartyIdForBuyer(
+        so.buyerId as Types.ObjectId,
+        session,
+      );
+      // CH §21.8 #8 — "Leg 2 leaves Indore."
+      await enqueueNotification(
+        {
+          counterpartyId: buyerCounterpartyId,
+          templateKey: 'dispatched',
+          params: { soNo: so.soNo },
+        },
+        session,
+      );
+      // CH §21.8 #9 — "Confirm or complain, seven days" (BR-192): the window opens at
+      // leg-2 dispatch (WF-08 step 6). This and `dispatched` share one instant, so a
+      // hard one-a-week cap (BR-283) lets only the first through — see QR-054.
+      await enqueueNotification(
+        {
+          counterpartyId: buyerCounterpartyId,
+          templateKey: 'delivery_window',
+          params: {
+            soNo: so.soNo,
+            windowEndsOn: formatForDisplay(addDays(new Date(), 7)),
+          },
+        },
+        session,
+      );
+    },
   );
 }
 

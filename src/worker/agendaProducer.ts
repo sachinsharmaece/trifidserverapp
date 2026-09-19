@@ -27,3 +27,10 @@ export function getAgendaProducer(): Agenda {
 }
 
 export const JOB_CONFIRM_PILE_FANOUT = 'confirm-pile-fanout';
+
+// M8 — recurring jobs, registered by worker/index.ts. Only these four are wired;
+// the other jobs listed in WORKFLOWS.md §3 remain manual actions on purpose.
+export const JOB_NOTIFICATION_OUTBOX_DRAIN = 'notification-outbox-drain'; // 1 min — BR-292
+export const JOB_TEMPLATE_STATUS_POLL = 'notification-template-status-poll'; // hourly — BR-295
+export const JOB_HEAD_START_OPEN = 'head-start-open'; // 5 min — BR-122
+export const JOB_LISTING_DROPPING = 'listing-dropping'; // daily — BR-108

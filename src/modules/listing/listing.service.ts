@@ -344,6 +344,7 @@ export async function relistListing(
   listing.state = 'live';
   listing.pausedAt = null;
   listing.expiresAt = new Date(Date.now() + LISTING_LIFE_DAYS * 24 * 60 * 60 * 1000);
+  listing.dropReminderSentAt = null; // A fresh 45-day window earns a fresh reminder (BR-108).
   await listing.save();
 }
 

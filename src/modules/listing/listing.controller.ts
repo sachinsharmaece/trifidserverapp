@@ -22,12 +22,10 @@ export async function getFeed(req: Request, res: Response): Promise<void> {
     cursor ?? 0,
     limit ?? 20,
   );
-  res
-    .status(200)
-    .json({
-      data: result.items,
-      meta: { correlationId: req.correlationId, nextCursor: result.nextCursor },
-    });
+  res.status(200).json({
+    data: result.items,
+    meta: { correlationId: req.correlationId, nextCursor: result.nextCursor },
+  });
 }
 
 // API-031 — 👤B.
