@@ -22,6 +22,12 @@ export const PERMISSIONS = {
   MARGIN_MATRIX_READ: 'margin_matrix:read',
   MARGIN_MATRIX_WRITE: 'margin_matrix:write',
   CHAIN_READ: 'chain:read',
+  // M9 — the un-projected chain view (both counterparties, all money). Accounts, Controller,
+  // Founder and Admin only; every other holder of `chain:read` gets their own desk's view.
+  CHAIN_READ_FULL: 'chain:read_full',
+  // M9 — the Sales desk's worklist names buyers; it was gated by `chain:read`, which Purchase
+  // and Logistics also hold. Sales and Controller only.
+  SALES_WORKLIST_READ: 'sales_worklist:read',
   SO_CREATE: 'so:create',
   SO_REDUCE_QUANTITY: 'so:reduce_quantity',
   PO_CREATE: 'po:create',
@@ -37,7 +43,12 @@ export const PERMISSIONS = {
   DAY_CLOSE_RUN: 'day_close:run',
   DOCK_INSPECT: 'dock:inspect',
   MOVEMENT_WRITE: 'movement:write',
+  // `register:read` is the Accounts-side reads (the ledgers): both counterparties on one row.
   REGISTER_READ: 'register:read',
+  // M9 — CH §17.3: each desk sees only its own side of the trade. The one
+  // `register:read` used to open both registers to Purchase, Sales and Logistics.
+  REGISTER_SALES_READ: 'register_sales:read',
+  REGISTER_PURCHASE_READ: 'register_purchase:read',
   // M5 additions — BUSINESS_RULES.md §7–§9.
   POOL_RESOLVE_SHORTFALL: 'pool:resolve_shortfall',
   // M6 additions — BUSINESS_RULES.md §12, §15.
@@ -86,11 +97,11 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.TERRITORY_WRITE,
       PERMISSIONS.ONBOARDING_READ,
       PERMISSIONS.ONBOARDING_APPROVE,
-      PERMISSIONS.MARGIN_MATRIX_READ,
+      // M9 — no MARGIN_MATRIX_READ: margin is "No" for Purchase (CH §17.3, ARCHITECTURE §6.3).
       PERMISSIONS.CHAIN_READ,
       PERMISSIONS.PO_CREATE,
       PERMISSIONS.PO_EDIT,
-      PERMISSIONS.REGISTER_READ,
+      PERMISSIONS.REGISTER_PURCHASE_READ,
       PERMISSIONS.POOL_RESOLVE_SHORTFALL,
       // M6 — BUSINESS_RULES.md §15 (Purchase's own funnel/desk surfaces).
       PERMISSIONS.DEMAND_READ,
@@ -111,13 +122,14 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.ONBOARDING_READ,
       PERMISSIONS.ONBOARDING_APPROVE,
       PERMISSIONS.BOOK_ASSIGN,
-      PERMISSIONS.MARGIN_MATRIX_READ,
+      // M9 — no MARGIN_MATRIX_READ: margin is "No" for Sales (CH §17.3, ARCHITECTURE §6.3).
       PERMISSIONS.CHAIN_READ,
       PERMISSIONS.SO_CREATE,
       PERMISSIONS.SO_REDUCE_QUANTITY,
       PERMISSIONS.RECEIPT_READ,
       PERMISSIONS.RECEIPT_ALLOCATE,
-      PERMISSIONS.REGISTER_READ,
+      PERMISSIONS.SALES_WORKLIST_READ,
+      PERMISSIONS.REGISTER_SALES_READ,
       // M6 — BUSINESS_RULES.md §15/§19 (Sales's own desk surfaces).
       PERMISSIONS.PULSE_READ,
       PERMISSIONS.RETENTION_READ,
@@ -141,7 +153,7 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.TRANSPORTER_WRITE,
       PERMISSIONS.CONSOLIDATION_WRITE,
       PERMISSIONS.RETURN_NOTE_CLOSE,
-      PERMISSIONS.REGISTER_READ,
+      // M9 — no register at all: Logistics sees no firm and no money (CH §17.3.1, BR-071).
     ],
   },
   {
@@ -151,6 +163,7 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.BANK_DETAIL_READ,
       PERMISSIONS.BANK_DETAIL_WRITE,
       PERMISSIONS.CHAIN_READ,
+      PERMISSIONS.CHAIN_READ_FULL,
       PERMISSIONS.RECEIPT_READ,
       PERMISSIONS.BANK_POST,
       PERMISSIONS.PAYOUT_BUILD,
@@ -158,6 +171,8 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.MARG_KEY,
       PERMISSIONS.DAY_CLOSE_RUN,
       PERMISSIONS.REGISTER_READ,
+      PERMISSIONS.REGISTER_SALES_READ,
+      PERMISSIONS.REGISTER_PURCHASE_READ,
       // M7 — BR-023's standing unfiled-bills queue.
       PERMISSIONS.GST_UNFILED_READ,
       PERMISSIONS.GST_MARK_FILED,
@@ -175,11 +190,15 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.BANK_DETAIL_READ,
       PERMISSIONS.MARGIN_MATRIX_READ,
       PERMISSIONS.CHAIN_READ,
+      PERMISSIONS.CHAIN_READ_FULL,
+      PERMISSIONS.SALES_WORKLIST_READ,
       PERMISSIONS.RECEIPT_READ,
       PERMISSIONS.BANK_REPOST,
       PERMISSIONS.PAYOUT_READ,
       PERMISSIONS.PAYOUT_RELEASE,
       PERMISSIONS.REGISTER_READ,
+      PERMISSIONS.REGISTER_SALES_READ,
+      PERMISSIONS.REGISTER_PURCHASE_READ,
       // M6 — BR-218's disagree queue is Controller-visible (QR-025).
       PERMISSIONS.CONDUCT_DISPUTES_READ,
       // M7 — BR-206 dispute adjudication, BR-234's bulk lifeline, the
@@ -219,8 +238,11 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.BANK_DETAIL_READ,
       PERMISSIONS.MARGIN_MATRIX_READ,
       PERMISSIONS.CHAIN_READ,
+      PERMISSIONS.CHAIN_READ_FULL,
       PERMISSIONS.PAYOUT_READ,
       PERMISSIONS.REGISTER_READ,
+      PERMISSIONS.REGISTER_SALES_READ,
+      PERMISSIONS.REGISTER_PURCHASE_READ,
       // M8 — the read-only Founder overview.
       PERMISSIONS.FOUNDER_OVERVIEW_READ,
     ],

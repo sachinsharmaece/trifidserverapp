@@ -19,6 +19,7 @@ import {
 } from '../notification/notification.outbox.js';
 import type { Paise } from '../../shared/money.js';
 import { createSoInSession } from '../chain/chain.service.js';
+import { getPostedReceiptsPaiseForSo } from '../payment/payment.service.js';
 import { computeBuyerFacingRatePaise } from '../listing/listing.service.js';
 
 const PAY_WINDOW_HOURS = 16; // BR-156.
@@ -260,9 +261,15 @@ export async function checkPoolThresholds(poolId: string): Promise<void> {
     // non-binding) committer. New joiners from here on commit binding.
     // TD-004 — the threshold crossing and every `pool_75` commit together.
     await withTransaction(async (session) => {
-      pool.status = 'reconfirm';
-      pool.reconfirmRequestedAt = new Date();
-      await pool.save({ session });
+      // M9 — claim the transition atomically. Two commitments crossing 75% together both pass
+      // the check above; only the one whose update still finds the pool `open` may go on, or
+      // every soft committer would be asked to re-confirm twice.
+      const claimed = await Pool.findOneAndUpdate(
+        { _id: pool._id, status: 'open', reconfirmRequestedAt: null },
+        { $set: { status: 'reconfirm', reconfirmRequestedAt: new Date() } },
+        { session, new: true },
+      );
+      if (!claimed) return;
 
       // CH §21.8 #5 — "Pool hits 75% — re-confirm or withdraw."
       for (const commitment of commitments.filter((c) => !c.isBinding)) {
@@ -304,6 +311,23 @@ async function triggerPool(poolId: string): Promise<void> {
   const commitments = await PoolCommitment.find({ poolId: pool._id, withdrawnAt: null });
 
   await withTransaction(async (session) => {
+    // M9 — claim the trigger atomically, first. Two binding commitments that cross the MOQ
+    // together both reach this point; whichever loses finds the pool already `triggered` and
+    // stops, or every binding buyer would be given two SOs.
+    const triggeredAt = new Date();
+    const claimed = await Pool.findOneAndUpdate(
+      { _id: pool._id, status: { $in: ['open', 'reconfirm'] } },
+      {
+        $set: {
+          status: 'triggered',
+          triggeredAt,
+          payDeadline: addHours(triggeredAt, PAY_WINDOW_HOURS),
+        },
+      },
+      { session, new: true },
+    );
+    if (!claimed) return;
+
     for (const commitment of commitments) {
       if (!commitment.isBinding) {
         // Never reconfirmed before trigger — dropped, no strike.
@@ -346,11 +370,6 @@ async function triggerPool(poolId: string): Promise<void> {
         session,
       );
     }
-
-    pool.status = 'triggered';
-    pool.triggeredAt = new Date();
-    pool.payDeadline = addHours(new Date(), PAY_WINDOW_HOURS);
-    await pool.save({ session });
 
     await writeAuditLog(
       {
@@ -460,32 +479,51 @@ export async function resolvePoolShortfall(
   });
   const soIds = commitments.map((c) => c.soId).filter(Boolean) as Types.ObjectId[];
   const sos = await So.find({ _id: { $in: soIds } });
-  const unpaidSoIds = sos
-    .filter((so) => so.state === 'awaiting_payment')
-    .map((so) => so._id as Types.ObjectId);
 
-  if (unpaidSoIds.length === 0) return {}; // Fully paid — nothing to resolve.
+  // "Paid" is what Accounts has posted to the bank book (INV-01's own source),
+  // not the SO state: a paid buyer's SO stays `awaiting_payment` until the PO
+  // releases, and BR-157 holds the PO back until the pool is paid up.
+  // An SO already past the PO (`po_released` onward) is in fulfilment and is
+  // not part of a short close.
+  const inShortfall = sos.filter(
+    (so) => so.state === 'awaiting_payment' || so.state === 'payment_verifying',
+  );
+  const paidPaiseBySoId = new Map<string, Paise>();
+  for (const so of inShortfall) {
+    const soId = (so._id as Types.ObjectId).toString();
+    paidPaiseBySoId.set(soId, await getPostedReceiptsPaiseForSo(soId));
+  }
+  const anyoneUnpaid = inShortfall.some(
+    (so) => (paidPaiseBySoId.get((so._id as Types.ObjectId).toString()) ?? 0) < so.totalPaise,
+  );
+
+  if (!anyoneUnpaid) return {}; // Fully paid — nothing to resolve.
   if (sellerWillShipLowerQty) return {}; // Accepted as-is; unpaid buyers simply drop off at their own payment deadline.
 
-  // BR-158 — everyone refunded, pool reopens as a fresh document (never
-  // mutated in place — matches the "append, don't edit history" pattern
-  // used throughout the money modules).
+  // BR-158 — "everyone is refunded" means everyone who paid. A buyer who has
+  // not paid has nothing to refund: he is released, no strike, no Refund row.
+  // The pool reopens as a fresh document (never mutated in place — matches the
+  // "append, don't edit history" pattern used throughout the money modules).
   return withTransaction(async (session) => {
-    for (const so of sos) {
-      if (so.state !== 'awaiting_payment') continue;
-      await Refund.create(
-        [
-          {
-            chainId: so.chainId,
-            buyerId: so.buyerId,
-            amountPaise: so.totalPaise,
-            reasonCode: 'supply_failure_full',
-            state: 'payable',
-            targetAccountMasked: 'pool-short-close',
-          },
-        ],
-        { session, ordered: true },
-      );
+    for (const so of inShortfall) {
+      const paidPaise = paidPaiseBySoId.get((so._id as Types.ObjectId).toString()) ?? 0;
+      if (paidPaise > 0) {
+        const buyer = await Buyer.findById(so.buyerId);
+        const buyerCounterparty = await Counterparty.findById(buyer!.counterpartyId);
+        await Refund.create(
+          [
+            {
+              chainId: so.chainId,
+              buyerId: so.buyerId,
+              amountPaise: Math.min(paidPaise, so.totalPaise), // BR-034 — what he paid, never more.
+              reasonCode: 'supply_failure_full',
+              state: 'payable',
+              targetAccountMasked: buyerCounterparty?.mobile ?? 'unknown',
+            },
+          ],
+          { session, ordered: true },
+        );
+      }
       so.state = 'cancelled';
       await so.save({ session });
     }

@@ -80,13 +80,13 @@ paymentRouter.post(
 paymentRouter.get(
   '/staff/registers/sales',
   authenticate,
-  requirePermission(PERMISSIONS.REGISTER_READ),
+  requirePermission(PERMISSIONS.REGISTER_SALES_READ),
   controller.getSalesRegister,
 );
 paymentRouter.get(
   '/staff/registers/purchase',
   authenticate,
-  requirePermission(PERMISSIONS.REGISTER_READ),
+  requirePermission(PERMISSIONS.REGISTER_PURCHASE_READ),
   controller.getPurchaseRegister,
 );
 paymentRouter.get(

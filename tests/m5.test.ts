@@ -14,6 +14,7 @@ import { Sku } from '../src/models/Sku.js';
 import { signAccessToken } from '../src/shared/tokens.js';
 import * as demandService from '../src/modules/demand/demand.service.js';
 import * as poolService from '../src/modules/pool/pool.service.js';
+import * as paymentService from '../src/modules/payment/payment.service.js';
 import { staffToken, createTestSku, seedMarginCell } from './m4helpers.js';
 import {
   createTehsil,
@@ -469,7 +470,119 @@ describe('WF-10 pools — trigger on binding, not committed; own tier rate per b
     expect(soDealer!.totalPaise).not.toBe(soDistributor!.totalPaise); // 3.5% vs 2.0% margin — different totals.
   }, 30000);
 
-  it('BR-158 — a short close refunds every unpaid buyer and reopens the pool as a fresh document', async () => {
+  // QR-056 — BR-158: "everyone is refunded" means everyone who PAID. An unpaid
+  // buyer has nothing to refund; he is released with no strike.
+  it('QR-056 — a short close refunds the buyer who paid and gives the buyer who did not nothing', async () => {
+    const fixture = await seedFixture();
+    const accounts = await staffToken(app, 'accounts');
+    const productId = await getProductIdForSku(fixture.skuId);
+    const sellerToken = await tokenFor(fixture.seller);
+    await createListingViaApi(sellerToken, {
+      productId,
+      skuId: fixture.skuId,
+      ratePaise: 40000,
+      moqExact: 5,
+    });
+    const pool = await Pool.findOne({ skuId: fixture.skuId, isActive: true });
+    const poolId = (pool!._id as unknown as string).toString();
+
+    const loc1 = await createLocationFor(fixture.buyerInScope.docId, fixture.sales.employeeId);
+    const loc2 = await createLocationFor(fixture.buyerRetailer.docId, fixture.sales.employeeId);
+    await poolService.commitToPool(fixture.buyerInScope.counterpartyId, poolId, {
+      qty: 4,
+      deliveryLocationId: loc1,
+    });
+    await poolService.reconfirmPool(fixture.buyerInScope.counterpartyId, poolId);
+    await poolService.commitToPool(fixture.buyerRetailer.counterpartyId, poolId, {
+      qty: 1,
+      deliveryLocationId: loc2,
+    });
+    expect((await Pool.findById(poolId))!.status).toBe('triggered');
+
+    const paidSo = (await So.findOne({ buyerId: fixture.buyerInScope.docId }))!;
+    const unpaidSo = (await So.findOne({ buyerId: fixture.buyerRetailer.docId }))!;
+    const paidSoId = (paidSo._id as unknown as string).toString();
+
+    // The dealer pays in full inside his window; Accounts posts the credit.
+    const { upcomingReceiptId } = await paymentService.createUpcomingReceipt(
+      fixture.buyerInScope.docId,
+      { amountPaise: paidSo.totalPaise, method: 'utr', utr: `UTR-${Math.random()}` },
+    );
+    await paymentService.allocateUpcomingReceipt(upcomingReceiptId, [paidSoId], {
+      employeeId: fixture.sales.employeeId,
+      correlationId: 't',
+    });
+    await paymentService.postBankCredit(
+      upcomingReceiptId,
+      { utr: `STMT-${Math.random()}`, remitterAccountNumber: '1', remitterIfsc: 'HDFC0001234' },
+      { employeeId: accounts.employeeId, correlationId: 't' },
+    );
+
+    const heldBefore = (await paymentService.getBuyerMoneyHeld()).pendingRefundsPaise;
+    const result = await poolService.resolvePoolShortfall(poolId, false, {
+      employeeId: fixture.purchase.employeeId,
+      correlationId: 'test',
+    });
+    expect(result.reopenedPoolId).toBeDefined();
+    // The paid buyer's refund is money we hold, even though his SO is cancelled.
+    const heldAfter = (await paymentService.getBuyerMoneyHeld()).pendingRefundsPaise;
+    expect(heldAfter - heldBefore).toBe(paidSo.totalPaise);
+
+    const paidRefunds = await Refund.find({ chainId: paidSo.chainId });
+    expect(paidRefunds).toHaveLength(1);
+    expect(paidRefunds[0]!.amountPaise).toBe(paidSo.totalPaise);
+    expect(paidRefunds[0]!.reasonCode).toBe('supply_failure_full');
+    expect(paidRefunds[0]!.state).toBe('payable');
+
+    expect(await Refund.countDocuments({ chainId: unpaidSo.chainId })).toBe(0);
+    expect((await So.findById(unpaidSo._id))!.state).toBe('cancelled'); // released, not stuck
+    expect((await So.findById(paidSo._id))!.state).toBe('cancelled');
+    expect(
+      await Refund.countDocuments({ chainId: { $in: [paidSo.chainId, unpaidSo.chainId] } }),
+    ).toBe(1);
+  }, 30000);
+
+  it('QR-056 — a short close where nobody paid raises no refund at all', async () => {
+    const fixture = await seedFixture();
+    const productId = await getProductIdForSku(fixture.skuId);
+    const sellerToken = await tokenFor(fixture.seller);
+    await createListingViaApi(sellerToken, {
+      productId,
+      skuId: fixture.skuId,
+      ratePaise: 40000,
+      moqExact: 5,
+    });
+    const pool = await Pool.findOne({ skuId: fixture.skuId, isActive: true });
+    const poolId = (pool!._id as unknown as string).toString();
+    const loc1 = await createLocationFor(fixture.buyerInScope.docId, fixture.sales.employeeId);
+    const loc2 = await createLocationFor(fixture.buyerRetailer.docId, fixture.sales.employeeId);
+    await poolService.commitToPool(fixture.buyerInScope.counterpartyId, poolId, {
+      qty: 4,
+      deliveryLocationId: loc1,
+    });
+    await poolService.reconfirmPool(fixture.buyerInScope.counterpartyId, poolId);
+    await poolService.commitToPool(fixture.buyerRetailer.counterpartyId, poolId, {
+      qty: 1,
+      deliveryLocationId: loc2,
+    });
+
+    const result = await poolService.resolvePoolShortfall(poolId, false, {
+      employeeId: fixture.purchase.employeeId,
+      correlationId: 'test',
+    });
+    expect(result.reopenedPoolId).toBeDefined();
+    expect(
+      await Refund.countDocuments({
+        buyerId: { $in: [fixture.buyerInScope.docId, fixture.buyerRetailer.docId] },
+      }),
+    ).toBe(0);
+    const sos = await So.find({
+      buyerId: { $in: [fixture.buyerInScope.docId, fixture.buyerRetailer.docId] },
+    });
+    expect(sos.every((so) => so.state === 'cancelled')).toBe(true);
+  }, 30000);
+
+  it('BR-158 — a short close reopens the pool as a fresh document', async () => {
     const fixture = await seedFixture();
     const productId = await getProductIdForSku(fixture.skuId);
     const sellerToken = await tokenFor(fixture.seller);
@@ -513,8 +626,12 @@ describe('WF-10 pools — trigger on binding, not committed; own tier rate per b
     expect(reopened!.isActive).toBe(true);
     expect(reopened!.conditionSetKey).toBe(original!.conditionSetKey);
 
-    const refunds = await Refund.find({ reasonCode: 'supply_failure_full' });
-    expect(refunds.length).toBeGreaterThanOrEqual(2);
+    // Nobody paid in this scenario — nothing to refund (QR-056 / BR-158).
+    expect(
+      await Refund.countDocuments({
+        buyerId: { $in: [fixture.buyerInScope.docId, fixture.buyerRetailer.docId] },
+      }),
+    ).toBe(0);
 
     const cancelledSos = await So.find({
       buyerId: { $in: [fixture.buyerInScope.docId, fixture.buyerRetailer.docId] },

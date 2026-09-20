@@ -10,7 +10,7 @@ export const salesRouter = Router();
 salesRouter.get(
   '/staff/sales/worklist',
   authenticate,
-  requirePermission(PERMISSIONS.CHAIN_READ),
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
   controller.getWorklist,
 );
 salesRouter.get(
