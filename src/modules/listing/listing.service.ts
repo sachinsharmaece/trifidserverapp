@@ -48,11 +48,24 @@ export async function computeBuyerFacingRatePaise(
   skuId: Types.ObjectId | string,
   sellerNetPaise: Paise,
 ): Promise<Paise | null> {
+  const marginPct = await marginPctForBuyerAndSku(buyer, skuId);
+  return marginPct === null ? null : computeBuyerInclusiveRatePaise(sellerNetPaise, marginPct);
+}
+
+/**
+ * The margin a buyer's tier carries on this SKU's class, or `null` while the matrix has no
+ * cell for it. It depends on the SKU and the buyer's tier only — never on the line's rate —
+ * so a feed of 200 lines over 8 SKUs needs 8 of these, not 200 (M9: that N+1 was the
+ * feed's whole ~1.3 s at a few hundred listings).
+ */
+async function marginPctForBuyerAndSku(
+  buyer: InstanceType<typeof Buyer>,
+  skuId: Types.ObjectId | string,
+): Promise<number | null> {
   try {
     const { skuClass } = await resolveSkuClass(skuId);
-    const tier = toRateTier(buyer);
-    const cell = await resolveMarginMatrixCell(skuClass, tier);
-    return computeBuyerInclusiveRatePaise(sellerNetPaise, cell.pct);
+    const cell = await resolveMarginMatrixCell(skuClass, toRateTier(buyer));
+    return cell.pct;
   } catch (error) {
     if (error instanceof AppError && error.code === 'MARGIN_CELL_MISSING') return null;
     throw error;
@@ -430,17 +443,25 @@ async function priceForBuyer(
   buyer: InstanceType<typeof Buyer>,
   lines: VisibleLine[],
 ): Promise<PricedVisibleLine[]> {
-  const priced = await Promise.all(
-    lines.map(async (v) => {
-      const buyerRatePaise = await computeBuyerFacingRatePaise(
-        buyer,
-        v.line.skuId,
-        v.line.ratePaise,
-      );
-      return buyerRatePaise === null ? null : { ...v, buyerRatePaise };
+  // One margin lookup per distinct SKU, not per line.
+  const skuIds = [...new Set(lines.map((v) => String(v.line.skuId)))];
+  const marginBySku = new Map<string, number | null>();
+  await Promise.all(
+    skuIds.map(async (skuId) => {
+      marginBySku.set(skuId, await marginPctForBuyerAndSku(buyer, skuId));
     }),
   );
-  return priced.filter((v): v is PricedVisibleLine => v !== null);
+
+  const priced: PricedVisibleLine[] = [];
+  for (const v of lines) {
+    const marginPct = marginBySku.get(String(v.line.skuId));
+    if (marginPct === null || marginPct === undefined) continue; // the cell is still missing
+    priced.push({
+      ...v,
+      buyerRatePaise: computeBuyerInclusiveRatePaise(v.line.ratePaise, marginPct),
+    });
+  }
+  return priced;
 }
 
 /**

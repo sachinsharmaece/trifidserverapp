@@ -1,0 +1,37 @@
+# The build gate. Nothing merges with a red run (CH §25.6 — every guard has a failing-path test,
+# and every wall sweep fails the build rather than warning).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run type-check
+
+      # The wall sweeps and the invariant gap-closers run FIRST and on their own, so a breach is
+      # the headline of a red run rather than one failure among the suite's 200+. They also run
+      # again inside `npm test` below; that repetition is deliberate and cheap.
+      - name: Wall sweeps and structural boundaries (fail the build)
+        run: >
+          npx vitest run
+          tests/m9WallSweep.test.ts
+          tests/m9WallSweepRules.test.ts
+          tests/m9Boundaries.test.ts
+          tests/wallSweep.test.ts
+          tests/wallSweepTerritory.test.ts
+          tests/m9Invariants.test.ts
+      - name: Full suite (includes the CH §23.5 dead-name check)
+        run: npm test

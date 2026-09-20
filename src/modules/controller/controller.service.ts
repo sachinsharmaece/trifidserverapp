@@ -264,24 +264,29 @@ export async function grantBulkLifeline(
   // does not itself verify employeeId !== checkerEmployeeId — that belongs
   // to the route's maker-checker middleware, the same known boundary
   // `conduct.service.ts`'s `advanceConductStage` already documents.
-  const openPos = await Po.find({
-    state: { $in: ['released'] },
-    failed: false,
-  });
   const extensionMs = extensionHours * 60 * 60 * 1000;
 
   // TD-004 — every clock extension, the waiver record and every affected
   // seller's `lifeline_granted` commit together (this loop was not transactional
   // before M8; a failure halfway would have left some clocks extended and no waiver).
   return withTransaction(async (session) => {
-    let extendedPoCount = 0;
-    let newDispatchDueDate = new Date();
-    for (const po of openPos) {
-      po.dispatchDueDate = new Date(po.dispatchDueDate.getTime() + extensionMs);
-      newDispatchDueDate = po.dispatchDueDate;
-      await po.save({ session });
-      extendedPoCount += 1;
-    }
+    // M9 — the open POs are read INSIDE the transaction, and the extension is added by the
+    // database in one atomic step. `withTransaction` re-runs this callback when two lifelines
+    // (or a lifeline and a dispatch) conflict; the earlier version read the POs outside, added the
+    // hours to those in-memory copies, and so applied them again on every retry — a PO's clock
+    // moved 96h for two 24h lifelines. Nothing here carries state from one attempt to the next.
+    const openPos = await Po.find({ state: { $in: ['released'] }, failed: false }).session(session);
+    const openPoIds = openPos.map((po) => po._id);
+    await Po.collection.updateMany(
+      { _id: { $in: openPoIds } },
+      [{ $set: { dispatchDueDate: { $add: ['$dispatchDueDate', extensionMs] } } }],
+      { session },
+    );
+    const extendedPoCount = openPos.length;
+    const lastExtended = extendedPoCount
+      ? await Po.findById(openPoIds[extendedPoCount - 1]).session(session)
+      : null;
+    const newDispatchDueDate = lastExtended?.dispatchDueDate ?? new Date();
 
     const [waiver] = await ClockWaiver.create(
       [

@@ -77,6 +77,24 @@ export async function listWaitingUpcomingReceipts(): Promise<
   }));
 }
 
+/**
+ * INV-14 — no receipt is ever allocated to another party's order. Without
+ * this, one buyer's money could satisfy INV-01 for someone else's SO and
+ * release a PO against it.
+ */
+async function assertSosBelongToBuyer(soIds: string[], buyerId: Types.ObjectId): Promise<void> {
+  const sos = await So.find({ _id: { $in: soIds } }).select('buyerId');
+  const foundAll = sos.length === new Set(soIds).size;
+  const allTheirs = sos.every((so) => (so.buyerId as Types.ObjectId).equals(buyerId));
+  if (!foundAll || !allTheirs) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: "A receipt can only be allocated to the paying buyer's own orders (INV-14).",
+      field: 'soIds',
+    });
+  }
+}
+
 /** API-081. BR-012 — Sales, not Accounts, knows which order the buyer meant. */
 export async function allocateUpcomingReceipt(
   upcomingReceiptId: string,
@@ -93,6 +111,7 @@ export async function allocateUpcomingReceipt(
       messageEn: 'This claim has already been allocated or cleared.',
     });
   }
+  await assertSosBelongToBuyer(soIds, receipt.buyerId as Types.ObjectId); // INV-14
   receipt.soIds = soIds as unknown as Types.ObjectId[];
   receipt.pickedBy = actor.employeeId as unknown as Types.ObjectId;
   await receipt.save();
@@ -372,10 +391,9 @@ export interface BuyerMoneyHeld {
  * plus every refund raised and not yet released — money we hold that the buyer
  * has not yet received goods or a refund for.
  *
- * A refund whose order is `cancelled` is left out: `resolvePoolShortfall`
- * cancels unpaid orders and raises a refund row against them, and counting
- * that as money held would overstate the figure (see the M8 report — that
- * refund looks suspect in its own right, and is not changed here).
+ * Every raised, unreleased refund counts — including one on a `cancelled`
+ * order. Since QR-056's fix, `resolvePoolShortfall` raises a refund only for a
+ * buyer who actually paid, so such a refund is real money we hold.
  */
 export async function getBuyerMoneyHeld(): Promise<BuyerMoneyHeld> {
   const undelivered = await So.find({ state: { $in: [...PAID_UNDELIVERED_SO_STATES] } }).select(
@@ -386,17 +404,7 @@ export async function getBuyerMoneyHeld(): Promise<BuyerMoneyHeld> {
   const pendingRefunds = await Refund.find({
     state: { $in: ['payable', 'in_batch', 'held_mismatch'] },
   });
-  const cancelledChainIds = new Set(
-    (
-      await So.find({
-        chainId: { $in: pendingRefunds.map((r) => r.chainId) },
-        state: 'cancelled',
-      }).select('chainId')
-    ).map((so) => (so.chainId as Types.ObjectId).toString()),
-  );
-  const pendingRefundsPaise = pendingRefunds
-    .filter((refund) => !cancelledChainIds.has((refund.chainId as Types.ObjectId).toString()))
-    .reduce((sum, refund) => sum + refund.amountPaise, 0);
+  const pendingRefundsPaise = pendingRefunds.reduce((sum, refund) => sum + refund.amountPaise, 0);
 
   return {
     heldPaise: undeliveredOrdersPaise + pendingRefundsPaise,
@@ -680,11 +688,21 @@ export async function assertRefundMatchesSource(
 
 /** The book's own computed closing balance — sum(in) − sum(out), all time. */
 export async function computeBankbookClosingPaise(): Promise<Paise> {
-  const rows = await Bankbook.find({});
-  return rows.reduce(
-    (total, row) => total + (row.kind === 'in' ? row.amountPaise : -row.amountPaise),
-    0,
-  );
+  // M9 — summed by the database, not by loading the whole all-time book into memory: the
+  // day close was linear in every line ever posted (1.2 s at 20,000 lines, growing daily).
+  const [row] = await Bankbook.aggregate<{ closingPaise: number }>([
+    {
+      $group: {
+        _id: null,
+        closingPaise: {
+          $sum: {
+            $cond: [{ $eq: ['$kind', 'in'] }, '$amountPaise', { $multiply: ['$amountPaise', -1] }],
+          },
+        },
+      },
+    },
+  ]);
+  return row?.closingPaise ?? 0;
 }
 
 /** API — day close. BR-308: a non-zero difference is the only thing that blocks it. */

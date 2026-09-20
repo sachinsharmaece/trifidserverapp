@@ -13,6 +13,7 @@
     "seed:admin": "tsx src/scripts/seedAdmin.ts",
     "seed:m5-demo": "tsx src/scripts/seedM5Demo.ts",
     "check:dead-list": "tsx src/scripts/checkDeadNames.ts",
+    "drill:restore": "tsx src/scripts/backupRestoreDrill.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

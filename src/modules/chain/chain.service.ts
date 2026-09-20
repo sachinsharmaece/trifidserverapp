@@ -46,6 +46,7 @@ import {
   assertNotAlreadyBilled,
   assertNoMargBillYet,
 } from './chain.guards.js';
+import type { RawChainView } from './chain.view.js';
 import { getPostedReceiptsPaiseForSo } from '../payment/payment.service.js';
 import {
   enqueueNotification,
@@ -482,6 +483,13 @@ export async function editPo(poId: string, input: EditPoInput, actor: StaffActor
 
   const poLine = await PoLine.findOne({ poId: po._id });
   if (!poLine) throw new AppError({ code: 'NOT_FOUND', messageEn: 'PO line not found.' });
+
+  if (input.field === 'rate') {
+    // INV-07 — an edit may lower the PO's rate, never lift it above the SO's.
+    const soLine = await SoLine.findOne({ soId: po.soId });
+    if (!soLine) throw new AppError({ code: 'NOT_FOUND', messageEn: 'SO line not found.' });
+    assertPoRateNeverExceedsSoRate(input.to, soLine.ratePaise);
+  }
 
   const from = input.field === 'rate' ? poLine.sellerNetPaise : poLine.boxes;
 
@@ -1143,13 +1151,12 @@ export async function transitionToDispatchedLeg2(soId: string, poId: string): Pr
 // BR-031/BR-037 — the chain view
 // ---------------------------------------------------------------------------
 
-export async function getChainView(chainId: string): Promise<{
-  chainNo: string;
-  stage: string;
-  so: unknown;
-  po: unknown;
-  events: unknown[];
-}> {
+/**
+ * Loads the chain's documents. Deliberately returns them un-projected: the
+ * audience's own type is applied by `projectChainView` (chain.view.ts), the one
+ * place that decides what each desk may see — never call this and serialise it.
+ */
+export async function getChainView(chainId: string): Promise<RawChainView> {
   const chain = await Chain.findById(chainId);
   if (!chain) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Chain not found.' });
   const so = await So.findOne({ chainId: chain._id });
@@ -1159,8 +1166,9 @@ export async function getChainView(chainId: string): Promise<{
   return {
     chainNo: chain.chainNo,
     stage: chain.stage,
-    so,
-    po,
-    events,
+    so: so as unknown as RawChainView['so'],
+    po: po as unknown as RawChainView['po'],
+    events: events as unknown as RawChainView['events'],
+    raw: { so, po, events },
   };
 }

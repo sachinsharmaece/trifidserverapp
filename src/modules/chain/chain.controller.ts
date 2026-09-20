@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import * as chainService from './chain.service.js';
+import { chainViewAudienceFor, projectChainView } from './chain.view.js';
 import { createSoSchema, editPoSchema, reduceSoQuantitySchema } from './chain.validation.js';
 
 function staffActor(req: Request): { employeeId: string; correlationId: string } {
@@ -43,6 +44,7 @@ export async function postReduceSoQuantity(req: Request, res: Response): Promise
 
 // API-090 — 🏢/🎛 chain:read. BR-031/BR-037 — the chain strip and full document view.
 export async function getChain(req: Request, res: Response): Promise<void> {
-  const result = await chainService.getChainView(req.params.id as string);
-  ok(res, req, result);
+  const view = await chainService.getChainView(req.params.id as string);
+  // M9 — each desk receives only its own side of the chain (CH §17.3, chain.view.ts).
+  ok(res, req, projectChainView(chainViewAudienceFor(req.auth!.permissions), view));
 }

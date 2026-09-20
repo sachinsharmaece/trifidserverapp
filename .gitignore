@@ -3,3 +3,5 @@ dist
 .env
 coverage
 .DS_Store
+# Backup-restore drill output holds real documents
+.restore-drill/
