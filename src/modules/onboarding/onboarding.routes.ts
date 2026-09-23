@@ -10,6 +10,8 @@ import {
   registerBuyerSchema,
   registerSellerSchema,
   rejectRegistrationSchema,
+  staffRegisterBuyerSchema,
+  staffRegisterSellerSchema,
 } from './onboarding.validation.js';
 
 export const onboardingRouter = Router();
@@ -24,6 +26,25 @@ onboardingRouter.post(
   '/registrations/seller',
   validateBody(registerSellerSchema),
   controller.postRegisterSeller,
+);
+
+// Staff-assisted enquiries — new, not in the original API_CONTRACT.md.
+// Sales raises a buyer registration on a call; Purchase raises a seller
+// one. Desk-boundary permissions only — the same registerBuyer/registerSeller
+// as API-010/011 underneath.
+onboardingRouter.post(
+  '/staff/registrations/buyer',
+  authenticate,
+  requirePermission(PERMISSIONS.ONBOARDING_STAFF_ASSIST_BUYER),
+  validateBody(staffRegisterBuyerSchema),
+  controller.postStaffRegisterBuyer,
+);
+onboardingRouter.post(
+  '/staff/registrations/seller',
+  authenticate,
+  requirePermission(PERMISSIONS.ONBOARDING_STAFF_ASSIST_SELLER),
+  validateBody(staffRegisterSellerSchema),
+  controller.postStaffRegisterSeller,
 );
 
 // API-012 — 🔒 any authenticated caller (ownership checked in the service).

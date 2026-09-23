@@ -51,6 +51,15 @@ paymentRouter.get(
   requirePermission(PERMISSIONS.PAYOUT_READ),
   controller.getPoPayable,
 );
+// Staff-assisted enquiries, decision (B) — 🏢 Accounts. A fourth, explicit
+// payable fact alongside inspection/seller-bill/bank-detail, distinct from
+// the dock's own inspection record.
+paymentRouter.post(
+  '/staff/pos/:poId/receipt-confirmation',
+  authenticate,
+  requirePermission(PERMISSIONS.ACCOUNTS_CONFIRM_RECEIPT),
+  controller.postReceiptConfirmation,
+);
 paymentRouter.post(
   '/staff/payment-runs',
   authenticate,

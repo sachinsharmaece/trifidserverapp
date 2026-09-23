@@ -6,6 +6,7 @@ import {
   createUpcomingReceiptSchema,
   dayCloseSchema,
   postBankCreditSchema,
+  recordReceiptConfirmationSchema,
   releasePaymentRunSchema,
   repostBankEntrySchema,
 } from './payment.validation.js';
@@ -65,6 +66,17 @@ export async function postRepostBankEntry(req: Request, res: Response): Promise<
 export async function getPoPayable(req: Request, res: Response): Promise<void> {
   const payable = await paymentService.isPoPayable(req.params.id as string);
   ok(res, req, { payable });
+}
+
+// Staff-assisted enquiries, decision (B) — 🏢 accounts:confirm_receipt.
+export async function postReceiptConfirmation(req: Request, res: Response): Promise<void> {
+  const input = recordReceiptConfirmationSchema.parse(req.body);
+  const result = await paymentService.recordReceiptConfirmation(
+    req.params.poId as string,
+    input,
+    staffActor(req),
+  );
+  ok(res, req, result, 201);
 }
 
 // API-085 build — 🏢 payout:build.

@@ -62,6 +62,17 @@ export const registerSellerSchema = z
   })
   .strict();
 
+// Staff-assisted enquiries — same body as the self-service registration,
+// plus the mandatory call note. Desk boundary (Sales=buyer, Purchase=seller)
+// is checked in the controller against the caller's permission, not here.
+export const staffRegisterBuyerSchema = registerBuyerSchema.extend({
+  callNote: z.string().min(1),
+});
+
+export const staffRegisterSellerSchema = registerSellerSchema.extend({
+  callNote: z.string().min(1),
+});
+
 export const listRegistrationsQuerySchema = z
   .object({
     stage: z.enum(['pending', 'active', 'rejected']).optional(),

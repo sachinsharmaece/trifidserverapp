@@ -22,6 +22,19 @@ export interface StaffActor {
   correlationId: string;
 }
 
+/**
+ * Staff-assisted enquiries — present only when a desk raised this
+ * registration on a phone call. `registerBuyer`/`registerSeller` below stay
+ * the one function that creates a registration either way, so a
+ * staff-assisted registration gets exactly the same validation a self-service
+ * one does; this parameter only ever adds the annotation, never a rule.
+ */
+export interface StaffAssistedRegistration {
+  employeeId: string;
+  callNote: string;
+  correlationId: string;
+}
+
 interface BankDetailInput {
   accountNumber: string;
   ifsc: string;
@@ -48,6 +61,24 @@ async function assertGstinAndMobileAreFree(gstin: string, mobile: string): Promi
       messageEn: 'An account already exists for this GSTIN or mobile number.',
       field: existing.gstin === gstin ? 'gstin' : 'mobile',
       retryable: false,
+    });
+  }
+}
+
+// Staff-assisted enquiries — a registration raised on a phone call cannot be
+// approved until a single OTP to the real phone number has confirmed it is
+// genuine, even with every other field filled in correctly. Self-service
+// registrations (staffAssisted: false) are untouched by this gate.
+function assertStaffAssistedOtpConfirmed(counterparty: {
+  staffAssisted?: boolean;
+  staffAssistedOtpVerifiedAt?: Date | null;
+}): void {
+  if (counterparty.staffAssisted && !counterparty.staffAssistedOtpVerifiedAt) {
+    throw new AppError({
+      code: 'OTP_CONFIRMATION_REQUIRED',
+      messageEn:
+        'This registration was staff-assisted and still needs an OTP confirmation to the real phone number before it can be approved.',
+      field: 'staffAssistedOtpVerifiedAt',
     });
   }
 }
@@ -124,6 +155,7 @@ interface RegisterBuyerInput {
 /** API-010. WF-01 steps 1–5. */
 export async function registerBuyer(
   input: RegisterBuyerInput,
+  staffAssisted?: StaffAssistedRegistration,
 ): Promise<{ registrationId: string }> {
   await assertGstinAndMobileAreFree(input.gstin, input.mobile);
   assertBankDetailIsWellFormed(input.bankDetail);
@@ -139,6 +171,13 @@ export async function registerBuyer(
           licenceNo: input.licenceNo,
           kind: 'buyer',
           status: 'pending',
+          ...(staffAssisted
+            ? {
+                staffAssisted: true,
+                staffAssistedByEmployeeId: staffAssisted.employeeId,
+                staffAssistedCallNote: staffAssisted.callNote,
+              }
+            : {}),
         },
       ],
       { session },
@@ -165,6 +204,21 @@ export async function registerBuyer(
     await createPendingBankDetail(counterparty._id, input.bankDetail, session);
     await writeConsents(counterparty._id, input.consent, session);
 
+    if (staffAssisted) {
+      await writeAuditLog(
+        {
+          actorId: (counterparty._id as Types.ObjectId).toString(),
+          actorType: 'counterparty',
+          entity: 'counterparty',
+          entityId: counterparty._id as Types.ObjectId,
+          field: 'staff_assisted_registration',
+          reason: `Logged by staff ${staffAssisted.employeeId}: ${staffAssisted.callNote}`,
+          correlationId: staffAssisted.correlationId,
+        },
+        session,
+      );
+    }
+
     return (counterparty._id as Types.ObjectId).toString();
   });
 
@@ -185,6 +239,7 @@ interface RegisterSellerInput {
 /** API-011. WF-02. */
 export async function registerSeller(
   input: RegisterSellerInput,
+  staffAssisted?: StaffAssistedRegistration,
 ): Promise<{ registrationId: string }> {
   await assertGstinAndMobileAreFree(input.gstin, input.mobile);
   assertBankDetailIsWellFormed(input.bankDetail);
@@ -200,6 +255,13 @@ export async function registerSeller(
           licenceNo: input.licenceNo,
           kind: 'seller',
           status: 'pending',
+          ...(staffAssisted
+            ? {
+                staffAssisted: true,
+                staffAssistedByEmployeeId: staffAssisted.employeeId,
+                staffAssistedCallNote: staffAssisted.callNote,
+              }
+            : {}),
         },
       ],
       { session },
@@ -217,6 +279,21 @@ export async function registerSeller(
     await createPendingBankDetail(counterparty._id, input.bankDetail, session);
     await writeConsents(counterparty._id, input.consent, session);
 
+    if (staffAssisted) {
+      await writeAuditLog(
+        {
+          actorId: (counterparty._id as Types.ObjectId).toString(),
+          actorType: 'counterparty',
+          entity: 'counterparty',
+          entityId: counterparty._id as Types.ObjectId,
+          field: 'staff_assisted_registration',
+          reason: `Logged by staff ${staffAssisted.employeeId}: ${staffAssisted.callNote}`,
+          correlationId: staffAssisted.correlationId,
+        },
+        session,
+      );
+    }
+
     return (counterparty._id as Types.ObjectId).toString();
   });
 
@@ -228,6 +305,8 @@ interface RegistrationStatusDto {
   kind: string;
   status: string;
   rejectionReason?: string;
+  staffAssisted: boolean;
+  staffAssistedOtpVerifiedAt: Date | null;
 }
 
 /** API-012. */
@@ -249,6 +328,8 @@ export async function getRegistration(
     registrationId: (counterparty._id as Types.ObjectId).toString(),
     kind: counterparty.kind,
     status: counterparty.status,
+    staffAssisted: counterparty.staffAssisted ?? false,
+    staffAssistedOtpVerifiedAt: counterparty.staffAssistedOtpVerifiedAt ?? null,
   };
 
   if (counterparty.status === 'rejected') {
@@ -271,6 +352,7 @@ interface RegistrationListItem {
   kind: string;
   status: string;
   createdAt: Date;
+  staffAssisted: boolean;
 }
 
 /** API-013. */
@@ -297,6 +379,7 @@ export async function listRegistrations(
     kind: counterparty.kind,
     status: counterparty.status,
     createdAt: counterparty.createdAt as Date,
+    staffAssisted: counterparty.staffAssisted ?? false,
   }));
 
   const nextCursor = hasMore
@@ -339,6 +422,7 @@ export async function approveBuyer(
       messageEn: 'This registration has already been decided.',
     });
   }
+  assertStaffAssistedOtpConfirmed(counterparty);
 
   await withTransaction(async (session) => {
     await Buyer.updateOne(
@@ -419,6 +503,8 @@ export async function approveSeller(
       messageEn: 'This registration has already been decided.',
     });
   }
+
+  assertStaffAssistedOtpConfirmed(counterparty);
 
   const seller = await Seller.findOne({ counterpartyId: counterparty._id });
   if (!seller) {

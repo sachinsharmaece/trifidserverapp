@@ -59,6 +59,11 @@ export type ErrorCode =
   | 'COMPLAINT_WINDOW_CLOSED'
   // M10 — CH §24.3: a Controller, Admin or Founder has no authenticator enrolled yet.
   | 'MFA_ENROLMENT_REQUIRED'
+  // Staff-assisted enquiries — a technical gap in the fixed API_CONTRACT.md
+  // §10 list, same reasoning as MFA_ENROLMENT_REQUIRED above: a staff-raised
+  // registration cannot be approved until the real phone number has
+  // confirmed it via OTP.
+  | 'OTP_CONFIRMATION_REQUIRED'
   | 'INTERNAL_ERROR';
 
 const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
@@ -102,6 +107,7 @@ const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
   ORDER_NOT_YET_DELIVERABLE: 409,
   COMPLAINT_WINDOW_CLOSED: 409,
   MFA_ENROLMENT_REQUIRED: 403,
+  OTP_CONFIRMATION_REQUIRED: 409,
   INTERNAL_ERROR: 500,
 };
 

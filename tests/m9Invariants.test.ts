@@ -336,6 +336,10 @@ describe('INV-13 — an outward payment equals the seller’s accepted bill tota
       .set(auth(fx.purchase.token))
       .set('Idempotency-Key', idemKey())
       .send({});
+    await request(app)
+      .post(`/api/v1/staff/pos/${poId}/receipt-confirmation`)
+      .set(auth(fx.accounts.token))
+      .send({ productMatches: true, qtyMatches: true });
 
     const bill = await SellerBill.findOne({ poId });
     expect(bill!.acceptedValuePaise).toBeLessThan(bill!.totalPaise);

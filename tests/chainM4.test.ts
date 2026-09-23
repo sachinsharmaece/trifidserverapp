@@ -164,6 +164,15 @@ describe('M4 — the trade chain (DoD): one trade completes all six stages again
     refreshedSo = await So.findById(soId);
     expect(refreshedSo!.state).toBe('inspected');
 
+    // Staff-assisted enquiries, decision (B) — Accounts' own dedicated
+    // confirmation, distinct from the dock's inspection above (BR-004's
+    // fourth fact).
+    const receiptConfirmRes = await request(app)
+      .post(`/api/v1/staff/pos/${poId}/receipt-confirmation`)
+      .set('Authorization', `Bearer ${fixture.accounts.token}`)
+      .send({ productMatches: true, qtyMatches: true });
+    expect(receiptConfirmRes.status).toBe(201);
+
     // Stage 5 — Marg, exact match.
     const margRes = await request(app)
       .post(`/api/v1/staff/marg/${soId}`)
@@ -690,6 +699,10 @@ describe('INV-16 — a payment batch builder may never release it, whatever the 
       .set('Authorization', `Bearer ${fixture.purchase.token}`)
       .set('Idempotency-Key', idemKey())
       .send({});
+    await request(app)
+      .post(`/api/v1/staff/pos/${poId}/receipt-confirmation`)
+      .set('Authorization', `Bearer ${fixture.accounts.token}`)
+      .send({ productMatches: true, qtyMatches: true });
 
     const { paymentRunId } = await paymentService.buildPaymentRun(
       [{ kind: 'payout', refId: poId }],
@@ -743,6 +756,10 @@ describe('INV-16 — a payment batch builder may never release it, whatever the 
       .set('Authorization', `Bearer ${fixture.purchase.token}`)
       .set('Idempotency-Key', idemKey())
       .send({});
+    await request(app)
+      .post(`/api/v1/staff/pos/${poId}/receipt-confirmation`)
+      .set('Authorization', `Bearer ${fixture.accounts.token}`)
+      .send({ productMatches: true, qtyMatches: true });
 
     const { paymentRunId } = await paymentService.buildPaymentRun(
       [{ kind: 'payout', refId: poId }],
@@ -805,6 +822,10 @@ describe('INV-17 — nothing payable to a seller with an unverified or cooling b
       .set('Authorization', `Bearer ${fixture.purchase.token}`)
       .set('Idempotency-Key', idemKey())
       .send({});
+    await request(app)
+      .post(`/api/v1/staff/pos/${poId}/receipt-confirmation`)
+      .set('Authorization', `Bearer ${fixture.accounts.token}`)
+      .send({ productMatches: true, qtyMatches: true });
 
     // Put the seller's bank detail back into a cooling state (BR-017).
     const po = await Po.findById(poId);

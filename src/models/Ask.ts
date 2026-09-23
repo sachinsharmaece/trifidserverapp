@@ -1,5 +1,6 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { DELIVERY_BANDS, EXPIRY_BANDS } from './ListingLine.js';
+import { proxyLogField } from '../shared/proxyLog.js';
 
 /**
  * ENT-19 `ask`. BR-064/`CH §3.12` — **there is no `tehsil` and no `district`
@@ -33,6 +34,9 @@ const askSchema = new Schema(
     ttlAt: { type: Date, required: true }, // BR-120 — 30-day Open Demand TTL.
     state: { type: String, enum: ASK_STATES, required: true, default: 'open' },
     holdExpiresAt: { type: Date, default: null }, // BR-126 — starts at the first quote, never restarts.
+    // Staff-assisted enquiries — present only when Sales raised or advanced
+    // this ask on a phone call. See shared/proxyLog.ts.
+    proxyLog: proxyLogField,
   },
   { timestamps: true },
 );

@@ -1,4 +1,5 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
+import { proxyLogField } from '../shared/proxyLog.js';
 
 /**
  * ENT-27 `so`. ST-01 — the sales order's own state carries the fine-grained
@@ -73,6 +74,9 @@ const soSchema = new Schema(
     // overlap conflict on it and one of them retries — the expiry then sees the money.
     paymentTouchedAt: { type: Date, default: null },
     totalPaise: { type: Number, required: true },
+    // Staff-assisted enquiries — present only when Sales advanced this order
+    // (accept-fill, a promotion accept/decline) on a phone call.
+    proxyLog: proxyLogField,
   },
   { timestamps: true },
 );
