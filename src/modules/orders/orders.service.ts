@@ -13,6 +13,7 @@ import {
   transitionToDispatchedLeg1,
   acceptPromotionOffer,
   rejectPromotionOffer,
+  closeDeliveredSo,
 } from '../chain/chain.service.js';
 import { PromotionOffer } from '../../models/PromotionOffer.js';
 import { writeChainEvent } from '../chain/chain.events.js';
@@ -244,9 +245,8 @@ export async function postExtensionRequest(
 
 // ---------------------------------------------------------------------------
 // API-073 — 👤B. BR-192 — the buyer's tap is an accelerator, not a
-// requirement; silence would otherwise default to the same outcome after
-// seven days once a scheduled job exists for it (not built this session —
-// see chain.service.ts's own note on the same gap for `closed`).
+// requirement; silence defaults to the same outcome after seven days
+// (M10: `runDeliveryAutoClose`, modules/clocks — both call `closeDeliveredSo`).
 // ---------------------------------------------------------------------------
 
 export async function confirmReceipt(
@@ -262,8 +262,19 @@ export async function confirmReceipt(
       messageEn: 'This order has not left Indore on its second leg yet.',
     });
   }
-  so.state = 'closed';
-  await so.save();
+  // M10 — the same close the seven-day clock performs (BR-192): silence and the tap are one rule.
+  const closed = await closeDeliveredSo(
+    soId,
+    { actorId: buyerCounterpartyId, actorType: 'counterparty' },
+    `confirm-receipt-${soId}`,
+  );
+  if (!closed) {
+    // Lost a race with a complaint or the auto-close between the read above and the claim.
+    throw new AppError({
+      code: 'ORDER_NOT_YET_DELIVERABLE',
+      messageEn: 'This order can no longer be confirmed.',
+    });
+  }
   return { closed: true };
 }
 
@@ -293,15 +304,34 @@ export async function postComplaint(
     });
   }
 
-  const complaint = await Complaint.create({
-    soId: so._id,
-    buyerId: buyer._id,
-    category: input.category,
-    note: input.note ?? null,
+  // M10 — claim the order (→ disputed) and file the complaint in one transaction, so a
+  // complaint and the seven-day auto-close (BR-192) can never both take the same order.
+  return withTransaction(async (session) => {
+    const claimed = await So.findOneAndUpdate(
+      { _id: so._id, state: { $in: ['dispatched_leg2', 'delivered'] } },
+      { $set: { state: 'disputed' } },
+      { session, new: true },
+    );
+    if (!claimed) {
+      throw new AppError({
+        code: 'COMPLAINT_WINDOW_CLOSED',
+        messageEn: 'A complaint can only be raised after leg 2 has dispatched, within the window.',
+      });
+    }
+    const [complaint] = await Complaint.create(
+      [
+        {
+          soId: so._id,
+          buyerId: buyer._id,
+          category: input.category,
+          note: input.note ?? null,
+        },
+      ],
+      { session, ordered: true },
+    );
+    if (!complaint) throw new Error('Complaint.create returned no document.');
+    return { complaintId: (complaint._id as Types.ObjectId).toString() };
   });
-  so.state = 'disputed';
-  await so.save();
-  return { complaintId: (complaint._id as Types.ObjectId).toString() };
 }
 
 export async function getComplaints(

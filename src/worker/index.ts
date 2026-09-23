@@ -6,14 +6,24 @@ import { logger } from '../shared/logger.js';
 import { writeHeartbeat } from './heartbeat.js';
 import {
   JOB_CONFIRM_PILE_FANOUT,
+  JOB_DELIVERY_AUTO_CLOSE,
+  JOB_DISPATCH_CHASE,
   JOB_HEAD_START_OPEN,
   JOB_LISTING_DROPPING,
+  JOB_PAYMENT_WINDOW_EXPIRY,
+  JOB_PROMOTION_OFFER_EXPIRY,
   JOB_NOTIFICATION_OUTBOX_DRAIN,
   JOB_TEMPLATE_STATUS_POLL,
 } from './agendaProducer.js';
 import { runConfirmPileFanout } from '../modules/demand/pileFanout.job.js';
 import { runHeadStartOpen } from '../modules/demand/headStartOpen.job.js';
 import { runListingDropping } from '../modules/listing/listingDropping.job.js';
+import {
+  runDeliveryAutoClose,
+  runDispatchChase,
+  runPaymentWindowExpiry,
+  runPromotionOfferExpiry,
+} from '../modules/clocks/clocks.jobs.js';
 import { runOutboxDrain } from '../modules/notification/notification.drain.js';
 import { runTemplateStatusPoll } from '../modules/notification/notification.poll.js';
 
@@ -73,6 +83,21 @@ async function startWorker(): Promise<void> {
     await runListingDropping();
   });
 
+  // M10, Step 0b — the four clocks. Each finds overdue records and calls the one existing
+  // unit per record (modules/clocks/clocks.jobs.ts).
+  agenda.define(JOB_PAYMENT_WINDOW_EXPIRY, async () => {
+    await runPaymentWindowExpiry(); // BR-032, BR-035
+  });
+  agenda.define(JOB_DISPATCH_CHASE, async () => {
+    await runDispatchChase(); // BR-174
+  });
+  agenda.define(JOB_PROMOTION_OFFER_EXPIRY, async () => {
+    await runPromotionOfferExpiry(); // WF-11
+  });
+  agenda.define(JOB_DELIVERY_AUTO_CLOSE, async () => {
+    await runDeliveryAutoClose(); // BR-192
+  });
+
   agenda.on('ready', () => {
     logger.info({ msg: 'Worker process ready, agenda connected' });
   });
@@ -83,6 +108,10 @@ async function startWorker(): Promise<void> {
   await agenda.every('1 hour', JOB_TEMPLATE_STATUS_POLL);
   await agenda.every('5 minutes', JOB_HEAD_START_OPEN);
   await agenda.every('1 day', JOB_LISTING_DROPPING);
+  await agenda.every('1 minute', JOB_PAYMENT_WINDOW_EXPIRY);
+  await agenda.every('1 hour', JOB_DISPATCH_CHASE);
+  await agenda.every('5 minutes', JOB_PROMOTION_OFFER_EXPIRY);
+  await agenda.every('1 hour', JOB_DELIVERY_AUTO_CLOSE);
   // Write one immediately so a fresh deployment does not look stale for the
   // first WORKER_HEARTBEAT_SECONDS window.
   await writeHeartbeat();

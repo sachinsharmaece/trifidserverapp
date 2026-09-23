@@ -6,6 +6,7 @@ import { SoLine } from '../src/models/SoLine.js';
 import { Po } from '../src/models/Po.js';
 import { MargBill } from '../src/models/MargBill.js';
 import { Bankbook } from '../src/models/Bankbook.js';
+import { UpcomingReceipt } from '../src/models/UpcomingReceipt.js';
 import { SellerBill } from '../src/models/SellerBill.js';
 import { AuditLog } from '../src/models/AuditLog.js';
 import * as paymentService from '../src/modules/payment/payment.service.js';
@@ -160,37 +161,71 @@ describe('INV-14 — no receipt is allocated to another party’s order', () => 
 });
 
 describe('INV-01 / QR-057 — one receipt must not pay two orders', () => {
-  // KNOWN DEFECT, documented rather than hidden. `getPostedReceiptsPaiseForSo`
-  // sums the WHOLE receipt for every SO it lists, and the receipt carries no
-  // per-SO amount, so a single receipt allocated to two SOs of the same buyer
-  // satisfies INV-01 for both. How a multi-SO receipt is apportioned is a
-  // business rule the register does not give us (QR-057). This test asserts the
-  // defect AS IT STANDS, so it is green today and turns RED the moment the
-  // defect is fixed — at which point flip the last assertion to `toBeLessThanOrEqual(1)`.
-  it('DEFECT (QR-057): one SO’s worth of money, allocated to two SOs, releases BOTH POs', async () => {
+  // QR-057 INTERIM (M10 Step 0a). M9 proved that one SO's worth of money
+  // allocated to two SOs released BOTH POs. The real apportionment rule is
+  // still an open client question, so until it exists a receipt may name
+  // exactly one SO. This is the M9 exploit, replayed — it must now be refused.
+  const actor = (fx: Fixture) => ({ employeeId: fx.sales.employeeId, correlationId: 'm9' });
+  const poAttempt = (fx: Fixture, soId: string) =>
+    request(app)
+      .post(`/api/v1/staff/so/${soId}/po`)
+      .set('Authorization', `Bearer ${fx.purchase.token}`)
+      .set('Idempotency-Key', idemKey())
+      .send({});
+
+  it('REFUSES one receipt allocated to two SOs, stores nothing, and releases no PO', async () => {
     const fx = await seedFixture();
     const { soId: a } = await createSo(fx, fx.buyerId);
     const { soId: b } = await createSo(fx, fx.buyerId);
     const soA = await So.findById(a);
     const receiptId = await claim(fx.buyerId, soA!.totalPaise); // one SO's worth of money
-    await paymentService.allocateUpcomingReceipt(receiptId, [a, b], {
-      employeeId: fx.sales.employeeId,
-      correlationId: 'm9',
-    });
-    await post(fx, receiptId);
 
-    const first = await request(app)
-      .post(`/api/v1/staff/so/${a}/po`)
-      .set('Authorization', `Bearer ${fx.purchase.token}`)
-      .set('Idempotency-Key', idemKey())
-      .send({});
-    const second = await request(app)
-      .post(`/api/v1/staff/so/${b}/po`)
-      .set('Authorization', `Bearer ${fx.purchase.token}`)
-      .set('Idempotency-Key', idemKey())
-      .send({});
-    // Correct behaviour would be: at most one of the two can be released.
-    expect([first.status, second.status]).toEqual([201, 201]);
+    await expect(
+      paymentService.allocateUpcomingReceipt(receiptId, [a, b], actor(fx)),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED', field: 'soIds' });
+
+    // Not a partial allocation: nothing was stored, so the claim cannot be posted at all.
+    await expect(post(fx, receiptId)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect((await poAttempt(fx, a)).status).toBe(409);
+    expect((await poAttempt(fx, b)).status).toBe(409);
+    expect(await paymentService.getPostedReceiptsPaiseForSo(a)).toBe(0);
+    expect(await paymentService.getPostedReceiptsPaiseForSo(b)).toBe(0);
+  });
+
+  it('refuses the same SO listed twice as two, and an empty list; one SO is still allocatable', async () => {
+    const fx = await seedFixture();
+    const { soId: a } = await createSo(fx, fx.buyerId);
+    const { soId: b } = await createSo(fx, fx.buyerId);
+    const receiptId = await claim(fx.buyerId, 1000);
+    await expect(
+      paymentService.allocateUpcomingReceipt(receiptId, [], actor(fx)),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    await expect(
+      paymentService.allocateUpcomingReceipt(receiptId, [a, b], actor(fx)),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    await expect(
+      paymentService.allocateUpcomingReceipt(receiptId, [a], actor(fx)),
+    ).resolves.toBeUndefined();
+  });
+
+  it('the documented workaround works: two receipts for one bank credit, one per SO', async () => {
+    const fx = await seedFixture();
+    const { soId: a } = await createSo(fx, fx.buyerId);
+    const { soId: b } = await createSo(fx, fx.buyerId);
+    await payInFull(fx, fx.buyerId, a);
+    await payInFull(fx, fx.buyerId, b);
+    expect((await poAttempt(fx, a)).status).toBe(201);
+    expect((await poAttempt(fx, b)).status).toBe(201);
+  });
+
+  it('refuses at POSTING a receipt that was allocated to two SOs before the guard existed', async () => {
+    const fx = await seedFixture();
+    const { soId: a } = await createSo(fx, fx.buyerId);
+    const { soId: b } = await createSo(fx, fx.buyerId);
+    const receiptId = await claim(fx.buyerId, 1000);
+    await UpcomingReceipt.updateOne({ _id: receiptId }, { $set: { soIds: [a, b] } }); // legacy row
+    await expect(post(fx, receiptId)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(await paymentService.getPostedReceiptsPaiseForSo(a)).toBe(0);
   });
 });
 

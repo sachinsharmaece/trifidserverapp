@@ -1,4 +1,4 @@
-import type { Types } from 'mongoose';
+import type { ClientSession, Types } from 'mongoose';
 import { Buyer } from '../../models/Buyer.js';
 import { Seller } from '../../models/Seller.js';
 import { Po } from '../../models/Po.js';
@@ -111,7 +111,11 @@ interface RecordFailureInput {
  */
 export async function recordFailure(
   input: RecordFailureInput,
-  actor: { employeeId: string; correlationId: string },
+  // M10 — a scheduled clock (worker) records failures with no employee: `employeeId: null`
+  // is logged as a `system` actor. `session` lets the caller commit the failure with the
+  // state change that caused it.
+  actor: { employeeId: string | null; correlationId: string },
+  session?: ClientSession,
 ): Promise<{ failureEventId: string; stage: FailureStage; blacklisted: boolean }> {
   const trailing = await countTrailingCommitments(
     input.counterpartyId as unknown as Types.ObjectId,
@@ -130,45 +134,63 @@ export async function recordFailure(
   // Both paths leave it null here.
   const decaysAt = null;
 
-  const event = await FailureEvent.create({
-    counterpartyId: input.counterpartyId,
-    counterpartyKind: input.counterpartyKind,
-    type: input.type,
-    chainId: input.chainId ?? null,
-    at: now,
-    withinGrace,
-    stage,
-    viaFraud: input.viaFraud ?? false,
-    decaysAt,
-    advancedBy: actor.employeeId,
-  });
+  const [event] = await FailureEvent.create(
+    [
+      {
+        counterpartyId: input.counterpartyId,
+        counterpartyKind: input.counterpartyKind,
+        type: input.type,
+        chainId: input.chainId ?? null,
+        at: now,
+        withinGrace,
+        stage,
+        viaFraud: input.viaFraud ?? false,
+        decaysAt,
+        advancedBy: actor.employeeId,
+      },
+    ],
+    { session, ordered: true },
+  );
+  if (!event) throw new Error('FailureEvent.create returned no document.');
 
-  await writeAuditLog({
-    actorId: actor.employeeId,
-    actorType: 'staff',
-    entity: 'failure_event',
-    entityId: event._id as Types.ObjectId,
-    field: 'create',
-    newValue: { stage, withinGrace, type: input.type },
-    correlationId: actor.correlationId,
-  });
+  // A system actor has no employee id; the counterparty the failure is about stands in
+  // for it in the audit row (the same convention `blacklistIfThresholdReached` uses).
+  const auditActorId = actor.employeeId ?? input.counterpartyId;
+  const auditActorType = actor.employeeId ? 'staff' : 'system';
+
+  await writeAuditLog(
+    {
+      actorId: auditActorId,
+      actorType: auditActorType,
+      entity: 'failure_event',
+      entityId: event._id as Types.ObjectId,
+      field: 'create',
+      newValue: { stage, withinGrace, type: input.type },
+      correlationId: actor.correlationId,
+    },
+    session,
+  );
 
   let blacklisted = false;
   if (input.viaFraud) {
     await Counterparty.updateOne(
       { _id: input.counterpartyId },
       { $set: { status: 'blacklisted' } },
+      { session },
     );
-    await writeAuditLog({
-      actorId: actor.employeeId,
-      actorType: 'staff',
-      entity: 'counterparty',
-      entityId: input.counterpartyId as unknown as Types.ObjectId,
-      field: 'status',
-      newValue: 'blacklisted',
-      reason: `Fraud (BR-217) — ${input.type}`,
-      correlationId: actor.correlationId,
-    });
+    await writeAuditLog(
+      {
+        actorId: auditActorId,
+        actorType: auditActorType,
+        entity: 'counterparty',
+        entityId: input.counterpartyId as unknown as Types.ObjectId,
+        field: 'status',
+        newValue: 'blacklisted',
+        reason: `Fraud (BR-217) — ${input.type}`,
+        correlationId: actor.correlationId,
+      },
+      session,
+    );
     blacklisted = true;
   }
 

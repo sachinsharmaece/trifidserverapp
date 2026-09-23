@@ -2,6 +2,7 @@ import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { Types } from 'mongoose';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
 import { So } from '../src/models/So.js';
@@ -72,6 +73,10 @@ interface World {
   tokens: Record<Audience, string>;
 }
 let world: World;
+// A registration list pages by _id ascending. In a database other test files have filled, the
+// world's own rows are not on page one, so the sweep starts its list at the moment it began
+// seeding — otherwise a known gap can silently stop being observed (found in M10).
+let worldStartCursor = '';
 let routes: RouteDef[] = [];
 
 async function identityOf(kind: 'buyer' | 'seller', docId: string): Promise<Identity> {
@@ -97,6 +102,7 @@ function counterpartyToken(counterpartyId: string): string {
 const key = (): string => `m9w-${Date.now()}-${Math.random()}`;
 
 beforeAll(async () => {
+  worldStartCursor = new Types.ObjectId().toString();
   const admin = await staffToken(app, 'admin');
   const sales = await staffToken(app, 'sales');
   const purchase = await staffToken(app, 'purchase');
@@ -244,6 +250,9 @@ beforeAll(async () => {
 function urlsFor(route: RouteDef): string[] {
   // Every combination is overkill; vary ONE param at a time over its candidates.
   const first = (name: string): string => world.ids[name]?.[0] ?? BLANK_ID;
+  if (route.path === '/staff/registrations') {
+    return [`${API}${route.path}?limit=100&cursor=${worldStartCursor}`];
+  }
   if (route.params.length === 0) return [`${API}${route.path}`];
   const urls = new Set<string>();
   for (const varying of route.params) {
@@ -286,14 +295,14 @@ const KNOWN_GAPS: Array<{
   {
     id: 'registration-list-buyer-firms-to-purchase',
     audience: 'purchase',
-    url: /\/staff\/registrations$/,
+    url: /\/staff\/registrations(\?|$)/,
     message: /buyer identity value present/,
     qr: 'QR-060',
   },
   {
     id: 'registration-list-seller-firms-to-sales',
     audience: 'sales',
-    url: /\/staff\/registrations$/,
+    url: /\/staff\/registrations(\?|$)/,
     message: /seller identity value present/,
     qr: 'QR-060',
   },

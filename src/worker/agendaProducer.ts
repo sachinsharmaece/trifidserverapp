@@ -34,3 +34,9 @@ export const JOB_NOTIFICATION_OUTBOX_DRAIN = 'notification-outbox-drain'; // 1 m
 export const JOB_TEMPLATE_STATUS_POLL = 'notification-template-status-poll'; // hourly — BR-295
 export const JOB_HEAD_START_OPEN = 'head-start-open'; // 5 min — BR-122
 export const JOB_LISTING_DROPPING = 'listing-dropping'; // daily — BR-108
+
+// M10 Step 0b — the four clocks (modules/clocks/clocks.jobs.ts).
+export const JOB_PAYMENT_WINDOW_EXPIRY = 'payment-window-expiry'; // 1 min — BR-032, BR-035
+export const JOB_DISPATCH_CHASE = 'dispatch-chase'; // hourly — BR-174
+export const JOB_PROMOTION_OFFER_EXPIRY = 'promotion-offer-expiry'; // 5 min — WF-11
+export const JOB_DELIVERY_AUTO_CLOSE = 'delivery-auto-close'; // hourly — BR-192

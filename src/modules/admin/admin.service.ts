@@ -10,6 +10,7 @@ import { Role } from '../../models/Role.js';
 import { Lane } from '../../models/Lane.js';
 import { LaneAllocation } from '../../models/LaneAllocation.js';
 import { Absence } from '../../models/Absence.js';
+import { AuthSession } from '../../models/AuthSession.js';
 import { Buyer } from '../../models/Buyer.js';
 import { BookAssignment } from '../../models/BookAssignment.js';
 import { AppError } from '../../shared/errors.js';
@@ -236,6 +237,72 @@ export async function createEmployee(
     });
   }
   return result;
+}
+
+interface IssueMfaResult {
+  employeeId: string;
+  mfaSecret: string;
+  mfaOtpauthUrl: string;
+}
+
+/**
+ * M10 — the enrolment path for CH §24.3. A Controller, Admin or Founder cannot sign in
+ * without an authenticator, so an Admin issues (or re-issues, after a lost phone) one here.
+ * The secret is shown ONCE, to the Admin, to hand over in person — the same model
+ * `createEmployee` and the first-Admin seed script already use. Self-enrolment on a bare
+ * password was deliberately not built: whoever stole a password could enrol their own phone.
+ * Re-issuing replaces the old secret and signs the person out everywhere.
+ */
+export async function issueEmployeeMfa(
+  employeeId: string,
+  actor: AdminActor,
+): Promise<IssueMfaResult> {
+  const employee = await Employee.findById(employeeId);
+  if (!employee) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Employee not found.' });
+  const roles = await Role.find({ _id: { $in: employee.roleIds } });
+  if (!roles.some((role) => MFA_REQUIRED_ROLE_KEYS.has(role.key))) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'Only Controller, Admin and Founder accounts use an authenticator (CH §24.3).',
+    });
+  }
+
+  const mfaSecret = generateSecret();
+  await withTransaction(async (session) => {
+    await Employee.updateOne(
+      { _id: employee._id },
+      { $set: { mfaSecret, mfaEnabled: true } },
+      { session },
+    );
+    await AuthSession.updateMany(
+      { employeeId: employee._id, revokedAt: null },
+      { $set: { revokedAt: new Date(), revokedReason: 'mfa_reissued' } },
+      { session },
+    );
+    // The secret itself is never written to the audit log.
+    await writeAuditLog(
+      {
+        actorId: actor.employeeId,
+        actorType: 'staff',
+        entity: 'employee',
+        entityId: employee._id as Types.ObjectId,
+        field: 'mfa_issued',
+        reason: employee.mfaSecret ? 'MFA re-issued' : 'MFA first issued',
+        correlationId: actor.correlationId,
+      },
+      session,
+    );
+  });
+
+  return {
+    employeeId,
+    mfaSecret,
+    mfaOtpauthUrl: generateURI({
+      issuer: env.staffMfaIssuer,
+      label: employee.email,
+      secret: mfaSecret,
+    }),
+  };
 }
 
 interface EmployeeListItem {
