@@ -1,4 +1,4 @@
-import type { Types } from 'mongoose';
+import type { ClientSession, Types } from 'mongoose';
 import { withTransaction } from '../../db/transaction.js';
 import { UpcomingReceipt } from '../../models/UpcomingReceipt.js';
 import { Bankbook } from '../../models/Bankbook.js';
@@ -52,16 +52,36 @@ export async function createUpcomingReceipt(
   buyerId: string,
   input: CreateUpcomingReceiptInput,
 ): Promise<{ upcomingReceiptId: string }> {
-  const created = await UpcomingReceipt.create({
-    buyerId,
-    amountPaise: input.amountPaise,
-    method: input.method,
-    rawText: input.rawText ?? null,
-    utr: input.utr ?? null,
-    fileId: input.fileId ?? null,
-    state: 'waiting',
+  return withTransaction(async (session) => {
+    const [created] = await UpcomingReceipt.create(
+      [
+        {
+          buyerId,
+          amountPaise: input.amountPaise,
+          method: input.method,
+          rawText: input.rawText ?? null,
+          utr: input.utr ?? null,
+          fileId: input.fileId ?? null,
+          state: 'waiting',
+        },
+      ],
+      { session, ordered: true },
+    );
+    if (!created) throw new Error('UpcomingReceipt.create returned no document.');
+    // M10 — a declaration in the buyer's payment window must be visible to the
+    // payment-window expiry job (BR-035): touch his unpaid SOs in this transaction,
+    // so an expiry racing this claim conflicts with it and re-reads (see So.paymentTouchedAt).
+    await touchUnpaidSosOfBuyer(buyerId, session);
+    return { upcomingReceiptId: created.id as string };
   });
-  return { upcomingReceiptId: created.id as string };
+}
+
+async function touchUnpaidSosOfBuyer(buyerId: string, session: ClientSession): Promise<void> {
+  await So.updateMany(
+    { buyerId, state: 'awaiting_payment' },
+    { $set: { paymentTouchedAt: new Date() } },
+    { session },
+  );
 }
 
 /** API-080. The claim queue Sales works from before allocating (API-081). */
@@ -95,12 +115,33 @@ async function assertSosBelongToBuyer(soIds: string[], buyerId: Types.ObjectId):
   }
 }
 
+/**
+ * INV-01 / QR-057 (INTERIM — the real apportionment rule is still an open
+ * client question). A receipt carries one amount and no per-SO split, and
+ * `getPostedReceiptsPaiseForSo` counts that whole amount for every SO it
+ * lists, so a receipt naming two SOs would release both POs on one SO's
+ * worth of money. Until the client says how a receipt may be split, one
+ * receipt covers exactly one SO. If one bank transfer must cover two SOs,
+ * Sales records it as two receipt claims against the same bank credit.
+ */
+function assertExactlyOneSo(soIds: string[]): void {
+  if (new Set(soIds).size !== 1) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn:
+        'A receipt can cover exactly one order. If one bank transfer pays two orders, record it as two separate receipts (QR-057).',
+      field: 'soIds',
+    });
+  }
+}
+
 /** API-081. BR-012 — Sales, not Accounts, knows which order the buyer meant. */
 export async function allocateUpcomingReceipt(
   upcomingReceiptId: string,
   soIds: string[],
   actor: StaffActor,
 ): Promise<void> {
+  assertExactlyOneSo(soIds); // QR-057 interim
   const receipt = await UpcomingReceipt.findById(upcomingReceiptId);
   if (!receipt) {
     throw new AppError({ code: 'NOT_FOUND', messageEn: 'Upcoming receipt not found.' });
@@ -112,18 +153,32 @@ export async function allocateUpcomingReceipt(
     });
   }
   await assertSosBelongToBuyer(soIds, receipt.buyerId as Types.ObjectId); // INV-14
-  receipt.soIds = soIds as unknown as Types.ObjectId[];
-  receipt.pickedBy = actor.employeeId as unknown as Types.ObjectId;
-  await receipt.save();
-
-  await writeAuditLog({
-    actorId: actor.employeeId,
-    actorType: 'staff',
-    entity: 'upcoming_receipt',
-    entityId: receipt._id as Types.ObjectId,
-    field: 'soIds',
-    newValue: soIds,
-    correlationId: actor.correlationId,
+  await withTransaction(async (session) => {
+    // An explicit update, not `receipt.save()`: if a concurrent allocation on the same SO
+    // makes this transaction retry, a document already marked "saved" would skip the write.
+    await UpcomingReceipt.updateOne(
+      { _id: receipt._id },
+      { $set: { soIds, pickedBy: actor.employeeId } },
+      { session },
+    );
+    // M10 — Sales has now said this money is for these orders: the expiry job must not cancel them.
+    await So.updateMany(
+      { _id: { $in: soIds } },
+      { $set: { paymentTouchedAt: new Date() } },
+      { session },
+    );
+    await writeAuditLog(
+      {
+        actorId: actor.employeeId,
+        actorType: 'staff',
+        entity: 'upcoming_receipt',
+        entityId: receipt._id as Types.ObjectId,
+        field: 'soIds',
+        newValue: soIds,
+        correlationId: actor.correlationId,
+      },
+      session,
+    );
   });
 }
 
@@ -159,6 +214,8 @@ export async function postBankCredit(
       messageEn: 'Sales has not yet selected which SOs this claim covers (BR-012).',
     });
   }
+  // QR-057 interim — also refused at posting, so a row allocated before the guard existed cannot post.
+  assertExactlyOneSo(receipt.soIds.map((id) => id.toString()));
 
   const bankbookId = await withTransaction(async (session) => {
     const [entry] = await Bankbook.create(
@@ -182,8 +239,18 @@ export async function postBankCredit(
     );
     if (!entry) throw new Error('Bankbook.create returned no document.');
 
-    receipt.state = 'cleared';
-    await receipt.save({ session });
+    // Explicit update (see `allocateUpcomingReceipt`): safe if this transaction retries.
+    await UpcomingReceipt.updateOne(
+      { _id: receipt._id },
+      { $set: { state: 'cleared' } },
+      { session },
+    );
+    // M10 — money is now posted against these SOs; conflicts with a concurrent expiry (BR-035).
+    await So.updateMany(
+      { _id: { $in: receipt.soIds } },
+      { $set: { paymentTouchedAt: new Date() } },
+      { session },
+    );
 
     await writeAuditLog(
       {
@@ -205,8 +272,13 @@ export async function postBankCredit(
 }
 
 /** INV-01's data source — every receipt posted against this SO, summed. */
-export async function getPostedReceiptsPaiseForSo(soId: string): Promise<Paise> {
-  const rows = await Bankbook.find({ kind: 'in', purpose: 'receipt', soIds: soId });
+export async function getPostedReceiptsPaiseForSo(
+  soId: string,
+  session?: ClientSession,
+): Promise<Paise> {
+  const rows = await Bankbook.find({ kind: 'in', purpose: 'receipt', soIds: soId }).session(
+    session ?? null,
+  );
   return rows.reduce((total, row) => total + row.amountPaise, 0);
 }
 

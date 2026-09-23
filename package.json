@@ -11,6 +11,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "seed:admin": "tsx src/scripts/seedAdmin.ts",
+    "check:mfa": "tsx src/scripts/checkMfaEnrolment.ts",
+    "issue:mfa": "tsx src/scripts/issueMfa.ts",
     "seed:m5-demo": "tsx src/scripts/seedM5Demo.ts",
     "check:dead-list": "tsx src/scripts/checkDeadNames.ts",
     "drill:restore": "tsx src/scripts/backupRestoreDrill.ts",

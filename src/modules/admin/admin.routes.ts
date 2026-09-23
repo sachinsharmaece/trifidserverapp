@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
 import { requirePermission } from '../../middleware/requirePermission.js';
+import { requireReauth } from '../../middleware/requireReauth.js';
 import { validateBody, validateQuery } from '../../middleware/validate.js';
 import { PERMISSIONS } from '../../config/permissions.js';
 import * as controller from './admin.controller.js';
@@ -41,6 +42,15 @@ adminRouter.post(
   requirePermission(PERMISSIONS.EMPLOYEE_WRITE),
   validateBody(createEmployeeSchema),
   controller.postEmployee,
+);
+// M10 — issue or re-issue an authenticator for a Controller/Admin/Founder (CH §24.3).
+// Re-authentication required: it hands out the second factor for someone else's account.
+adminRouter.post(
+  '/admin/employees/:id/mfa',
+  authenticate,
+  requirePermission(PERMISSIONS.EMPLOYEE_WRITE),
+  requireReauth,
+  controller.postEmployeeMfa,
 );
 // API-134 (new — needed by trifid-adminapp's one live screen this session;
 // added to API_CONTRACT.md alongside this change).

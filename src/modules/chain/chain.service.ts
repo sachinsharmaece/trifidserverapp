@@ -19,6 +19,8 @@ import { Ask } from '../../models/Ask.js';
 import { Listing } from '../../models/Listing.js';
 import { ListingLine } from '../../models/ListingLine.js';
 import { PromotionOffer } from '../../models/PromotionOffer.js';
+import { PoolCommitment } from '../../models/PoolCommitment.js';
+import { UpcomingReceipt } from '../../models/UpcomingReceipt.js';
 import { SellerDebit } from '../../models/SellerDebit.js';
 import { recordFailure } from '../conduct/conduct.service.js';
 import { ensureBookAssignment, recordPulseEvent } from '../desk/sales/sales.service.js';
@@ -790,10 +792,24 @@ async function refundSoInFull(
   actorId: string,
   actorType: 'staff' | 'counterparty',
 ): Promise<{ refundId: string }> {
-  const buyer = await Buyer.findById(so.buyerId);
-  const buyerCounterparty = await Counterparty.findById(buyer!.counterpartyId);
+  return withTransaction((session) =>
+    refundSoInFullInSession(so, reasonCode, summary, actorId, actorType, session),
+  );
+}
 
-  return withTransaction(async (session) => {
+/** The body of `refundSoInFull`, for a caller that already holds the transaction (M10 — the offer-expiry claim). */
+async function refundSoInFullInSession(
+  so: InstanceType<typeof So>,
+  reasonCode: string,
+  summary: string,
+  actorId: string,
+  actorType: 'staff' | 'counterparty',
+  session: ClientSession,
+): Promise<{ refundId: string }> {
+  const buyer = await Buyer.findById(so.buyerId).session(session);
+  const buyerCounterparty = await Counterparty.findById(buyer!.counterpartyId).session(session);
+
+  {
     so.state = 'supply_failed';
     await so.save({ session });
     await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'leg1' } }, { session });
@@ -838,7 +854,7 @@ async function refundSoInFull(
     );
 
     return { refundId: (refund._id as Types.ObjectId).toString() };
-  });
+  }
 }
 
 /**
@@ -953,7 +969,7 @@ export async function acceptPromotionOffer(
     });
   }
   if (offer.expiresAt.getTime() < Date.now()) {
-    await settlePromotionAsRefund(offer, so, 'expired');
+    await settlePromotionAsRefund(offer._id as Types.ObjectId, 'expired');
     throw new AppError({ code: 'VALIDATION_FAILED', messageEn: 'This offer has expired.' });
   }
 
@@ -963,9 +979,25 @@ export async function acceptPromotionOffer(
 
   const now = new Date();
   await withTransaction(async (session) => {
+    // M10 — claim the offer first. If the expiry job (or a decline) got there
+    // between our read above and now, the claim fails and nothing below runs.
+    const claimed = await PromotionOffer.findOneAndUpdate(
+      { _id: offer._id, status: 'pending' },
+      { $set: { status: 'accepted', decidedAt: now } },
+      { session, new: true },
+    );
+    if (!claimed) {
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: 'This replacement offer has already been settled.',
+      });
+    }
+
     po.sellerId = offer.promotedSellerId;
     po.state = 'released';
     po.failed = false;
+    po.sameDayMissAt = null; // A new seller, a new dispatch clock (BR-131).
+    po.noDispatch48hAt = null;
     po.dispatchDueDate = now; // WF-11 — the clock starts at his acceptance, not the original PO release.
     po.promisedOutOfIndoreBy = new Date(now.getTime() + 48 * 60 * 60 * 1000);
     await po.save({ session });
@@ -1008,10 +1040,6 @@ export async function acceptPromotionOffer(
         { session, ordered: true },
       );
     }
-
-    offer.status = 'accepted';
-    offer.decidedAt = now;
-    await offer.save({ session });
 
     await writeChainEvent(
       {
@@ -1058,41 +1086,232 @@ export async function rejectPromotionOffer(
       messageEn: 'There is no pending replacement offer on this order.',
     });
   }
-  await settlePromotionAsRefund(offer, so, 'rejected');
+  const settled = await settlePromotionAsRefund(offer._id as Types.ObjectId, 'rejected');
+  if (!settled) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'There is no pending replacement offer on this order.',
+    });
+  }
 }
 
 /**
- * Shared by an explicit decline and a lazy expiry check (there is no
- * scheduled job walking pending offers — same "on-demand, not scheduled"
- * gap class already flagged on the three payout runs and the 7-day
- * auto-close; `getPromotionOffer`-style reads should call this first when
- * they find a `pending` offer whose `expiresAt` has passed).
+ * WF-11 / BR-021 — the ONE rule for a replacement offer that ends in a refund.
+ * The buyer's own "decline" button and 24 hours of silence both come here:
+ * silence is the same rule with no button pressed, not a different rule.
+ *
+ * M10 — the offer is claimed (pending → outcome) at the start of the same
+ * transaction that raises the refund, so an accept, a decline and the expiry
+ * job can never all act on one offer: exactly one wins, the others get `false`.
+ * For `expired` the claim also insists the 24 hours have really passed.
  */
 async function settlePromotionAsRefund(
-  offer: InstanceType<typeof PromotionOffer>,
-  so: InstanceType<typeof So>,
+  offerId: Types.ObjectId,
   outcome: 'rejected' | 'expired',
-): Promise<void> {
-  await refundSoInFull(
-    so,
-    'supply_failure_full',
-    `${so.soNo} — buyer ${outcome === 'rejected' ? 'declined' : 'did not respond to'} the replacement seller within 24h; full refund of ₹${so.totalPaise / 100} raised (BR-021).`,
-    (so.buyerId as Types.ObjectId).toString(),
-    'counterparty',
-  );
-  offer.status = outcome;
-  offer.decidedAt = new Date();
-  await offer.save();
+  now: Date = new Date(),
+): Promise<boolean> {
+  return withTransaction(async (session) => {
+    const claimFilter =
+      outcome === 'expired'
+        ? { _id: offerId, status: 'pending', expiresAt: { $lt: now } }
+        : { _id: offerId, status: 'pending' };
+    const offer = await PromotionOffer.findOneAndUpdate(
+      claimFilter,
+      { $set: { status: outcome, decidedAt: now } },
+      { session, new: true },
+    );
+    if (!offer) return false; // Someone else decided it first, or it has not lapsed.
+
+    const so = await So.findById(offer.soId).session(session);
+    if (!so) throw new AppError({ code: 'NOT_FOUND', messageEn: 'SO not found.' });
+    await refundSoInFullInSession(
+      so,
+      'supply_failure_full',
+      `${so.soNo} — buyer ${outcome === 'rejected' ? 'declined' : 'did not respond to'} the replacement seller within 24h; full refund of ₹${so.totalPaise / 100} raised (BR-021).`,
+      (so.buyerId as Types.ObjectId).toString(),
+      'counterparty',
+      session,
+    );
+    return true;
+  });
 }
 
-/** Staff/worklist visibility helper — resolves any offer whose 24h has lapsed. */
-export async function resolveExpiredPromotionOffers(): Promise<number> {
-  const expired = await PromotionOffer.find({ status: 'pending', expiresAt: { $lt: new Date() } });
-  for (const offer of expired) {
-    const so = await So.findById(offer.soId);
-    if (so) await settlePromotionAsRefund(offer, so, 'expired');
+/**
+ * The promotion-offer expiry clock (WF-11, 24h). One offer at a time, each
+ * through `settlePromotionAsRefund` — the same unit the buyer's decline uses.
+ * `now` is a parameter so a test can advance the clock past the deadline.
+ */
+export async function resolveExpiredPromotionOffers(now: Date = new Date()): Promise<number> {
+  const lapsed = await PromotionOffer.find({ status: 'pending', expiresAt: { $lt: now } }).select(
+    '_id',
+  );
+  let resolved = 0;
+  for (const offer of lapsed) {
+    if (await settlePromotionAsRefund(offer._id as Types.ObjectId, 'expired', now)) resolved += 1;
   }
-  return expired.length;
+  return resolved;
+}
+
+// ---------------------------------------------------------------------------
+// M10 — the payment window closing (BR-032, BR-035). Before M10 nothing in
+// this codebase cancelled an unpaid order; this is the one unit the
+// payment-window expiry job calls, per order.
+// ---------------------------------------------------------------------------
+
+export type CancelUnpaidOutcome =
+  | 'cancelled'
+  | 'not_due' // Not awaiting payment, or the deadline has not passed.
+  | 'pool_order' // A pool order: BR-158's short-close needs the seller's decision — left to staff.
+  | 'paid' // Some money is posted against it: a person decides, never a clock.
+  | 'payment_declared'; // The buyer declared payment in time and it has not been posted yet.
+
+/**
+ * BR-035 — before a PO exists, failure to pay inside the window auto-cancels
+ * the order, releases the seller with no strike, and the buyer takes a strike.
+ * (An SO reserves nothing on the seller's side, so cancelling the SO is the
+ * release; no strike is written for the seller.)
+ *
+ * Everything is decided inside one transaction. The cancel is a conditional
+ * update on the SO, and every payment-side write (a claim, an allocation, a
+ * posting) writes the same SO inside its own transaction — so if a payment and
+ * this cancel overlap, one of them conflicts and re-reads, and the expiry then
+ * sees the money. It can never cancel an order that was in fact just paid.
+ */
+export async function cancelUnpaidSo(
+  soId: string,
+  now: Date,
+  correlationId: string,
+): Promise<CancelUnpaidOutcome> {
+  return withTransaction(async (session): Promise<CancelUnpaidOutcome> => {
+    const so = await So.findOne({
+      _id: soId,
+      state: 'awaiting_payment',
+      payDeadline: { $lt: now },
+    }).session(session);
+    if (!so) return 'not_due';
+
+    // BR-156/BR-158 — a pool order's 16h window closes the POOL, and only the seller
+    // can say whether a short pool ships lower. Not automated; staff resolve it.
+    if (await PoolCommitment.exists({ soId: so._id }).session(session)) return 'pool_order';
+
+    if ((await getPostedReceiptsPaiseForSo(soId, session)) > 0) return 'paid';
+
+    // A claim the buyer made inside his window, still waiting for Accounts: his money
+    // is on its way. Claims already pointed at other orders do not protect this one.
+    const declared = await UpcomingReceipt.exists({
+      buyerId: so.buyerId,
+      state: 'waiting',
+      claimedAt: { $lte: so.payDeadline },
+      $or: [{ soIds: so._id }, { soIds: { $size: 0 } }],
+    }).session(session);
+    if (declared) return 'payment_declared';
+
+    const cancelled = await So.findOneAndUpdate(
+      { _id: so._id, state: 'awaiting_payment' },
+      { $set: { state: 'cancelled' } },
+      { session, new: true },
+    );
+    if (!cancelled) return 'not_due';
+
+    const buyer = await Buyer.findById(so.buyerId).session(session);
+    if (!buyer) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Buyer not found.' });
+    const buyerCounterpartyId = (buyer.counterpartyId as Types.ObjectId).toString();
+
+    // BR-215 — a buyer failing to pay inside his window is a counted failure (grace applies, BR-212).
+    await recordFailure(
+      {
+        counterpartyId: buyerCounterpartyId,
+        counterpartyKind: 'buyer',
+        type: 'buyer_failed_to_pay',
+        chainId: (so.chainId as Types.ObjectId).toString(),
+      },
+      { employeeId: null, correlationId },
+      session,
+    );
+    await writeChainEvent(
+      {
+        chainId: so.chainId as Types.ObjectId,
+        type: 'so_cancelled_unpaid',
+        refCollection: 'so',
+        refId: so._id as Types.ObjectId,
+        actorId: buyerCounterpartyId,
+        actorType: 'system',
+        summary: `${so.soNo} — not paid inside its window; cancelled, seller released with no strike, buyer conduct event recorded (BR-035).`,
+      },
+      session,
+    );
+    await writeAuditLog(
+      {
+        actorId: buyerCounterpartyId,
+        actorType: 'system',
+        entity: 'so',
+        entityId: so._id as Types.ObjectId,
+        field: 'state',
+        oldValue: 'awaiting_payment',
+        newValue: 'cancelled',
+        reason: 'BR-035 payment window expired',
+        correlationId,
+      },
+      session,
+    );
+    return 'cancelled';
+  });
+}
+
+// ---------------------------------------------------------------------------
+// M10 — the seven-day delivery window (BR-192). "Silence is delivery": the
+// buyer's tap and the clock both close the order through this one unit.
+// ---------------------------------------------------------------------------
+
+/**
+ * Closes an order that left Indore on leg 2. It is a conditional update on
+ * `dispatched_leg2`, so a buyer's confirm, a complaint (which moves the order
+ * to `disputed`) and the auto-close can never all win: exactly one does, and
+ * the rest get `false`.
+ */
+export async function closeDeliveredSo(
+  soId: string,
+  by: { actorId: string; actorType: 'counterparty' | 'system' },
+  correlationId: string,
+  extraFilter: Record<string, unknown> = {},
+): Promise<boolean> {
+  return withTransaction(async (session) => {
+    const closed = await So.findOneAndUpdate(
+      { _id: soId, state: 'dispatched_leg2', ...extraFilter },
+      { $set: { state: 'closed' } },
+      { session, new: true },
+    );
+    if (!closed) return false;
+    await writeChainEvent(
+      {
+        chainId: closed.chainId as Types.ObjectId,
+        type: 'so_closed',
+        refCollection: 'so',
+        refId: closed._id as Types.ObjectId,
+        actorId: by.actorId,
+        actorType: by.actorType,
+        summary:
+          by.actorType === 'system'
+            ? `${closed.soNo} — seven days after leg 2 with no complaint: silence is delivery (BR-192).`
+            : `${closed.soNo} — buyer confirmed receipt (BR-192).`,
+      },
+      session,
+    );
+    await writeAuditLog(
+      {
+        actorId: by.actorId,
+        actorType: by.actorType,
+        entity: 'so',
+        entityId: closed._id as Types.ObjectId,
+        field: 'state',
+        oldValue: 'dispatched_leg2',
+        newValue: 'closed',
+        correlationId,
+      },
+      session,
+    );
+    return true;
+  });
 }
 
 export async function transitionToBilledInMarg(soId: string): Promise<void> {
@@ -1108,6 +1327,12 @@ export async function transitionToDispatchedLeg2(soId: string, poId: string): Pr
     'dispatched_leg2',
     'dispatch',
     async (so, session) => {
+      // BR-192 — the seven-day window opens now; the auto-close clock reads this.
+      await So.updateOne(
+        { _id: so._id },
+        { $set: { deliveryWindowEndsAt: addDays(new Date(), 7) } },
+        { session },
+      );
       const buyerCounterpartyId = await counterpartyIdForBuyer(
         so.buyerId as Types.ObjectId,
         session,
@@ -1140,12 +1365,9 @@ export async function transitionToDispatchedLeg2(soId: string, poId: string): Pr
 }
 
 // BR-192/BR-193 — the 7-day delivery window, confirm/complaint and the final
-// `closed` state are WF-08 step 6 and belong to M5 (the buyer app is where
-// a buyer confirms or complains). Not built here: `so.state` reaches
-// `dispatched_leg2` and stays there at the end of this milestone's chain,
-// which is what WF-08 steps 4–5 and BR-030's own stage-6 completion
-// condition ("Leg 2 has left Indore") require — `closed` remains a defined
-// SO_STATES value with no producer yet, for M5 to write.
+// `closed` state are WF-08 step 6. `so.state` reaches `dispatched_leg2` here
+// (BR-030's stage-6 completion condition); the buyer's confirm (M5) and the
+// seven-day clock (M10) both close it through `closeDeliveredSo`, above.
 
 // ---------------------------------------------------------------------------
 // BR-031/BR-037 — the chain view

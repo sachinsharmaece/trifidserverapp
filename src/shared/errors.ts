@@ -57,6 +57,8 @@ export type ErrorCode =
   | 'ORDER_NOT_DISPATCHABLE'
   | 'ORDER_NOT_YET_DELIVERABLE'
   | 'COMPLAINT_WINDOW_CLOSED'
+  // M10 — CH §24.3: a Controller, Admin or Founder has no authenticator enrolled yet.
+  | 'MFA_ENROLMENT_REQUIRED'
   | 'INTERNAL_ERROR';
 
 const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
@@ -99,6 +101,7 @@ const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
   ORDER_NOT_DISPATCHABLE: 409,
   ORDER_NOT_YET_DELIVERABLE: 409,
   COMPLAINT_WINDOW_CLOSED: 409,
+  MFA_ENROLMENT_REQUIRED: 403,
   INTERNAL_ERROR: 500,
 };
 

@@ -314,6 +314,11 @@ async function loadEmployeeRoles(
   return { roleKeys, permissionKeys };
 }
 
+/** CH §24.3 — the roles that must use a second factor. */
+function roleRequiresMfa(roleKeys: string[]): boolean {
+  return roleKeys.some((key) => MFA_REQUIRED_ROLE_KEYS.has(key));
+}
+
 async function registerStaffFailure(employee: HydratedDocument<EmployeeDocument>): Promise<void> {
   employee.failedLoginAttempts += 1;
   if (employee.failedLoginAttempts >= env.staffLockoutAttempts) {
@@ -408,10 +413,18 @@ export async function staffLogin(email: string, password: string): Promise<Staff
   const { roleKeys, permissionKeys } = await loadEmployeeRoles(employee);
   const typedEmployee = employee as HydratedDocument<EmployeeDocument>;
 
-  // CH §24.3 — MFA on Controller, Admin and Founder only.
-  const requiresMfa =
-    roleKeys.some((key) => MFA_REQUIRED_ROLE_KEYS.has(key)) && employee.mfaEnabled;
-  if (requiresMfa) {
+  // CH §24.3 — MFA on Controller, Admin and Founder. M10: enforced by ROLE, not by the
+  // `mfaEnabled` data flag — a flag left off used to let these three roles in on a password
+  // alone. With no authenticator enrolled they are refused, and an Admin issues one
+  // (`issueEmployeeMfa`, or the seed script for the first Admin).
+  if (roleRequiresMfa(roleKeys)) {
+    if (!employee.mfaSecret) {
+      throw new AppError({
+        code: 'MFA_ENROLMENT_REQUIRED',
+        messageEn:
+          'This role must sign in with an authenticator app, and none is set up yet. Ask an Admin to issue one.',
+      });
+    }
     return {
       mfaRequired: true,
       mfaToken: signMfaPendingToken(typedEmployee._id.toString()),
@@ -592,9 +605,16 @@ export async function reauth(
     throw new AppError({ code: 'INVALID_CREDENTIALS', messageEn: 'Incorrect password.' });
   }
 
-  if (employee.mfaEnabled) {
-    const codeIsValid =
-      employee.mfaSecret && mfaCode ? await checkMfaCode(employee.mfaSecret, mfaCode) : false;
+  // M10 — by role, like sign-in: a Controller, Admin or Founder always proves the second factor.
+  const { roleKeys } = await loadEmployeeRoles(employee);
+  if (roleRequiresMfa(roleKeys) || employee.mfaEnabled) {
+    if (!employee.mfaSecret) {
+      throw new AppError({
+        code: 'MFA_ENROLMENT_REQUIRED',
+        messageEn: 'No authenticator is set up for this account. Ask an Admin to issue one.',
+      });
+    }
+    const codeIsValid = mfaCode ? await checkMfaCode(employee.mfaSecret, mfaCode) : false;
     if (!codeIsValid) {
       throw new AppError({ code: 'OTP_INVALID', messageEn: 'That code is not right.' });
     }

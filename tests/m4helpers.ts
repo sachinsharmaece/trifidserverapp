@@ -8,7 +8,7 @@ import { Manufacturer } from '../src/models/Manufacturer.js';
 import { Product } from '../src/models/Product.js';
 import { Sku } from '../src/models/Sku.js';
 import { MarginMatrix } from '../src/models/MarginMatrix.js';
-import { randomEmail, randomGstin, randomMobile } from './helpers.js';
+import { loginStaff, mfaSecretFor, randomEmail, randomGstin, randomMobile } from './helpers.js';
 
 export async function staffToken(
   app: Express,
@@ -17,17 +17,18 @@ export async function staffToken(
   const email = randomEmail();
   const password = 'CorrectHorse123';
   const role = await Role.findOne({ key: roleKey });
+  const mfaSecret = mfaSecretFor([roleKey]); // Controller / Admin / Founder must enrol (CH §24.3).
   const employee = await Employee.create({
     person: `Test ${roleKey}`,
     email,
     passwordHash: await bcrypt.hash(password, 10),
     roleIds: [role!._id],
-    mfaEnabled: false,
+    mfaSecret: mfaSecret ?? null,
+    mfaEnabled: mfaSecret !== undefined,
     active: true,
   });
-  const loginRes = await request(app).post('/api/v1/auth/staff/login').send({ email, password });
   return {
-    token: loginRes.body.data.accessToken as string,
+    token: await loginStaff(app, email, password, mfaSecret),
     employeeId: (employee._id as unknown as string).toString(),
   };
 }

@@ -5,7 +5,7 @@ import { createApp } from '../src/app.js';
 import { Employee } from '../src/models/Employee.js';
 import { Role } from '../src/models/Role.js';
 import { Tehsil } from '../src/models/Tehsil.js';
-import { randomEmail, randomGstin, randomMobile } from './helpers.js';
+import { loginStaff, mfaSecretFor, randomEmail, randomGstin, randomMobile } from './helpers.js';
 
 const app = createApp();
 
@@ -13,16 +13,17 @@ async function staffToken(roleKey: string): Promise<string> {
   const email = randomEmail();
   const password = 'CorrectHorse123';
   const role = await Role.findOne({ key: roleKey });
+  const mfaSecret = mfaSecretFor([roleKey]);
   await Employee.create({
     person: 'Test Staff',
     email,
     passwordHash: await bcrypt.hash(password, 10),
     roleIds: [role!._id],
-    mfaEnabled: false,
+    mfaSecret: mfaSecret ?? null,
+    mfaEnabled: mfaSecret !== undefined,
     active: true,
   });
-  const loginRes = await request(app).post('/api/v1/auth/staff/login').send({ email, password });
-  return loginRes.body.data.accessToken as string;
+  return loginStaff(app, email, password, mfaSecret);
 }
 
 function bankDetail() {

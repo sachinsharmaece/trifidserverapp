@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -142,6 +142,13 @@ async function enqueueOne(
 // Step 0b timing — BR-122 / BR-231. Saturday 2026-09-19 is a real Saturday.
 // IST is UTC+05:30, so 17:00 IST is 11:30Z.
 // ---------------------------------------------------------------------------
+
+// The drain sends at most 100 rows a run, oldest first. Files that ran before this one leave
+// queued messages behind (every SO raises a `payment_due`), and enough of them would starve
+// these tests' own rows out of the batch. M10's clock tests added exactly that volume.
+beforeAll(async () => {
+  await NotificationOutbox.deleteMany({});
+});
 
 describe('BR-231 — the head start counts 09:30–19:00 IST, Monday to Saturday, and nothing else', () => {
   it('a Saturday-evening ask does not open until Monday, 4 working hours after Monday 09:30 less what Saturday used', () => {

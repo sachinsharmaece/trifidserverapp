@@ -34,6 +34,14 @@ export async function postEmployee(req: Request, res: Response): Promise<void> {
   ok(res, req, result, 201);
 }
 
+export async function postEmployeeMfa(req: Request, res: Response): Promise<void> {
+  const result = await adminService.issueEmployeeMfa(req.params.id as string, {
+    employeeId: req.auth!.employeeId!,
+    correlationId: req.correlationId,
+  });
+  ok(res, req, result, 201);
+}
+
 export async function getLanes(req: Request, res: Response): Promise<void> {
   ok(res, req, await adminService.listLaneBoard());
 }

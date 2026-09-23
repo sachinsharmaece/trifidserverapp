@@ -43,6 +43,12 @@ const poSchema = new Schema(
     // and not auto-actioned — Logistics/Purchase reviews it manually.
     extensionRequestedAt: { type: Date, default: null },
     extensionReason: { type: String, default: null },
+    // M10 — the dispatch-clock chase (BR-174) claims each PO once per clock.
+    // `sameDayMissAt`: the same-day obligation passed — pressure, not a failure (BR-215).
+    // `noDispatch48hAt`: the 48-hour failure line passed — a counted seller failure.
+    // Both reset when a promoted seller accepts (WF-11): a new seller, a new clock.
+    sameDayMissAt: { type: Date, default: null },
+    noDispatch48hAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

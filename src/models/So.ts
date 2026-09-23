@@ -65,7 +65,13 @@ const soSchema = new Schema(
     placeOfSupply: { type: String, enum: ['intra_state', 'inter_state'], required: true },
     state: { type: String, enum: SO_STATES, required: true, default: 'awaiting_payment' },
     payDeadline: { type: Date, required: true },
+    // BR-192 — set when leg 2 dispatches: seven days on, silence is delivery.
     deliveryWindowEndsAt: { type: Date, default: null },
+    // M10 — a buyer's payment declaration or a posted receipt touches this. The
+    // payment-window expiry job (BR-035) and every payment-side write both write
+    // this document inside a transaction, so a cancellation and a payment that
+    // overlap conflict on it and one of them retries — the expiry then sees the money.
+    paymentTouchedAt: { type: Date, default: null },
     totalPaise: { type: Number, required: true },
   },
   { timestamps: true },
