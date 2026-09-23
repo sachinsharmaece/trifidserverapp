@@ -305,6 +305,8 @@ interface RegistrationStatusDto {
   kind: string;
   status: string;
   rejectionReason?: string;
+  staffAssisted: boolean;
+  staffAssistedOtpVerifiedAt: Date | null;
 }
 
 /** API-012. */
@@ -326,6 +328,8 @@ export async function getRegistration(
     registrationId: (counterparty._id as Types.ObjectId).toString(),
     kind: counterparty.kind,
     status: counterparty.status,
+    staffAssisted: counterparty.staffAssisted ?? false,
+    staffAssistedOtpVerifiedAt: counterparty.staffAssistedOtpVerifiedAt ?? null,
   };
 
   if (counterparty.status === 'rejected') {
@@ -348,6 +352,7 @@ interface RegistrationListItem {
   kind: string;
   status: string;
   createdAt: Date;
+  staffAssisted: boolean;
 }
 
 /** API-013. */
@@ -374,6 +379,7 @@ export async function listRegistrations(
     kind: counterparty.kind,
     status: counterparty.status,
     createdAt: counterparty.createdAt as Date,
+    staffAssisted: counterparty.staffAssisted ?? false,
   }));
 
   const nextCursor = hasMore
