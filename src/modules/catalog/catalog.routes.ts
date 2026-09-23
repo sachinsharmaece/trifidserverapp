@@ -7,6 +7,7 @@ import * as controller from './catalog.controller.js';
 import {
   createManufacturerSchema,
   createProductSchema,
+  listAllProductsQuerySchema,
   listManufacturersQuerySchema,
   listProductsQuerySchema,
   skuImportSchema,
@@ -48,6 +49,22 @@ catalogRouter.post(
   requirePermission(PERMISSIONS.CATALOG_WRITE),
   validateBody(createManufacturerSchema),
   controller.postManufacturer,
+);
+
+// New — the admin catalog-management screen's own unfiltered list/detail
+// reads, distinct from API-022's technical-scoped picker (BR-111).
+catalogRouter.get(
+  '/admin/products',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  validateQuery(listAllProductsQuerySchema),
+  controller.getAllProducts,
+);
+catalogRouter.get(
+  '/admin/products/:id',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  controller.getProductById,
 );
 
 // API-024 / API-025 — ⚙️ catalog:write.

@@ -19,6 +19,18 @@ export const listProductsQuerySchema = z
   })
   .strict();
 
+// New — the admin catalog-management screen's own unfiltered list. BR-111
+// ("technical is the primary axis") governs the counterparty-facing picker
+// (feed, pools, raising an ask); it says nothing about the staff data-
+// management screen, which already lists every registration/employee/etc.
+// without a mandatory filter elsewhere in this contract.
+export const listAllProductsQuerySchema = z
+  .object({
+    cursor: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+  })
+  .strict();
+
 export const createProductSchema = z
   .object({
     brand: z.string().min(1),

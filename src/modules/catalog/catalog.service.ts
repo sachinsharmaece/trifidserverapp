@@ -77,6 +77,83 @@ export async function listProducts(
   }));
 }
 
+interface ProductListItem {
+  productId: string;
+  brand: string;
+  technical: string;
+  manufacturerId: string;
+  manufacturerName?: string;
+  hsn: string;
+  class: string;
+  active: boolean;
+}
+
+// New — the admin catalog-management screen's own unfiltered list (not
+// BR-111's counterparty picker, see catalog.validation.ts's own note).
+// Cursor-paginated on `_id`, same pattern as `listRegistrations`.
+export async function listAllProducts(
+  cursor: string | undefined,
+  limit: number,
+): Promise<{ items: ProductListItem[]; nextCursor?: string }> {
+  const query: Record<string, unknown> = { deletedAt: null };
+  if (cursor) query._id = { $gt: cursor };
+
+  const products = await Product.find(query)
+    .sort({ _id: 1 })
+    .limit(limit + 1);
+
+  const hasMore = products.length > limit;
+  const page = hasMore ? products.slice(0, limit) : products;
+
+  const manufacturers = await Manufacturer.find({
+    _id: { $in: page.map((product) => product.manufacturerId) },
+  });
+  const manufacturerNameById = new Map(
+    manufacturers.map((manufacturer) => [
+      (manufacturer._id as Types.ObjectId).toString(),
+      manufacturer.name,
+    ]),
+  );
+
+  const items = page.map((product) => ({
+    productId: (product._id as Types.ObjectId).toString(),
+    brand: product.brand,
+    technical: product.technical,
+    manufacturerId: (product.manufacturerId as unknown as Types.ObjectId).toString(),
+    manufacturerName: manufacturerNameById.get(
+      (product.manufacturerId as unknown as Types.ObjectId).toString(),
+    ),
+    hsn: product.hsn,
+    class: product.class,
+    active: product.active,
+  }));
+
+  const nextCursor = hasMore
+    ? (page[page.length - 1]!._id as Types.ObjectId).toString()
+    : undefined;
+  return { items, nextCursor };
+}
+
+// New — the detail/edit screen's own read; API-022's `listProducts` above
+// stays the technical-scoped picker.
+export async function getProductById(productId: string): Promise<ProductListItem> {
+  const product = await Product.findOne({ _id: productId, deletedAt: null });
+  if (!product) {
+    throw new AppError({ code: 'NOT_FOUND', messageEn: 'Product not found.' });
+  }
+  const manufacturer = await Manufacturer.findById(product.manufacturerId);
+  return {
+    productId: (product._id as Types.ObjectId).toString(),
+    brand: product.brand,
+    technical: product.technical,
+    manufacturerId: (product.manufacturerId as unknown as Types.ObjectId).toString(),
+    manufacturerName: manufacturer?.name,
+    hsn: product.hsn,
+    class: product.class,
+    active: product.active,
+  };
+}
+
 interface SkuListItem {
   skuId: string;
   packLabel: string;
