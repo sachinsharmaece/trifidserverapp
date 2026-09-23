@@ -12,6 +12,7 @@ import {
   listProductsQuerySchema,
   skuImportSchema,
   updateProductSchema,
+  updateSkuSchema,
 } from './catalog.validation.js';
 
 export const catalogRouter = Router();
@@ -88,4 +89,12 @@ catalogRouter.post(
   requirePermission(PERMISSIONS.CATALOG_WRITE),
   validateBody(skuImportSchema),
   controller.postSkuImport,
+);
+// New — the Manage desk's own SKU edit.
+catalogRouter.patch(
+  '/admin/skus/:id',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  validateBody(updateSkuSchema),
+  controller.patchSku,
 );

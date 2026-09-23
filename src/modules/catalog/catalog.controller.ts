@@ -77,6 +77,19 @@ export async function patchProduct(req: Request, res: Response): Promise<void> {
   ok(res, req, result);
 }
 
+export async function patchSku(req: Request, res: Response): Promise<void> {
+  const result = await catalogService.updateSku(
+    req.params.id as string,
+    req.body as {
+      packLabel?: string;
+      packSize?: number;
+      unitsPerBox?: number;
+      active?: boolean;
+    },
+  );
+  ok(res, req, result);
+}
+
 export async function postSkuImport(req: Request, res: Response): Promise<void> {
   const { productId, rows } = req.body as {
     productId: string;

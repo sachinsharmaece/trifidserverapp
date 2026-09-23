@@ -52,6 +52,17 @@ export const updateProductSchema = z
   })
   .strict();
 
+// New — the Manage desk's own SKU edit. `baseUnit` is deliberately not
+// accepted here at all — BR-055, `models/Sku.ts`'s own `immutable: true`.
+export const updateSkuSchema = z
+  .object({
+    packLabel: z.string().min(1).optional(),
+    packSize: z.number().positive().optional(),
+    unitsPerBox: z.number().int().positive().optional(),
+    active: z.boolean().optional(),
+  })
+  .strict();
+
 // Deliberately loose on packSize/unitsPerBox/baseUnit here (z.unknown()) —
 // BR-055's rejection is about the *value* being wrong (not a positive
 // number, or baseUnit not one of LTR/KG/PC), not the request shape being

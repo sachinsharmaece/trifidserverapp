@@ -161,6 +161,7 @@ interface SkuListItem {
   baseUnit: string;
   unitsPerBox: number;
   baseUnitsPerBox: number;
+  active: boolean;
 }
 
 // API-023.
@@ -172,6 +173,7 @@ export async function listSkusForProduct(productId: string): Promise<SkuListItem
     packSize: sku.packSize,
     baseUnit: sku.baseUnit,
     unitsPerBox: sku.unitsPerBox,
+    active: sku.active,
     baseUnitsPerBox: sku.baseUnitsPerBox,
   }));
 }
@@ -208,6 +210,39 @@ export async function updateProduct(
     throw new AppError({ code: 'NOT_FOUND', messageEn: 'Product not found.' });
   }
   return { productId: (product._id as Types.ObjectId).toString() };
+}
+
+interface UpdateSkuInput {
+  packLabel?: string;
+  packSize?: number;
+  unitsPerBox?: number;
+  active?: boolean;
+}
+
+/**
+ * New — the Manage desk's own SKU edit. `baseUnit` is deliberately not an
+ * accepted field here at all (BR-055, `models/Sku.ts`'s own `immutable:
+ * true`) — there is no code path that can change it, not even this one.
+ * Fetched and `.save()`d rather than `findByIdAndUpdate`, so the model's own
+ * `pre('validate')` hook recomputes `baseUnitsPerBox` from the new
+ * `packSize`/`unitsPerBox` — a `$set` update would leave it stale.
+ */
+export async function updateSku(
+  skuId: string,
+  updates: UpdateSkuInput,
+): Promise<{ skuId: string; baseUnitsPerBox: number }> {
+  const sku = await Sku.findById(skuId);
+  if (!sku) {
+    throw new AppError({ code: 'NOT_FOUND', messageEn: 'SKU not found.' });
+  }
+
+  if (updates.packLabel !== undefined) sku.packLabel = updates.packLabel;
+  if (updates.packSize !== undefined) sku.packSize = updates.packSize;
+  if (updates.unitsPerBox !== undefined) sku.unitsPerBox = updates.unitsPerBox;
+  if (updates.active !== undefined) sku.active = updates.active;
+  await sku.save();
+
+  return { skuId: (sku._id as Types.ObjectId).toString(), baseUnitsPerBox: sku.baseUnitsPerBox };
 }
 
 interface SkuImportRow {
