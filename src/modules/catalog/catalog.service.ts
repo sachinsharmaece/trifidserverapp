@@ -77,6 +77,83 @@ export async function listProducts(
   }));
 }
 
+interface ProductListItem {
+  productId: string;
+  brand: string;
+  technical: string;
+  manufacturerId: string;
+  manufacturerName?: string;
+  hsn: string;
+  class: string;
+  active: boolean;
+}
+
+// New — the admin catalog-management screen's own unfiltered list (not
+// BR-111's counterparty picker, see catalog.validation.ts's own note).
+// Cursor-paginated on `_id`, same pattern as `listRegistrations`.
+export async function listAllProducts(
+  cursor: string | undefined,
+  limit: number,
+): Promise<{ items: ProductListItem[]; nextCursor?: string }> {
+  const query: Record<string, unknown> = { deletedAt: null };
+  if (cursor) query._id = { $gt: cursor };
+
+  const products = await Product.find(query)
+    .sort({ _id: 1 })
+    .limit(limit + 1);
+
+  const hasMore = products.length > limit;
+  const page = hasMore ? products.slice(0, limit) : products;
+
+  const manufacturers = await Manufacturer.find({
+    _id: { $in: page.map((product) => product.manufacturerId) },
+  });
+  const manufacturerNameById = new Map(
+    manufacturers.map((manufacturer) => [
+      (manufacturer._id as Types.ObjectId).toString(),
+      manufacturer.name,
+    ]),
+  );
+
+  const items = page.map((product) => ({
+    productId: (product._id as Types.ObjectId).toString(),
+    brand: product.brand,
+    technical: product.technical,
+    manufacturerId: (product.manufacturerId as unknown as Types.ObjectId).toString(),
+    manufacturerName: manufacturerNameById.get(
+      (product.manufacturerId as unknown as Types.ObjectId).toString(),
+    ),
+    hsn: product.hsn,
+    class: product.class,
+    active: product.active,
+  }));
+
+  const nextCursor = hasMore
+    ? (page[page.length - 1]!._id as Types.ObjectId).toString()
+    : undefined;
+  return { items, nextCursor };
+}
+
+// New — the detail/edit screen's own read; API-022's `listProducts` above
+// stays the technical-scoped picker.
+export async function getProductById(productId: string): Promise<ProductListItem> {
+  const product = await Product.findOne({ _id: productId, deletedAt: null });
+  if (!product) {
+    throw new AppError({ code: 'NOT_FOUND', messageEn: 'Product not found.' });
+  }
+  const manufacturer = await Manufacturer.findById(product.manufacturerId);
+  return {
+    productId: (product._id as Types.ObjectId).toString(),
+    brand: product.brand,
+    technical: product.technical,
+    manufacturerId: (product.manufacturerId as unknown as Types.ObjectId).toString(),
+    manufacturerName: manufacturer?.name,
+    hsn: product.hsn,
+    class: product.class,
+    active: product.active,
+  };
+}
+
 interface SkuListItem {
   skuId: string;
   packLabel: string;
@@ -84,6 +161,7 @@ interface SkuListItem {
   baseUnit: string;
   unitsPerBox: number;
   baseUnitsPerBox: number;
+  active: boolean;
 }
 
 // API-023.
@@ -95,6 +173,7 @@ export async function listSkusForProduct(productId: string): Promise<SkuListItem
     packSize: sku.packSize,
     baseUnit: sku.baseUnit,
     unitsPerBox: sku.unitsPerBox,
+    active: sku.active,
     baseUnitsPerBox: sku.baseUnitsPerBox,
   }));
 }
@@ -131,6 +210,39 @@ export async function updateProduct(
     throw new AppError({ code: 'NOT_FOUND', messageEn: 'Product not found.' });
   }
   return { productId: (product._id as Types.ObjectId).toString() };
+}
+
+interface UpdateSkuInput {
+  packLabel?: string;
+  packSize?: number;
+  unitsPerBox?: number;
+  active?: boolean;
+}
+
+/**
+ * New — the Manage desk's own SKU edit. `baseUnit` is deliberately not an
+ * accepted field here at all (BR-055, `models/Sku.ts`'s own `immutable:
+ * true`) — there is no code path that can change it, not even this one.
+ * Fetched and `.save()`d rather than `findByIdAndUpdate`, so the model's own
+ * `pre('validate')` hook recomputes `baseUnitsPerBox` from the new
+ * `packSize`/`unitsPerBox` — a `$set` update would leave it stale.
+ */
+export async function updateSku(
+  skuId: string,
+  updates: UpdateSkuInput,
+): Promise<{ skuId: string; baseUnitsPerBox: number }> {
+  const sku = await Sku.findById(skuId);
+  if (!sku) {
+    throw new AppError({ code: 'NOT_FOUND', messageEn: 'SKU not found.' });
+  }
+
+  if (updates.packLabel !== undefined) sku.packLabel = updates.packLabel;
+  if (updates.packSize !== undefined) sku.packSize = updates.packSize;
+  if (updates.unitsPerBox !== undefined) sku.unitsPerBox = updates.unitsPerBox;
+  if (updates.active !== undefined) sku.active = updates.active;
+  await sku.save();
+
+  return { skuId: (sku._id as Types.ObjectId).toString(), baseUnitsPerBox: sku.baseUnitsPerBox };
 }
 
 interface SkuImportRow {

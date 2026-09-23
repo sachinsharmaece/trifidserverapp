@@ -35,6 +35,20 @@ export async function getSkus(req: Request, res: Response): Promise<void> {
   ok(res, req, await catalogService.listSkusForProduct(req.params.id as string));
 }
 
+// New — the admin catalog-management screen's own unfiltered list.
+export async function getAllProducts(req: Request, res: Response): Promise<void> {
+  const { cursor, limit } = req.validatedQuery as { cursor?: string; limit?: number };
+  const result = await catalogService.listAllProducts(cursor, limit ?? 25);
+  res.status(200).json({
+    data: result.items,
+    meta: { correlationId: req.correlationId, nextCursor: result.nextCursor },
+  });
+}
+
+export async function getProductById(req: Request, res: Response): Promise<void> {
+  ok(res, req, await catalogService.getProductById(req.params.id as string));
+}
+
 export async function postProduct(req: Request, res: Response): Promise<void> {
   const result = await catalogService.createProduct(
     req.body as {
@@ -57,6 +71,19 @@ export async function patchProduct(req: Request, res: Response): Promise<void> {
       manufacturerId?: string;
       hsn?: string;
       class?: 'A' | 'B' | 'C';
+      active?: boolean;
+    },
+  );
+  ok(res, req, result);
+}
+
+export async function patchSku(req: Request, res: Response): Promise<void> {
+  const result = await catalogService.updateSku(
+    req.params.id as string,
+    req.body as {
+      packLabel?: string;
+      packSize?: number;
+      unitsPerBox?: number;
       active?: boolean;
     },
   );

@@ -7,10 +7,12 @@ import * as controller from './catalog.controller.js';
 import {
   createManufacturerSchema,
   createProductSchema,
+  listAllProductsQuerySchema,
   listManufacturersQuerySchema,
   listProductsQuerySchema,
   skuImportSchema,
   updateProductSchema,
+  updateSkuSchema,
 } from './catalog.validation.js';
 
 export const catalogRouter = Router();
@@ -50,6 +52,22 @@ catalogRouter.post(
   controller.postManufacturer,
 );
 
+// New — the admin catalog-management screen's own unfiltered list/detail
+// reads, distinct from API-022's technical-scoped picker (BR-111).
+catalogRouter.get(
+  '/admin/products',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  validateQuery(listAllProductsQuerySchema),
+  controller.getAllProducts,
+);
+catalogRouter.get(
+  '/admin/products/:id',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  controller.getProductById,
+);
+
 // API-024 / API-025 — ⚙️ catalog:write.
 catalogRouter.post(
   '/admin/products',
@@ -71,4 +89,12 @@ catalogRouter.post(
   requirePermission(PERMISSIONS.CATALOG_WRITE),
   validateBody(skuImportSchema),
   controller.postSkuImport,
+);
+// New — the Manage desk's own SKU edit.
+catalogRouter.patch(
+  '/admin/skus/:id',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  validateBody(updateSkuSchema),
+  controller.patchSku,
 );
