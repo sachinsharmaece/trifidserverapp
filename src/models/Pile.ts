@@ -1,4 +1,5 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
+import { proxyLogField } from '../shared/proxyLog.js';
 
 /**
  * ENT-21 `pile`. BR-133 — demand accumulates on a listing line into a pile;
@@ -30,6 +31,9 @@ const pileSchema = new Schema(
     // means "still cancellable" (worker/agendaProducer.ts).
     executedAt: { type: Date, default: null },
     sellerLockedUntil: { type: Date, default: null }, // BR-032 — 24h from the seller's confirm.
+    // Staff-assisted enquiries — present only when Purchase decided this
+    // pile (confirm/requote/decline) on a phone call.
+    proxyLog: proxyLogField,
   },
   { timestamps: true },
 );

@@ -3,6 +3,11 @@ import { Counterparty } from '../../models/Counterparty.js';
 import { AppError } from '../../shared/errors.js';
 import * as onboardingService from './onboarding.service.js';
 import { approveBuyerSchema, approveSellerSchema } from './onboarding.validation.js';
+import type {
+  staffRegisterBuyerSchema,
+  staffRegisterSellerSchema,
+} from './onboarding.validation.js';
+import type { z } from 'zod';
 
 function ok(res: Response, req: Request, data: unknown, status = 200): void {
   res.status(status).json({ data, meta: { correlationId: req.correlationId } });
@@ -15,6 +20,30 @@ export async function postRegisterBuyer(req: Request, res: Response): Promise<vo
 
 export async function postRegisterSeller(req: Request, res: Response): Promise<void> {
   const result = await onboardingService.registerSeller(req.body);
+  ok(res, req, result, 201);
+}
+
+// Staff-assisted enquiries — Sales raises a buyer registration on a phone
+// call. Body validated by staffRegisterBuyerSchema (validateBody middleware
+// on the route); calls the exact same registerBuyer used by API-010, plus
+// the mandatory call note.
+export async function postStaffRegisterBuyer(req: Request, res: Response): Promise<void> {
+  const { callNote, ...input } = req.body as z.infer<typeof staffRegisterBuyerSchema>;
+  const result = await onboardingService.registerBuyer(input, {
+    employeeId: req.auth!.employeeId!,
+    callNote,
+    correlationId: req.correlationId,
+  });
+  ok(res, req, result, 201);
+}
+
+export async function postStaffRegisterSeller(req: Request, res: Response): Promise<void> {
+  const { callNote, ...input } = req.body as z.infer<typeof staffRegisterSellerSchema>;
+  const result = await onboardingService.registerSeller(input, {
+    employeeId: req.auth!.employeeId!,
+    callNote,
+    correlationId: req.correlationId,
+  });
   ok(res, req, result, 201);
 }
 

@@ -37,6 +37,15 @@ const counterpartySchema = new Schema(
     acquiredBy: { type: String, default: null },
     acquiredAt: { type: Date, default: null },
     deletedAt: { type: Date, default: null },
+    // Staff-assisted enquiries — set only when a desk raised this
+    // registration on a phone call, not by the counterparty themselves.
+    // The mandatory call note lives here, on the record the action
+    // creates. `staffAssistedOtpVerifiedAt` gates approval (API-014):
+    // approval refuses while this is null on a staff-assisted registration.
+    staffAssisted: { type: Boolean, default: false },
+    staffAssistedByEmployeeId: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },
+    staffAssistedCallNote: { type: String, default: null },
+    staffAssistedOtpVerifiedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

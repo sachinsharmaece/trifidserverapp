@@ -79,6 +79,14 @@ export const PERMISSIONS = {
   NOTIFICATION_LOG_READ: 'notification:log_read',
   FUNNEL_READ: 'funnel:read',
   FOUNDER_OVERVIEW_READ: 'founder:overview_read',
+  // Staff-assisted enquiries — a phone-call proxy layer over the existing
+  // ask/quote/listing/registration flows. Desk-boundary permissions only;
+  // no role name is ever checked, matching every other permission here.
+  ONBOARDING_STAFF_ASSIST_BUYER: 'onboarding:staff_assist_buyer',
+  ONBOARDING_STAFF_ASSIST_SELLER: 'onboarding:staff_assist_seller',
+  PROXY_BUYER_CALL: 'proxy:buyer_call',
+  PROXY_SELLER_CALL: 'proxy:seller_call',
+  ACCOUNTS_CONFIRM_RECEIPT: 'accounts:confirm_receipt',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -113,6 +121,9 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.DISPUTE_RECOVERY_READ,
       // M8 — BR-275, Purchase is measured on leaks closed.
       PERMISSIONS.FUNNEL_READ,
+      // Staff-assisted enquiries — Purchase proxies for a seller only.
+      PERMISSIONS.ONBOARDING_STAFF_ASSIST_SELLER,
+      PERMISSIONS.PROXY_SELLER_CALL,
     ],
   },
   {
@@ -137,6 +148,9 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.COMPLAINT_READ,
       PERMISSIONS.CONDUCT_RECORD,
       PERMISSIONS.CONDUCT_ADVANCE,
+      // Staff-assisted enquiries — Sales proxies for a buyer only.
+      PERMISSIONS.ONBOARDING_STAFF_ASSIST_BUYER,
+      PERMISSIONS.PROXY_BUYER_CALL,
     ],
   },
   {
@@ -176,6 +190,9 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       // M7 — BR-023's standing unfiled-bills queue.
       PERMISSIONS.GST_UNFILED_READ,
       PERMISSIONS.GST_MARK_FILED,
+      // Staff-assisted enquiries — Accounts' own fourth payable gate,
+      // distinct from the dock's inspection record.
+      PERMISSIONS.ACCOUNTS_CONFIRM_RECEIPT,
     ],
   },
   {

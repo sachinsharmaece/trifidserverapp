@@ -297,6 +297,15 @@ export async function verifyOtp(
   otpDoc.consumedAt = new Date();
   await otpDoc.save();
 
+  // Staff-assisted enquiries — the real phone number confirming genuineness
+  // via this same, unmodified OTP mechanism is what gates approval
+  // (onboarding.service.ts's assertStaffAssistedOtpConfirmed). Stamped once,
+  // on any successful verify against a staff-assisted registration's mobile.
+  if (counterparty.staffAssisted && !counterparty.staffAssistedOtpVerifiedAt) {
+    counterparty.staffAssistedOtpVerifiedAt = new Date();
+    await counterparty.save();
+  }
+
   const session = await issueCounterpartySession(
     counterparty as HydratedDocument<CounterpartyDocument>,
     deviceFingerprint,

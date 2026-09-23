@@ -1,4 +1,5 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
+import { proxyLogField } from '../shared/proxyLog.js';
 
 /**
  * ENT-18 `listing_line`. BR-101 — the condition set is four fields:
@@ -55,6 +56,9 @@ const listingLineSchema = new Schema(
     batch: { type: String, default: null }, // Mandatory only on `auth` (BR-105) — checked in validation.
     qty: { type: Number, required: true, min: 0 },
     version: { type: Number, required: true, default: 0 }, // Optimistic lock — not a reservation (BR-134).
+    // Staff-assisted enquiries — present only when Purchase raised this line
+    // (log a seller call) on a phone call.
+    proxyLog: proxyLogField,
   },
   { timestamps: true },
 );

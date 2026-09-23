@@ -16,6 +16,16 @@ export const allocateUpcomingReceiptSchema = z
   })
   .strict();
 
+// Staff-assisted enquiries, decision (B) — Accounts' own dedicated
+// confirmation, distinct from the dock's inspection record.
+export const recordReceiptConfirmationSchema = z
+  .object({
+    productMatches: z.boolean(),
+    qtyMatches: z.boolean(),
+    notes: z.string().optional(),
+  })
+  .strict();
+
 export const postBankCreditSchema = z
   .object({
     utr: z.string().min(1),

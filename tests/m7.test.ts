@@ -123,6 +123,12 @@ async function runToDispatchedLeg2(boxes = 10, sellerNetPaise = 40000) {
     .send({});
   expect(applyRes.status).toBe(200);
 
+  const receiptConfirmRes = await request(app)
+    .post(`/api/v1/staff/pos/${poId}/receipt-confirmation`)
+    .set('Authorization', `Bearer ${accounts.token}`)
+    .send({ productMatches: true, qtyMatches: true });
+  expect(receiptConfirmRes.status).toBe(201);
+
   const refreshedSo = await So.findById(soId);
   const margRes = await request(app)
     .post(`/api/v1/staff/marg/${soId}`)

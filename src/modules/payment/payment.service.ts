@@ -12,6 +12,7 @@ import { So } from '../../models/So.js';
 import { Buyer } from '../../models/Buyer.js';
 import { Seller } from '../../models/Seller.js';
 import { BankDetail } from '../../models/BankDetail.js';
+import { ReceiptConfirmation } from '../../models/ReceiptConfirmation.js';
 import { AppError } from '../../shared/errors.js';
 import type { Paise } from '../../shared/money.js';
 import { writeAuditLog } from '../../shared/audit.js';
@@ -495,6 +496,18 @@ async function getLatestBankDetail(counterpartyId: Types.ObjectId | string) {
   return BankDetail.findOne({ counterpartyId }).sort({ createdAt: -1 });
 }
 
+/**
+ * Staff-assisted enquiries, decision (B) — Accounts' own confirmation of
+ * product and quantity received (`ReceiptConfirmation`), distinct from and
+ * in addition to the dock's inspection record. A confirmation that itself
+ * says something doesn't match is not a confirmation for payability
+ * purposes — both facts must be true.
+ */
+async function isReceiptConfirmed(poId: Types.ObjectId): Promise<boolean> {
+  const confirmation = await ReceiptConfirmation.findOne({ poId });
+  return Boolean(confirmation?.productMatches && confirmation?.qtyMatches);
+}
+
 /** API-086's `isPayable` — the three chain gates, and derived from bank_detail (IC-08/INV-17). */
 export async function isPoPayable(poId: string): Promise<boolean> {
   const po = await Po.findById(poId);
@@ -506,6 +519,8 @@ export async function isPoPayable(poId: string): Promise<boolean> {
 
   const sellerBill = await SellerBill.findOne({ poId: po._id });
   if (!sellerBill || !sellerBill.booked) return false;
+
+  if (!(await isReceiptConfirmed(po._id as Types.ObjectId))) return false;
 
   const bankDetail = await getLatestBankDetail(
     (await Seller.findById(po.sellerId))?.counterpartyId ?? po.sellerId,
@@ -541,6 +556,13 @@ export async function assertPoPayableForRelease(poId: string): Promise<void> {
         'A seller is payable only once inspection and the seller bill are both in (BR-004).',
     });
   }
+  if (!(await isReceiptConfirmed(po._id as Types.ObjectId))) {
+    throw new AppError({
+      code: 'CHAIN_STAGE_GUARD_FAILED',
+      messageEn:
+        "A seller is payable only once Accounts' own product/quantity confirmation is in, separate from the dock's inspection.",
+    });
+  }
   const bankDetail = await getLatestBankDetail(
     (await Seller.findById(po.sellerId))?.counterpartyId ?? po.sellerId,
   );
@@ -552,6 +574,56 @@ export async function assertPoPayableForRelease(poId: string): Promise<void> {
         })
       : false,
   );
+}
+
+interface ReceiptConfirmationInput {
+  productMatches: boolean;
+  qtyMatches: boolean;
+  notes?: string;
+}
+
+/**
+ * Accounts' own dedicated confirmation step (decision B) — a new, explicit
+ * action, distinct from and in addition to the dock's inspection record
+ * (`API-087`). One per PO, immutable once submitted, matching `Inspection`'s
+ * own BR-184 pattern; no update route exists here either.
+ */
+export async function recordReceiptConfirmation(
+  poId: string,
+  input: ReceiptConfirmationInput,
+  actor: StaffActor,
+): Promise<{ receiptConfirmationId: string }> {
+  const po = await Po.findById(poId);
+  if (!po) {
+    throw new AppError({ code: 'NOT_FOUND', messageEn: 'PO not found.' });
+  }
+  const existing = await ReceiptConfirmation.findOne({ poId: po._id });
+  if (existing) {
+    throw new AppError({
+      code: 'INSPECTION_IMMUTABLE',
+      messageEn: 'This PO already has a receipt confirmation on file.',
+    });
+  }
+
+  const confirmation = await ReceiptConfirmation.create({
+    poId: po._id,
+    productMatches: input.productMatches,
+    qtyMatches: input.qtyMatches,
+    notes: input.notes ?? null,
+    confirmedBy: actor.employeeId,
+  });
+
+  await writeAuditLog({
+    actorId: actor.employeeId,
+    actorType: 'staff',
+    entity: 'receipt_confirmation',
+    entityId: confirmation._id as Types.ObjectId,
+    field: 'create',
+    newValue: { productMatches: input.productMatches, qtyMatches: input.qtyMatches },
+    correlationId: actor.correlationId,
+  });
+
+  return { receiptConfirmationId: (confirmation._id as Types.ObjectId).toString() };
 }
 
 interface PaymentRunItemInput {
