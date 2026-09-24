@@ -87,6 +87,9 @@ export const PERMISSIONS = {
   PROXY_BUYER_CALL: 'proxy:buyer_call',
   PROXY_SELLER_CALL: 'proxy:seller_call',
   ACCOUNTS_CONFIRM_RECEIPT: 'accounts:confirm_receipt',
+  // Enquiry journey (DEC-051) — owner, follow-up and notes on an enquiry.
+  // Sales and Purchase work their own desk's half; Controller (and Admin) either.
+  ENQUIRY_MANAGE: 'enquiry:manage',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -124,6 +127,8 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       // Staff-assisted enquiries — Purchase proxies for a seller only.
       PERMISSIONS.ONBOARDING_STAFF_ASSIST_SELLER,
       PERMISSIONS.PROXY_SELLER_CALL,
+      // Enquiry journey — the Purchase half of an enquiry.
+      PERMISSIONS.ENQUIRY_MANAGE,
     ],
   },
   {
@@ -151,6 +156,8 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       // Staff-assisted enquiries — Sales proxies for a buyer only.
       PERMISSIONS.ONBOARDING_STAFF_ASSIST_BUYER,
       PERMISSIONS.PROXY_BUYER_CALL,
+      // Enquiry journey — the Sales half of an enquiry.
+      PERMISSIONS.ENQUIRY_MANAGE,
     ],
   },
   {
@@ -230,6 +237,8 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       // own measure, visible to Controller because Controller sees every desk.
       PERMISSIONS.NOTIFICATION_LOG_READ,
       PERMISSIONS.FUNNEL_READ,
+      // Enquiry journey — Controller runs the trade, so may reassign either desk's owner.
+      PERMISSIONS.ENQUIRY_MANAGE,
     ],
   },
   {

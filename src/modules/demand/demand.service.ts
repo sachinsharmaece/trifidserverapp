@@ -1,5 +1,13 @@
-import type { Types } from 'mongoose';
+import mongoose, { type Types } from 'mongoose';
 import { Ask, ASK_STATES } from '../../models/Ask.js';
+import type { EnquiryChannel } from '../../models/Enquiry.js';
+import { deriveAskStatus } from '../enquiry/enquiry.status.js';
+import {
+  convertPreTradeEnquiryInSession,
+  createTradeEnquiryInSession,
+  syncEnquiriesForPile,
+  syncEnquiryForAsk,
+} from '../enquiry/enquiry.sync.js';
 import { Quote, QUOTE_GAP_CODES, type QuoteGapCode } from '../../models/Quote.js';
 import { Buyer } from '../../models/Buyer.js';
 import { Seller } from '../../models/Seller.js';
@@ -74,11 +82,24 @@ interface RaiseAskInput {
   conditionRequirement: { expiryBand: ExpiryBand; deliveryBand?: DeliveryBand };
 }
 
-/** API-040. BR-121 — the buyer states no price; there is no price field to reject. */
+export interface RaiseAskOptions {
+  /** DEC-051 — how the enquiry reached TriFid. The buyer's own screen is `self`. */
+  channel?: EnquiryChannel;
+  /** The staff member on the call, when `channel` is `sales_call`. */
+  raisedBy?: string;
+  /** DEC-052 — convert this pre-trade enquiry into the new ask instead of opening a new one. */
+  enquiryId?: string;
+}
+
+/**
+ * API-040. BR-121 — the buyer states no price; there is no price field to reject.
+ * DEC-051 — the ask and its enquiry are created in one transaction.
+ */
 export async function raiseAsk(
   buyerCounterpartyId: string,
   input: RaiseAskInput,
-): Promise<{ askId: string }> {
+  options: RaiseAskOptions = {},
+): Promise<{ askId: string; enquiryId: string }> {
   const buyer = await requireActiveBuyer(buyerCounterpartyId);
   await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new asks.
   if (!input.skuId && !input.productId) {
@@ -89,19 +110,63 @@ export async function raiseAsk(
   const hasHeadStartSeller = await anyTrustedOrCommittedSellerExists();
   const visibleToAllAt = computeVisibleToAllAt(now, hasHeadStartSeller);
 
-  const ask = await Ask.create({
-    buyerId: buyer._id,
+  const askId = new mongoose.Types.ObjectId();
+  const enquiryFields = {
+    buyerId: buyer._id as Types.ObjectId,
     skuId: input.skuId ?? null,
     productId: input.productId ?? null,
-    allPacks: input.allPacks,
     qty: input.qty,
-    conditionRequirement: input.conditionRequirement,
-    visibleToAllAt,
-    // No head start to wait for → already open to the whole board, nothing for
-    // the head-start job to do. Otherwise `null` until that job closes it out.
-    headStartOpenedAt: hasHeadStartSeller ? null : now,
-    ttlAt: addHours(now, OPEN_DEMAND_TTL_DAYS * 24),
-    state: 'open',
+    requirement: {
+      expiryBand: input.conditionRequirement.expiryBand,
+      deliveryBand: input.conditionRequirement.deliveryBand ?? null,
+    },
+    askId,
+  };
+  const firstStatus = deriveAskStatus({ state: 'open', visibleToAllAt }, now);
+
+  const { ask, enquiryId } = await withTransaction(async (session) => {
+    const enquiryId = options.enquiryId
+      ? await convertPreTradeEnquiryInSession(
+          options.enquiryId,
+          enquiryFields,
+          firstStatus,
+          now,
+          session,
+        )
+      : await createTradeEnquiryInSession(
+          {
+            ...enquiryFields,
+            kind: 'ask',
+            channel: options.channel ?? 'self',
+            raisedAt: now,
+            raisedBy: options.raisedBy ?? null,
+          },
+          firstStatus,
+          session,
+        );
+    const [ask] = await Ask.create(
+      [
+        {
+          _id: askId,
+          buyerId: buyer._id,
+          skuId: input.skuId ?? null,
+          productId: input.productId ?? null,
+          allPacks: input.allPacks,
+          qty: input.qty,
+          conditionRequirement: input.conditionRequirement,
+          visibleToAllAt,
+          // No head start to wait for → already open to the whole board, nothing for
+          // the head-start job to do. Otherwise `null` until that job closes it out.
+          headStartOpenedAt: hasHeadStartSeller ? null : now,
+          ttlAt: addHours(now, OPEN_DEMAND_TTL_DAYS * 24),
+          state: 'open',
+          enquiryId,
+        },
+      ],
+      { session, ordered: true },
+    );
+    if (!ask) throw new Error('Ask.create returned no document.');
+    return { ask, enquiryId };
   });
 
   // BR-278/BR-279 — the market pulse. Organic (fromOurPush defaults false):
@@ -120,7 +185,7 @@ export async function raiseAsk(
     });
   }
 
-  return { askId: (ask._id as Types.ObjectId).toString() };
+  return { askId: (ask._id as Types.ObjectId).toString(), enquiryId: enquiryId.toString() };
 }
 
 interface MyAskItem {
@@ -196,8 +261,18 @@ export async function declineAsk(buyerCounterpartyId: string, askId: string): Pr
   const buyer = await requireActiveBuyer(buyerCounterpartyId);
   const ask = await Ask.findOne({ _id: askId, buyerId: buyer._id });
   if (!ask) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Ask not found.' });
-  ask.state = 'withdrawn';
-  await ask.save();
+  // Walking away is from an ask still open to quotes. Before the enquiry
+  // record, a converted (ordered) ask could be flipped to `withdrawn` here,
+  // leaving its orders pointing at a withdrawn ask.
+  if (ask.state !== 'open' && ask.state !== 'quoted') {
+    throw new AppError({ code: 'ENQUIRY_NOT_OPEN', messageEn: 'This ask is no longer open.' });
+  }
+  // DEC-051 — the ask and its enquiry move together.
+  await withTransaction(async (session) => {
+    ask.state = 'withdrawn';
+    await ask.save({ session });
+    await syncEnquiryForAsk(ask._id as Types.ObjectId, session);
+  });
 }
 
 interface AcceptFillInput {
@@ -238,6 +313,7 @@ export async function acceptAskFill(
         sellerNetPaise: quote.ratePaiseForIndore,
         placeOfSupply: 'intra_state',
         askId: (ask._id as Types.ObjectId).toString(),
+        ...(ask.enquiryId ? { enquiryId: (ask.enquiryId as Types.ObjectId).toString() } : {}),
       },
       actor,
     );
@@ -262,8 +338,13 @@ export async function acceptAskFill(
     await loser.save();
   }
 
-  ask.state = 'converted';
-  await ask.save();
+  // DEC-051 — the ask and its enquiry move together. (Each SO above commits in
+  // its own transaction by design, BR-128; this one marks the enquiry ordered.)
+  await withTransaction(async (session) => {
+    ask.state = 'converted';
+    await ask.save({ session });
+    await syncEnquiryForAsk(ask._id as Types.ObjectId, session);
+  });
 
   return { soIds };
 }
@@ -397,6 +478,8 @@ export async function postQuote(
         session,
       );
     }
+    // DEC-051 — the first quote moves the enquiry to "quotes received", in this transaction.
+    await syncEnquiryForAsk(ask._id as Types.ObjectId, session, now);
 
     return { quoteId: (quote._id as Types.ObjectId).toString() };
   });
@@ -516,17 +599,22 @@ export async function confirmPile(
   const totalAsked = requests.reduce((sum, r) => sum + r.qty, 0);
 
   const now = new Date();
-  pile.decision = 'confirmed';
-  pile.decidedAt = now;
-  pile.confirmedQty = Math.min(input.canSendBoxes, totalAsked);
-  pile.expiryExact = input.expiryExact;
-  pile.batch = input.batch ?? null;
-  pile.sellerLockedUntil = addHours(now, 24); // BR-032.
-  await pile.save();
+  // DEC-051 — the decision, the line and every buyer's enquiry on this pile commit together.
+  await withTransaction(async (session) => {
+    pile.decision = 'confirmed';
+    pile.decidedAt = now;
+    pile.confirmedQty = Math.min(input.canSendBoxes, totalAsked);
+    pile.expiryExact = input.expiryExact;
+    pile.batch = input.batch ?? null;
+    pile.sellerLockedUntil = addHours(now, 24); // BR-032.
+    await pile.save({ session });
 
-  line.expiryFixed = true; // IC-01/BR-102 — the exact month may now display.
-  line.expiryExact = input.expiryExact;
-  await line.save();
+    line.expiryFixed = true; // IC-01/BR-102 — the exact month may now display.
+    line.expiryExact = input.expiryExact;
+    await line.save({ session });
+
+    await syncEnquiriesForPile(pile._id as Types.ObjectId, session, now);
+  });
 
   const agenda = getAgendaProducer();
   await agenda.schedule(new Date(now.getTime() + UNDO_WINDOW_MS), JOB_CONFIRM_PILE_FANOUT, {
@@ -564,11 +652,14 @@ export async function undoPileConfirm(sellerCounterpartyId: string, pileId: stri
   const agenda = getAgendaProducer();
   await agenda.cancel({ name: JOB_CONFIRM_PILE_FANOUT, data: { pileId } });
 
-  pile.decision = null;
-  pile.decidedAt = null;
-  pile.confirmedQty = null;
-  pile.sellerLockedUntil = null;
-  await pile.save();
+  await withTransaction(async (session) => {
+    pile.decision = null;
+    pile.decidedAt = null;
+    pile.confirmedQty = null;
+    pile.sellerLockedUntil = null;
+    await pile.save({ session });
+    await syncEnquiriesForPile(pile._id as Types.ObjectId, session);
+  });
 }
 
 /** API-050 requote. Every buyer on the line is asked to accept or cancel — no strike, but scored. */
@@ -604,6 +695,7 @@ export async function requotePile(sellerCounterpartyId: string, pileId: string):
         session,
       );
     }
+    await syncEnquiriesForPile(pile._id as Types.ObjectId, session);
   });
 }
 
@@ -622,9 +714,12 @@ export async function declinePile(sellerCounterpartyId: string, pileId: string):
       messageEn: 'This pile has already been decided.',
     });
   }
-  pile.decision = 'declined';
-  pile.decidedAt = new Date();
-  await pile.save();
+  await withTransaction(async (session) => {
+    pile.decision = 'declined';
+    pile.decidedAt = new Date();
+    await pile.save({ session });
+    await syncEnquiriesForPile(pile._id as Types.ObjectId, session);
+  });
 }
 
 // ---------------------------------------------------------------------------

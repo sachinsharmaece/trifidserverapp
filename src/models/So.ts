@@ -51,6 +51,15 @@ const soSchema = new Schema(
     // `acceptAskFill`); null for the direct listing/pile path, which has no
     // ask to restore to. Read-only after creation.
     askId: { type: Schema.Types.ObjectId, ref: 'Ask', default: null },
+    // Enquiry journey — the listing-path twin of `askId`: set only when this
+    // SO was fanned out from a confirmed pile (pileFanout.job.ts), naming the
+    // one buyer's request it fulfils. Null on every other path. Read-only
+    // after creation; nothing branches on it — it exists so the enquiry view
+    // (modules/enquiry) can follow a pile request to the chain it became.
+    pileRequestId: { type: Schema.Types.ObjectId, ref: 'PileRequest', default: null },
+    // DEC-051 — the enquiry this order came from, whichever path. Null on the
+    // staff `createSo` and pool paths, which are not enquiries.
+    enquiryId: { type: Schema.Types.ObjectId, ref: 'Enquiry', default: null },
     // BR-060 — the wall is enforced at the DTO layer (TD-008), not by
     // omitting this from storage: every seller-side module (chain.service.ts
     // `createPo`, dock, marg, movement) needs it to place the PO, and
@@ -84,6 +93,10 @@ const soSchema = new Schema(
 soSchema.index({ state: 1, payDeadline: 1 });
 soSchema.index({ buyerId: 1 });
 soSchema.index({ chainId: 1 });
+// The enquiry view looks orders up by the enquiry they came from.
+soSchema.index({ askId: 1 });
+soSchema.index({ pileRequestId: 1 });
+soSchema.index({ enquiryId: 1 });
 
 export type SoDocument = InferSchemaType<typeof soSchema>;
 export const So = model<SoDocument>('So', soSchema, 'so');

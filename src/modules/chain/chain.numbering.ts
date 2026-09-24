@@ -13,7 +13,7 @@ export function financialYearSuffix(date: Date): string {
   return String(year).slice(-2);
 }
 
-async function nextSequence(key: string, session: ClientSession): Promise<number> {
+export async function nextSequence(key: string, session: ClientSession): Promise<number> {
   const updated = await Sequence.findOneAndUpdate(
     { key },
     { $inc: { seq: 1 } },
@@ -31,6 +31,18 @@ export async function nextSoNo(date: Date, session: ClientSession): Promise<stri
   const fy = financialYearSuffix(date);
   const seq = await nextSequence(`so-${fy}`, session);
   return `SO-${fy}-${String(seq).padStart(4, '0')}`;
+}
+
+/**
+ * Enquiry journey — `ENQ-26-00001`, same scheme as the SO/PO numbers above.
+ * Five digits, not four: every enquiry gets one, including the many that
+ * never become an order. Dated by when the enquiry was raised, so a backfilled
+ * enquiry lands in the financial year it actually belongs to.
+ */
+export async function nextEnquiryNo(raisedAt: Date, session: ClientSession): Promise<string> {
+  const fy = financialYearSuffix(raisedAt);
+  const seq = await nextSequence(`enquiry-${fy}`, session);
+  return `ENQ-${fy}-${String(seq).padStart(5, '0')}`;
 }
 
 export async function nextPoNo(date: Date, session: ClientSession): Promise<string> {

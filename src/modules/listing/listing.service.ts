@@ -1,5 +1,8 @@
-import type { Types } from 'mongoose';
+import mongoose, { type Types } from 'mongoose';
 import { Listing, type ListingScopeType } from '../../models/Listing.js';
+import { withTransaction } from '../../db/transaction.js';
+import { createTradeEnquiryInSession } from '../enquiry/enquiry.sync.js';
+import { derivePileRequestStatus } from '../enquiry/enquiry.status.js';
 import {
   ListingLine,
   deriveMoqBand,
@@ -743,7 +746,7 @@ export async function createPileRequest(
   buyerCounterpartyId: string,
   listingLineId: string,
   input: InquireInput,
-): Promise<{ pileId: string }> {
+): Promise<{ pileId: string; enquiryId: string }> {
   const { buyer, counterparty } = await requireActiveBuyer(buyerCounterpartyId);
   await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new inquiries.
   const line = await ListingLine.findById(listingLineId);
@@ -800,14 +803,42 @@ export async function createPileRequest(
     });
   }
 
-  await PileRequest.create({
-    pileId: pile._id,
-    buyerId: buyer._id,
-    qty: input.qty,
-    deliveryLocationId: location._id,
+  // DEC-051 — the request and its enquiry are created together.
+  const now = new Date();
+  const requestId = new mongoose.Types.ObjectId();
+  const enquiryId = await withTransaction(async (session) => {
+    const enquiryId = await createTradeEnquiryInSession(
+      {
+        kind: 'pile_request',
+        channel: 'self',
+        raisedAt: now,
+        buyerId: buyer._id as Types.ObjectId,
+        skuId: line.skuId as Types.ObjectId,
+        productId: listing.productId as Types.ObjectId,
+        qty: input.qty,
+        pileRequestId: requestId,
+      },
+      derivePileRequestStatus({ decision: null, executedAt: null, shortfall: false }),
+      session,
+    );
+    await PileRequest.create(
+      [
+        {
+          _id: requestId,
+          pileId: pile._id,
+          buyerId: buyer._id,
+          qty: input.qty,
+          deliveryLocationId: location._id,
+          requestedAt: now,
+          enquiryId,
+        },
+      ],
+      { session, ordered: true },
+    );
+    return enquiryId;
   });
 
-  return { pileId: (pile._id as Types.ObjectId).toString() };
+  return { pileId: (pile._id as Types.ObjectId).toString(), enquiryId: enquiryId.toString() };
 }
 
 /** Read-only for buyers (BR-094 — staff add locations, never self-serve). */

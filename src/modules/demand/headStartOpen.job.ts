@@ -4,6 +4,7 @@ import { Ask } from '../../models/Ask.js';
 import { Seller } from '../../models/Seller.js';
 import { Counterparty } from '../../models/Counterparty.js';
 import { enqueueNotification } from '../notification/notification.outbox.js';
+import { syncEnquiryForAsk } from '../enquiry/enquiry.sync.js';
 
 /**
  * BR-122 — Trusted and Committed sellers see an ask four working hours before
@@ -50,6 +51,8 @@ export async function runHeadStartOpen(now: Date = new Date()): Promise<{ opened
         { session, new: true, sort: { visibleToAllAt: 1 } },
       );
       if (!ask) return false;
+      // DEC-051 — head start over: the enquiry reads "awaiting quotes" from now.
+      await syncEnquiryForAsk(ask._id as Types.ObjectId, session, now);
 
       // CH §21.8 #13 — "Inquiry seen four hours early", audience Seller: the
       // Trusted/Committed sellers who had the head start. See QR-052 — WF-09
