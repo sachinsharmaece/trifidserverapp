@@ -30,6 +30,7 @@ import { logisticsRouter } from './modules/logistics/logistics.routes.js';
 import { notificationRouter } from './modules/notification/notification.routes.js';
 import { founderRouter } from './modules/founder/founder.routes.js';
 import { proxyRouter } from './modules/proxy/proxy.routes.js';
+import { enquiryRouter } from './modules/enquiry/enquiry.routes.js';
 
 const API_PREFIX = '/api/v1';
 
@@ -82,6 +83,7 @@ export function createApp(): Express {
   app.use(API_PREFIX, notificationRouter);
   app.use(API_PREFIX, founderRouter);
   app.use(API_PREFIX, proxyRouter);
+  app.use(API_PREFIX, enquiryRouter);
 
   app.use(notFound);
   app.use(errorHandler);

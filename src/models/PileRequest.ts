@@ -12,6 +12,8 @@ const pileRequestSchema = new Schema(
     qty: { type: Number, required: true, min: 1 },
     deliveryLocationId: { type: Schema.Types.ObjectId, ref: 'BuyerLocation', required: true },
     requestedAt: { type: Date, required: true, default: () => new Date() },
+    // DEC-051 — the enquiry this request is. Null only on requests made before it existed.
+    enquiryId: { type: Schema.Types.ObjectId, ref: 'Enquiry', default: null },
   },
   { timestamps: true },
 );

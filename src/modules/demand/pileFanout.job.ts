@@ -9,6 +9,7 @@ import { Counterparty } from '../../models/Counterparty.js';
 import { AppError } from '../../shared/errors.js';
 import { createSoInSession } from '../chain/chain.service.js';
 import { writeAuditLog } from '../../shared/audit.js';
+import { syncEnquiriesForPile } from '../enquiry/enquiry.sync.js';
 import {
   enqueueNotification,
   counterpartyIdForBuyer,
@@ -50,6 +51,7 @@ export async function runConfirmPileFanout(pileId: string): Promise<void> {
       pile.shortfall = true;
       pile.executedAt = new Date();
       await pile.save({ session });
+      await syncEnquiriesForPile(pile._id as Types.ObjectId, session); // DEC-051.
       return;
     }
 
@@ -69,6 +71,10 @@ export async function runConfirmPileFanout(pileId: string): Promise<void> {
           boxes: request.qty,
           sellerNetPaise: line.ratePaise,
           placeOfSupply: 'intra_state', // Refined once M6's tax-jurisdiction lookup exists; see CHANGELOG.
+          pileRequestId: (request._id as Types.ObjectId).toString(),
+          ...(request.enquiryId
+            ? { enquiryId: (request.enquiryId as Types.ObjectId).toString() }
+            : {}),
         },
         actor,
         session,
@@ -94,6 +100,8 @@ export async function runConfirmPileFanout(pileId: string): Promise<void> {
 
     pile.executedAt = new Date();
     await pile.save({ session });
+    // DEC-051 — every buyer's enquiry on this pile is now ordered, in this transaction.
+    await syncEnquiriesForPile(pile._id as Types.ObjectId, session);
 
     await writeAuditLog(
       {

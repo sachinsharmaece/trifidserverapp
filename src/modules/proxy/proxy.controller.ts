@@ -35,7 +35,11 @@ export async function postBuyerCallAsk(req: Request, res: Response): Promise<voi
   const { buyerCounterpartyId, callNote, ...input } = req.body as z.infer<
     typeof proxyRaiseAskSchema
   >;
-  const result = await demandService.raiseAsk(buyerCounterpartyId, input);
+  // DEC-051 — the enquiry it opens is recorded as a Sales call, by this staff member.
+  const result = await demandService.raiseAsk(buyerCounterpartyId, input, {
+    channel: 'sales_call',
+    raisedBy: actingStaffId(req),
+  });
   await appendProxyLog(Ask, result.askId, {
     actingStaffId: actingStaffId(req),
     callNote,

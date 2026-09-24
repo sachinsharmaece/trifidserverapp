@@ -40,6 +40,7 @@ import {
 } from '../pricing/pricing.service.js';
 import { nextChainNo, nextPoNo, nextSoNo } from './chain.numbering.js';
 import { writeChainEvent } from './chain.events.js';
+import { syncEnquiryForAsk } from '../enquiry/enquiry.sync.js';
 import {
   assertPaymentSatisfied,
   assertNoExistingPo,
@@ -113,6 +114,12 @@ interface CreateSoInput {
   // supply failure can restore the ask to standing demand instead of
   // dead-ending it. The direct listing/pile path leaves this undefined.
   askId?: string;
+  // Enquiry journey — set only by the WF-05 pile fan-out (pileFanout.job.ts):
+  // the one buyer's pile request this SO fulfils. Also marks the chain's
+  // `source` as `listed` rather than `inquiry` (CH §1.5, reporting only).
+  pileRequestId?: string;
+  // DEC-051 — the enquiry this order came from (ask acceptance or pile fan-out).
+  enquiryId?: string;
   // M8 — a pool's fan-out tells the buyer `pool_triggered` ("pay within 16 hours"),
   // which IS that pool's payment notice; sending `payment_due` as well would be the
   // same news twice against a one-message-a-week cap (BR-283). Only modules/pool sets this.
@@ -214,7 +221,14 @@ export async function createSoInSession(
   {
     const chainNo = await nextChainNo(session);
     const [chain] = await Chain.create(
-      [{ chainNo, source: 'inquiry', stage: 'so', openedAt: now }],
+      [
+        {
+          chainNo,
+          source: input.pileRequestId ? 'listed' : 'inquiry',
+          stage: 'so',
+          openedAt: now,
+        },
+      ],
       { session, ordered: true },
     );
     if (!chain) throw new Error('Chain.create returned no document.');
@@ -227,6 +241,8 @@ export async function createSoInSession(
           chainId: chain._id,
           buyerId: buyer._id,
           askId: input.askId ?? null,
+          pileRequestId: input.pileRequestId ?? null,
+          enquiryId: input.enquiryId ?? null,
           sellerId: seller._id,
           tierAtOrder: tier,
           placeOfSupply: input.placeOfSupply,
@@ -823,6 +839,8 @@ async function refundSoInFullInSession(
         { $set: { state: 'open' } },
         { session },
       );
+      // DEC-051 — the enquiry goes back to awaiting quotes with it.
+      await syncEnquiryForAsk(so.askId as Types.ObjectId, session);
     }
 
     const [refund] = await Refund.create(

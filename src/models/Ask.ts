@@ -37,6 +37,9 @@ const askSchema = new Schema(
     // Staff-assisted enquiries — present only when Sales raised or advanced
     // this ask on a phone call. See shared/proxyLog.ts.
     proxyLog: proxyLogField,
+    // DEC-051 — the enquiry this ask is. Set at creation (or when a pre-trade
+    // enquiry converts); null only on asks raised before the enquiry record existed.
+    enquiryId: { type: Schema.Types.ObjectId, ref: 'Enquiry', default: null },
   },
   { timestamps: true },
 );

@@ -64,6 +64,10 @@ export type ErrorCode =
   // registration cannot be approved until the real phone number has
   // confirmed it via OTP.
   | 'OTP_CONFIRMATION_REQUIRED'
+  // Enquiry journey (DEC-051/052) — same reasoning: converting or dropping an
+  // enquiry that is no longer pre-trade, or walking away from an ask that is
+  // no longer open. A state refusal, not a business rule.
+  | 'ENQUIRY_NOT_OPEN'
   | 'INTERNAL_ERROR';
 
 const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
@@ -108,6 +112,7 @@ const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
   COMPLAINT_WINDOW_CLOSED: 409,
   MFA_ENROLMENT_REQUIRED: 403,
   OTP_CONFIRMATION_REQUIRED: 409,
+  ENQUIRY_NOT_OPEN: 409,
   INTERNAL_ERROR: 500,
 };
 
