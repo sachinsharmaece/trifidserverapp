@@ -90,6 +90,11 @@ export const PERMISSIONS = {
   // Enquiry journey (DEC-051) — owner, follow-up and notes on an enquiry.
   // Sales and Purchase work their own desk's half; Controller (and Admin) either.
   ENQUIRY_MANAGE: 'enquiry:manage',
+  // Purchase-desk v2 — Purchase may raise a draft company/product/pack mid-call
+  // (amending CH §17.2's "masters belong to Admin" for these three objects
+  // only); a draft is usable in a seller's catalogue at once but cannot back
+  // a live listing until Admin confirms it with the pre-existing CATALOG_WRITE.
+  CATALOG_DRAFT_CREATE: 'catalog:draft_create',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -129,6 +134,9 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.PROXY_SELLER_CALL,
       // Enquiry journey — the Purchase half of an enquiry.
       PERMISSIONS.ENQUIRY_MANAGE,
+      // Purchase-desk v2 — draft company/product/pack from a call, and the
+      // seller-catalogue/supply-matrix surfaces built on top of it.
+      PERMISSIONS.CATALOG_DRAFT_CREATE,
     ],
   },
   {

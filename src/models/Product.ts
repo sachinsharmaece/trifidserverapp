@@ -10,6 +10,11 @@ import { Schema, model, type InferSchemaType } from 'mongoose';
  * here that blocks a product from being listed at all. Deliberately **no
  * placeholder field for it**: an empty field would let someone assume the
  * gate is already implemented when it is not.
+ *
+ * Purchase-desk v2 — `state`/`createdBy`, same draft/live workflow as
+ * `models/Manufacturer.ts`. `technical` deliberately stays free text here
+ * (no separate master, no draft state of its own) — the existing
+ * `Product.distinct('technical', …)` picker is the whole of that axis.
  */
 const productSchema = new Schema(
   {
@@ -20,6 +25,8 @@ const productSchema = new Schema(
     class: { type: String, enum: ['A', 'B', 'C'], required: true, default: 'B' },
     active: { type: Boolean, required: true, default: true },
     deletedAt: { type: Date, default: null },
+    state: { type: String, enum: ['draft', 'live'], required: true, default: 'live' },
+    createdBy: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },
   },
   { timestamps: true },
 );
