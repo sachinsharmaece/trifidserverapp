@@ -18,6 +18,15 @@ export async function postManufacturer(req: Request, res: Response): Promise<voi
   ok(res, req, await catalogService.createManufacturer(name), 201);
 }
 
+// Purchase-desk v2 — Admin's rename/confirm action.
+export async function patchManufacturer(req: Request, res: Response): Promise<void> {
+  const result = await catalogService.updateManufacturer(
+    req.params.id as string,
+    req.body as { name?: string; state?: 'live' },
+  );
+  ok(res, req, result);
+}
+
 export async function getManufacturers(req: Request, res: Response): Promise<void> {
   const { technical } = req.validatedQuery as { technical: string };
   ok(res, req, await catalogService.listManufacturersForTechnical(technical));
@@ -72,6 +81,7 @@ export async function patchProduct(req: Request, res: Response): Promise<void> {
       hsn?: string;
       class?: 'A' | 'B' | 'C';
       active?: boolean;
+      state?: 'live';
     },
   );
   ok(res, req, result);
@@ -85,6 +95,7 @@ export async function patchSku(req: Request, res: Response): Promise<void> {
       packSize?: number;
       unitsPerBox?: number;
       active?: boolean;
+      state?: 'live';
     },
   );
   ok(res, req, result);

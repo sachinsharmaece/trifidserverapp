@@ -11,6 +11,7 @@ import {
   listManufacturersQuerySchema,
   listProductsQuerySchema,
   skuImportSchema,
+  updateManufacturerSchema,
   updateProductSchema,
   updateSkuSchema,
 } from './catalog.validation.js';
@@ -50,6 +51,14 @@ catalogRouter.post(
   requirePermission(PERMISSIONS.CATALOG_WRITE),
   validateBody(createManufacturerSchema),
   controller.postManufacturer,
+);
+// Purchase-desk v2 — Admin's rename/confirm action (the draft → live PATCH).
+catalogRouter.patch(
+  '/admin/manufacturers/:id',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  validateBody(updateManufacturerSchema),
+  controller.patchManufacturer,
 );
 
 // New — the admin catalog-management screen's own unfiltered list/detail

@@ -19,6 +19,7 @@ import { Counterparty } from '../../models/Counterparty.js';
 import { Tehsil } from '../../models/Tehsil.js';
 import { Sku } from '../../models/Sku.js';
 import { Product } from '../../models/Product.js';
+import { Manufacturer } from '../../models/Manufacturer.js';
 import { Pool, buildConditionSetKey } from '../../models/Pool.js';
 import { Pile } from '../../models/Pile.js';
 import { PileRequest } from '../../models/PileRequest.js';
@@ -196,6 +197,37 @@ export async function createListing(
   if (input.lines.length === 0) {
     throw new AppError({ code: 'VALIDATION_FAILED', messageEn: 'At least one pack is required.' });
   }
+
+  // Purchase-desk v2, LOCK-26-style amendment — a draft product/pack/company
+  // (raised by Purchase mid-call, `CATALOG_DRAFT_CREATE`) works in a seller's
+  // catalogue at once but cannot back a live listing until Admin confirms it.
+  // Checked once here, ahead of the per-line loop, so both the seller's own
+  // create-listing screen and the desk's proxy path (which calls this same
+  // function) are refused identically — never a second, looser path.
+  const product = await Product.findById(input.productId);
+  if (!product) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'Product not found.',
+      field: 'productId',
+    });
+  }
+  if (product.state === 'draft') {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'This product is still a draft — Admin has not confirmed it yet.',
+      field: 'productId',
+    });
+  }
+  const manufacturer = await Manufacturer.findById(product.manufacturerId);
+  if (manufacturer?.state === 'draft') {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'This product’s company is still a draft — Admin has not confirmed it yet.',
+      field: 'productId',
+    });
+  }
+
   for (const line of input.lines) {
     assertShelfLifeMeetsFloor(line.expiryBand, line.expiryExact);
     assertBatchRequiredForAuth(line.provenance, line.batch);
@@ -204,6 +236,13 @@ export async function createListing(
       throw new AppError({
         code: 'VALIDATION_FAILED',
         messageEn: 'One or more SKUs do not belong to this product.',
+        field: 'skuId',
+      });
+    }
+    if (sku.state === 'draft') {
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: 'This pack is still a draft — Admin has not confirmed it yet.',
         field: 'skuId',
       });
     }

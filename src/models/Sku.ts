@@ -7,6 +7,9 @@ import { Schema, model, type InferSchemaType } from 'mongoose';
  * not even a bug. `baseUnitsPerBox` is **derived**, never accepted from a
  * client — the `pre('validate')` hook below is the only place that computes
  * it, from `baseUnit`, `packSize` and `unitsPerBox`.
+ *
+ * Purchase-desk v2 — `state`/`createdBy`, same draft/live workflow as
+ * `models/Manufacturer.ts`/`models/Product.ts`.
  */
 const skuSchema = new Schema(
   {
@@ -19,6 +22,8 @@ const skuSchema = new Schema(
     class: { type: String, enum: ['A', 'B', 'C'] },
     active: { type: Boolean, required: true, default: true },
     deletedAt: { type: Date, default: null },
+    state: { type: String, enum: ['draft', 'live'], required: true, default: 'live' },
+    createdBy: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },
   },
   { timestamps: true },
 );

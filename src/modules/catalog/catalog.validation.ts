@@ -41,6 +41,15 @@ export const createProductSchema = z
   })
   .strict();
 
+export const updateManufacturerSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    // Purchase-desk v2 — Admin's confirm action. One direction only: there is
+    // no path back to 'draft', so 'draft' is not an accepted value here.
+    state: z.literal('live').optional(),
+  })
+  .strict();
+
 export const updateProductSchema = z
   .object({
     brand: z.string().min(1).optional(),
@@ -49,6 +58,8 @@ export const updateProductSchema = z
     hsn: z.string().min(1).optional(),
     class: z.enum(['A', 'B', 'C']).optional(),
     active: z.boolean().optional(),
+    // Purchase-desk v2 — Admin's confirm action, same one-direction shape.
+    state: z.literal('live').optional(),
   })
   .strict();
 
@@ -60,6 +71,8 @@ export const updateSkuSchema = z
     packSize: z.number().positive().optional(),
     unitsPerBox: z.number().int().positive().optional(),
     active: z.boolean().optional(),
+    // Purchase-desk v2 — Admin's confirm action, same one-direction shape.
+    state: z.literal('live').optional(),
   })
   .strict();
 
