@@ -57,8 +57,9 @@ export function isValidHsn(hsn: string): boolean {
 // No single national format exists for state-issued insecticide dealer
 // licence numbers (Insecticides Act, 1968 / Insecticides Rules, 1971) — this
 // is a length/charset guard, not a shape+checksum validator like GSTIN/IFSC.
-// Minimum length of 4 rejects the reported "LIC"/"LIC-1"-style non-values
-// while staying compatible with the shortest real fixture/licence formats.
+// Minimum length of 4 rejects the reported bare "LIC" (3 characters) while
+// staying compatible with the shortest real fixture/licence formats — a real
+// licence (e.g. "MP/IND/INS/2016/0771") runs far longer than this floor.
 const LICENCE_SHAPE = /^[A-Za-z0-9/-]{4,}$/;
 
 export function isValidLicenceNo(licenceNo: string): boolean {
@@ -90,8 +91,18 @@ export function namesAreSimilar(a: string, b: string): boolean {
   const nb = normalizeForSimilarity(b);
   if (na.length < 2 || nb.length < 2) return false;
   if (na.includes(nb) || nb.includes(na)) return true;
-  const wordsA = new Set(a.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
-  const wordsB = new Set(b.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
+  const wordsA = new Set(
+    a
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 2),
+  );
+  const wordsB = new Set(
+    b
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 2),
+  );
   for (const w of wordsA) {
     if (wordsB.has(w)) return true;
   }

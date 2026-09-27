@@ -7,7 +7,7 @@ const ifscSchema = z.string().length(11, 'IFSC must be 11 characters.');
 const licenceNoSchema = z
   .string()
   .min(1)
-  .refine(isValidLicenceNo, { message: 'Enter a valid licence number (at least 6 characters).' });
+  .refine(isValidLicenceNo, { message: 'Enter a valid licence number (at least 4 characters).' });
 
 const bankDetailInputSchema = z
   .object({

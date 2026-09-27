@@ -82,6 +82,14 @@ function accountNameMismatchReason(
   return `Bank account name "${accountName}" does not resemble the owner name "${ownerName}" or the firm name "${firm}".`;
 }
 
+/**
+ * Audit-logs a mismatch for later review AND returns it, so the person
+ * registering this account sees the same signal immediately rather than it
+ * living only in a log nobody reads until an audit — a payout-fraud
+ * signal that stayed invisible at the point someone could actually still
+ * ask the seller about it is barely a signal at all. Still never blocks:
+ * the return value is a warning to show, not a reason to fail the call.
+ */
 async function auditAccountNameMismatchIfAny(
   params: {
     accountName: string;
@@ -91,9 +99,9 @@ async function auditAccountNameMismatchIfAny(
     correlationId: string;
   },
   session?: ClientSession,
-): Promise<void> {
+): Promise<string | null> {
   const reason = accountNameMismatchReason(params.accountName, params.ownerName, params.firm);
-  if (!reason) return;
+  if (!reason) return null;
   await writeAuditLog(
     {
       actorId: params.entityId,
@@ -106,6 +114,7 @@ async function auditAccountNameMismatchIfAny(
     },
     session,
   );
+  return reason;
 }
 
 // Staff-assisted enquiries — a registration raised on a phone call cannot be
@@ -200,10 +209,11 @@ export async function registerBuyer(
   input: RegisterBuyerInput,
   staffAssisted?: StaffAssistedRegistration,
   correlationId = 'unknown',
-): Promise<{ registrationId: string }> {
+): Promise<{ registrationId: string; accountNameWarning: string | null }> {
   await assertGstinAndMobileAreFree(input.gstin, input.mobile);
   assertBankDetailIsWellFormed(input.bankDetail);
 
+  let accountNameWarning: string | null = null;
   const registrationId = await withTransaction(async (session) => {
     const [counterparty] = await Counterparty.create(
       [
@@ -263,7 +273,7 @@ export async function registerBuyer(
       );
     }
 
-    await auditAccountNameMismatchIfAny(
+    accountNameWarning = await auditAccountNameMismatchIfAny(
       {
         accountName: input.bankDetail.accountName,
         ownerName: input.ownerName,
@@ -277,7 +287,7 @@ export async function registerBuyer(
     return (counterparty._id as Types.ObjectId).toString();
   });
 
-  return { registrationId };
+  return { registrationId, accountNameWarning };
 }
 
 interface RegisterSellerInput {
@@ -296,10 +306,11 @@ export async function registerSeller(
   input: RegisterSellerInput,
   staffAssisted?: StaffAssistedRegistration,
   correlationId = 'unknown',
-): Promise<{ registrationId: string }> {
+): Promise<{ registrationId: string; accountNameWarning: string | null }> {
   await assertGstinAndMobileAreFree(input.gstin, input.mobile);
   assertBankDetailIsWellFormed(input.bankDetail);
 
+  let accountNameWarning: string | null = null;
   const registrationId = await withTransaction(async (session) => {
     const [counterparty] = await Counterparty.create(
       [
@@ -350,7 +361,7 @@ export async function registerSeller(
       );
     }
 
-    await auditAccountNameMismatchIfAny(
+    accountNameWarning = await auditAccountNameMismatchIfAny(
       {
         accountName: input.bankDetail.accountName,
         ownerName: input.ownerName,
@@ -364,7 +375,7 @@ export async function registerSeller(
     return (counterparty._id as Types.ObjectId).toString();
   });
 
-  return { registrationId };
+  return { registrationId, accountNameWarning };
 }
 
 interface RegistrationStatusDto {

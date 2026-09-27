@@ -39,7 +39,12 @@ describe('Seller registration — QA fixes', () => {
           gstin: await randomGstin(),
           references: [
             { firm: 'Ref One', phone: '12345', relationship: 'Supplier', whatTheySaid: 'Reliable' },
-            { firm: 'Ref Two', phone: '9000000002', relationship: 'Supplier', whatTheySaid: 'Reliable' },
+            {
+              firm: 'Ref Two',
+              phone: '9000000002',
+              relationship: 'Supplier',
+              whatTheySaid: 'Reliable',
+            },
           ],
         }),
       );
@@ -64,7 +69,12 @@ describe('Seller registration — QA fixes', () => {
           licenceNo: 'LIC',
           references: [
             { firm: 'Ref One', phone: '12345', relationship: 'Supplier', whatTheySaid: 'Reliable' },
-            { firm: 'Ref Two', phone: '9000000002', relationship: 'Supplier', whatTheySaid: 'Reliable' },
+            {
+              firm: 'Ref Two',
+              phone: '9000000002',
+              relationship: 'Supplier',
+              whatTheySaid: 'Reliable',
+            },
           ],
         }),
       );

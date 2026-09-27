@@ -37,6 +37,29 @@ import { getSellerScorecard, type SellerScorecardDto } from '../../conduct/condu
 
 const RETURN_NOTE_WINDOW_DAYS = 30; // BR-189.
 
+/**
+ * Purchase is a supplier-side desk — a seller's firm name is exactly the
+ * identity it is meant to see (unlike a buyer's, BR-067). Every queue on
+ * this desk that used to show a raw `sellerId` hash now joins through this
+ * instead, so a seller is always readable, never a hex string.
+ */
+async function getFirmBySellerId(sellerIds: Types.ObjectId[]): Promise<Map<string, string>> {
+  if (sellerIds.length === 0) return new Map();
+  const sellers = await Seller.find({ _id: { $in: sellerIds } });
+  const counterparties = await Counterparty.find({
+    _id: { $in: sellers.map((s) => s.counterpartyId) },
+  });
+  const firmByCounterpartyId = new Map(
+    counterparties.map((c) => [(c._id as Types.ObjectId).toString(), c.firm ?? '—']),
+  );
+  return new Map(
+    sellers.map((s) => [
+      (s._id as Types.ObjectId).toString(),
+      firmByCounterpartyId.get((s.counterpartyId as Types.ObjectId).toString()) ?? '—',
+    ]),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Active demand list — BR-272's four seller states + the No-seller filter.
 //
@@ -462,6 +485,7 @@ export async function recordSupplyGapReason(
 export interface SellerRecoveryItem {
   complaintId: string;
   sellerId: string;
+  sellerFirm: string;
   debitNoteId: string | null;
   decidedAt: string | null;
 }
@@ -476,12 +500,17 @@ export async function getSellerRecoveryQueue(): Promise<SellerRecoveryItem[]> {
       (so.sellerId as Types.ObjectId).toString(),
     ]),
   );
-  return complaints.map((c) => ({
-    complaintId: (c._id as Types.ObjectId).toString(),
-    sellerId: soIdToSellerId.get(c.soId.toString()) ?? '',
-    debitNoteId: c.debitNoteId ? c.debitNoteId.toString() : null,
-    decidedAt: c.decidedAt ? c.decidedAt.toISOString() : null,
-  }));
+  const firmBySellerId = await getFirmBySellerId(sos.map((so) => so.sellerId as Types.ObjectId));
+  return complaints.map((c) => {
+    const sellerId = soIdToSellerId.get(c.soId.toString()) ?? '';
+    return {
+      complaintId: (c._id as Types.ObjectId).toString(),
+      sellerId,
+      sellerFirm: firmBySellerId.get(sellerId) ?? '—',
+      debitNoteId: c.debitNoteId ? c.debitNoteId.toString() : null,
+      decidedAt: c.decidedAt ? c.decidedAt.toISOString() : null,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -779,7 +808,10 @@ export interface PileAwaitingDecisionItem {
   pileId: string;
   sellerId: string;
   sellerCounterpartyId: string;
+  sellerFirm: string;
   skuId: string;
+  packLabel: string;
+  brand: string;
   ratePaise: number;
   boxes: number;
   buyers: number;
@@ -796,6 +828,11 @@ export async function getPilesAwaitingDecision(): Promise<PileAwaitingDecisionIt
   const listingById = new Map(listings.map((l) => [(l._id as Types.ObjectId).toString(), l]));
   const sellers = await Seller.find({ _id: { $in: listings.map((l) => l.sellerId) } });
   const sellerById = new Map(sellers.map((s) => [(s._id as Types.ObjectId).toString(), s]));
+  const firmBySellerId = await getFirmBySellerId(listings.map((l) => l.sellerId as Types.ObjectId));
+  const skus = await Sku.find({ _id: { $in: lines.map((l) => l.skuId) } });
+  const skuById = new Map(skus.map((s) => [(s._id as Types.ObjectId).toString(), s]));
+  const products = await Product.find({ _id: { $in: skus.map((s) => s.productId) } });
+  const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
   const requests = await PileRequest.find({ pileId: { $in: piles.map((p) => p._id) } });
   const now = Date.now();
 
@@ -806,6 +843,8 @@ export async function getPilesAwaitingDecision(): Promise<PileAwaitingDecisionIt
       : undefined;
     const sellerId = listing ? (listing.sellerId as Types.ObjectId).toString() : '';
     const seller = sellerById.get(sellerId);
+    const sku = line ? skuById.get((line.skuId as Types.ObjectId).toString()) : undefined;
+    const product = sku ? productById.get((sku.productId as Types.ObjectId).toString()) : undefined;
     const myRequests = requests.filter((r) =>
       (r.pileId as Types.ObjectId).equals(pile._id as Types.ObjectId),
     );
@@ -813,7 +852,10 @@ export async function getPilesAwaitingDecision(): Promise<PileAwaitingDecisionIt
       pileId: (pile._id as Types.ObjectId).toString(),
       sellerId,
       sellerCounterpartyId: seller ? (seller.counterpartyId as Types.ObjectId).toString() : '',
+      sellerFirm: firmBySellerId.get(sellerId) ?? '—',
       skuId: line ? (line.skuId as Types.ObjectId).toString() : '',
+      packLabel: sku?.packLabel ?? '—',
+      brand: product?.brand ?? '—',
       ratePaise: line?.ratePaise ?? 0,
       boxes: myRequests.reduce((sum, r) => sum + r.qty, 0),
       buyers: new Set(myRequests.map((r) => (r.buyerId as Types.ObjectId).toString())).size,
@@ -861,19 +903,8 @@ export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
     movements.map((m) => [(m.chainId as Types.ObjectId).toString(), m]),
   );
 
-  const sellerIds = [...pending, ...dispatchedLeg1].map((p) => p.sellerId);
-  const sellers = sellerIds.length ? await Seller.find({ _id: { $in: sellerIds } }) : [];
-  const counterparties = sellers.length
-    ? await Counterparty.find({ _id: { $in: sellers.map((s) => s.counterpartyId) } })
-    : [];
-  const firmByCounterpartyId = new Map(
-    counterparties.map((c) => [(c._id as Types.ObjectId).toString(), c.firm ?? '—']),
-  );
-  const firmBySellerId = new Map(
-    sellers.map((s) => [
-      (s._id as Types.ObjectId).toString(),
-      firmByCounterpartyId.get((s.counterpartyId as Types.ObjectId).toString()) ?? '—',
-    ]),
+  const firmBySellerId = await getFirmBySellerId(
+    [...pending, ...dispatchedLeg1].map((p) => p.sellerId),
   );
 
   const dueOrOverdue: DispatchQueueItem[] = pending.map((po) => {
@@ -946,6 +977,7 @@ export interface InspectionPendingApplyItem {
   poId: string;
   poNo: string;
   sellerId: string;
+  sellerFirm: string;
   casesAccepted: number;
   casesRejected: number;
   reasons: string[];
@@ -961,15 +993,18 @@ export async function getInspectionsPendingApply(): Promise<InspectionPendingApp
     failed: false,
   });
   const poById = new Map(pos.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+  const firmBySellerId = await getFirmBySellerId(pos.map((p) => p.sellerId as Types.ObjectId));
   return inspections
     .filter((i) => poById.has(i.poId.toString()))
     .map((i) => {
       const po = poById.get(i.poId.toString())!;
+      const sellerId = (po.sellerId as Types.ObjectId).toString();
       return {
         inspectionId: (i._id as Types.ObjectId).toString(),
         poId: (po._id as Types.ObjectId).toString(),
         poNo: po.poNo,
-        sellerId: (po.sellerId as Types.ObjectId).toString(),
+        sellerId,
+        sellerFirm: firmBySellerId.get(sellerId) ?? '—',
         casesAccepted: i.casesAccepted,
         casesRejected: i.casesRejected,
         reasons: i.reasons,
@@ -1181,6 +1216,7 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
 export interface OpenSellerDebitItem {
   debitId: string;
   sellerId: string;
+  sellerFirm: string;
   reason: string;
   amountPaise: number;
   raisedAt: string;
@@ -1188,13 +1224,20 @@ export interface OpenSellerDebitItem {
 
 export async function getOpenSellerDebits(): Promise<OpenSellerDebitItem[]> {
   const debits = await SellerDebit.find({ nettedAgainst: null }).sort({ createdAt: -1 });
-  return debits.map((d) => ({
-    debitId: (d._id as Types.ObjectId).toString(),
-    sellerId: d.counterpartyId.toString(),
-    reason: d.reason,
-    amountPaise: d.amountPaise,
-    raisedAt: (d as unknown as { createdAt: Date }).createdAt.toISOString(),
-  }));
+  const firmBySellerId = await getFirmBySellerId(
+    debits.map((d) => d.counterpartyId as Types.ObjectId),
+  );
+  return debits.map((d) => {
+    const sellerId = d.counterpartyId.toString();
+    return {
+      debitId: (d._id as Types.ObjectId).toString(),
+      sellerId,
+      sellerFirm: firmBySellerId.get(sellerId) ?? '—',
+      reason: d.reason,
+      amountPaise: d.amountPaise,
+      raisedAt: (d as unknown as { createdAt: Date }).createdAt.toISOString(),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

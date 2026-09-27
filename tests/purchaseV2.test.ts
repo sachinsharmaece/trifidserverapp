@@ -14,6 +14,7 @@ import {
   createApprovedSellerAtTehsils,
   createApprovedBuyerAtTehsil,
 } from './m5helpers.js';
+import { randomGstin, randomMobile } from './helpers.js';
 
 const app = createApp();
 
@@ -21,6 +22,234 @@ async function makeSeller(purchaseToken: string): Promise<string> {
   const tehsil = await createTehsil();
   return createApprovedSellerAtTehsils(app, purchaseToken, [tehsil]);
 }
+
+// Every call needs its own fresh, checksum-valid GSTIN and mobile — reusing
+// a fixed one across calls would collide with `assertGstinAndMobileAreFree`
+// and fail for the wrong reason.
+async function baseSellerRegistrationBody(
+  overrides: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
+  return {
+    mobile: randomMobile(),
+    firm: `Test Seller ${Date.now()}-${Math.random()}`,
+    gstin: await randomGstin(),
+    ownerName: 'Owner Name',
+    licenceNo: 'MP/IND/INS/2016/0771',
+    references: [
+      { firm: 'Ref One', phone: '9000000001', relationship: 'Supplier', whatTheySaid: 'Reliable' },
+      { firm: 'Ref Two', phone: '9000000002', relationship: 'Supplier', whatTheySaid: 'Reliable' },
+    ],
+    bankDetail: {
+      accountNumber: '000900012345678',
+      ifsc: 'HDFC0001234',
+      accountName: 'Owner Name',
+    },
+    consent: { noticeVersion: 'v1', marketingOptIn: false },
+    callNote: 'Called on 27 Sep, confirmed everything.',
+    ...overrides,
+  };
+}
+
+describe('QA fixes — parity audit, 2026-09-27', () => {
+  it('rejects a referee phone that is not a real 10-digit mobile number', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const res = await request(app)
+      .post('/api/v1/staff/registrations/seller')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(
+        await baseSellerRegistrationBody({
+          references: [
+            { firm: 'Ref One', phone: '123', relationship: 'Supplier', whatTheySaid: 'Reliable' },
+            { firm: 'Ref Two', phone: '456', relationship: 'Supplier', whatTheySaid: 'Reliable' },
+          ],
+        }),
+      );
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_FAILED');
+    // Both bad phones are reported at once, not just the first — the whole
+    // point of the "only one error shows at a time" fix.
+    const fields = (res.body.error.fieldErrors as Array<{ field: string }>).map((f) => f.field);
+    expect(fields).toContain('references.0.phone');
+    expect(fields).toContain('references.1.phone');
+  });
+
+  it('rejects a bare "LIC" licence number but accepts a real-shaped one', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const badRes = await request(app)
+      .post('/api/v1/staff/registrations/seller')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(await baseSellerRegistrationBody({ licenceNo: 'LIC' }));
+    expect(badRes.status).toBe(400);
+    expect(badRes.body.error.field ?? (badRes.body.error.fieldErrors?.[0]?.field as string)).toBe(
+      'licenceNo',
+    );
+
+    const goodRes = await request(app)
+      .post('/api/v1/staff/registrations/seller')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(await baseSellerRegistrationBody());
+    expect(goodRes.status).toBe(201);
+  });
+
+  it('flags an account name that does not resemble the owner or firm, without blocking registration', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const res = await request(app)
+      .post('/api/v1/staff/registrations/seller')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(
+        await baseSellerRegistrationBody({
+          ownerName: 'Dinesh Maheshwari',
+          firm: 'Maheshwari Agro Agencies',
+          bankDetail: {
+            accountNumber: '000900012345678',
+            ifsc: 'HDFC0001234',
+            accountName: 'Someone Else Entirely',
+          },
+        }),
+      );
+    expect(res.status).toBe(201);
+    expect(res.body.data.accountNameWarning).toBeTruthy();
+    expect(res.body.data.accountNameWarning as string).toContain('Someone Else Entirely');
+  });
+
+  it('does not warn when the account name reasonably matches the owner or firm', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const res = await request(app)
+      .post('/api/v1/staff/registrations/seller')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(
+        await baseSellerRegistrationBody({
+          ownerName: 'Dinesh Maheshwari',
+          firm: 'Maheshwari Agro Agencies',
+          bankDetail: {
+            accountNumber: '000900012345678',
+            ifsc: 'HDFC0001234',
+            accountName: 'Dinesh Maheshwari',
+          },
+        }),
+      );
+    expect(res.status).toBe(201);
+    expect(res.body.data.accountNameWarning).toBeNull();
+  });
+
+  it('blocks a case-insensitive duplicate company', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const name = `Syngenta-${Date.now()}`;
+    const first = await request(app)
+      .post('/api/v1/staff/purchase/masters/manufacturers')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({ name });
+    expect(first.status).toBe(201);
+
+    const second = await request(app)
+      .post('/api/v1/staff/purchase/masters/manufacturers')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({ name: name.toLowerCase() });
+    expect(second.status).toBe(400);
+    expect(second.body.error.field).toBe('name');
+  });
+
+  it('rejects an invalid HSN and a pack label that does not match its base unit, on a draft product/pack', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const { manufacturerId } = await catalogService.createManufacturerDraft(
+      `Mfr-${Date.now()}`,
+      purchase.employeeId,
+    );
+
+    const badHsn = await request(app)
+      .post('/api/v1/staff/purchase/masters/products')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({ brand: `Brand-${Date.now()}`, technical: 'Test', manufacturerId, hsn: 'ABC' });
+    expect(badHsn.status).toBe(400);
+
+    const { productId } = await catalogService.createProductDraft(
+      { brand: `Brand-${Date.now()}`, technical: 'Test', manufacturerId, hsn: '38089199' },
+      purchase.employeeId,
+    );
+
+    const mismatchedPack = await request(app)
+      .post('/api/v1/staff/purchase/masters/skus')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({ productId, packLabel: '500 GM', packSize: 0.5, baseUnit: 'LTR', unitsPerBox: 12 });
+    expect(mismatchedPack.status).toBe(400);
+  });
+
+  it('gives a friendly message on a duplicate pack instead of a 500', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const { manufacturerId } = await catalogService.createManufacturerDraft(
+      `Mfr-${Date.now()}`,
+      purchase.employeeId,
+    );
+    const { productId } = await catalogService.createProductDraft(
+      { brand: `Brand-${Date.now()}`, technical: 'Test', manufacturerId, hsn: '38089199' },
+      purchase.employeeId,
+    );
+
+    const input = {
+      productId,
+      packLabel: '1 LTR',
+      packSize: 1,
+      baseUnit: 'LTR' as const,
+      unitsPerBox: 20,
+    };
+    const first = await request(app)
+      .post('/api/v1/staff/purchase/masters/skus')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(input);
+    expect(first.status).toBe(201);
+
+    const second = await request(app)
+      .post('/api/v1/staff/purchase/masters/skus')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(input);
+    expect(second.status).toBe(400);
+    expect(second.body.error.code).toBe('VALIDATION_FAILED');
+    expect(second.body.error.message_en).toContain('already exists');
+  });
+
+  it('the demand and dispatch/confirmations/recovery reads carry readable names, not bare seller-id hashes', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const sellerId = await makeSeller(purchase.token);
+    const skuId = await createTestSku('B');
+    const sku = await Sku.findById(skuId);
+    const productId = sku!.productId.toString();
+
+    await purchaseService.upsertSellerCatalogueEntry(
+      { sellerId, productId, skuIds: [skuId] },
+      { employeeId: purchase.employeeId },
+    );
+    const listing = await Listing.create({
+      sellerId,
+      productId,
+      origin: 'seller_initiated',
+      scopeType: 'all_india',
+      state: 'live',
+      frozenTehsilIds: [],
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    await ListingLine.create({
+      listingId: listing._id,
+      skuId,
+      ratePaise: 40000,
+      expiryBand: 'over12',
+      moqExact: 1,
+      deliveryBand: '2-5d',
+      provenance: 'company',
+      qty: 10,
+    });
+
+    const demand = await purchaseService.getActiveDemandList({});
+    for (const item of demand) {
+      expect(item).toHaveProperty('brand');
+      expect(item).toHaveProperty('technical');
+    }
+
+    const dispatchQueue = await purchaseService.getDispatchChaseQueue();
+    for (const row of dispatchQueue) {
+      expect(row).toHaveProperty('sellerFirm');
+    }
+  });
+});
 
 describe('Purchase-desk v2 — the seller catalogue', () => {
   it('adds a catalogue entry, then reads it back with pack detail and listed state', async () => {
