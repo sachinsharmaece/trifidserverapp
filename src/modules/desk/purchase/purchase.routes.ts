@@ -5,6 +5,7 @@ import { validateBody } from '../../../middleware/validate.js';
 import { PERMISSIONS } from '../../../config/permissions.js';
 import * as controller from './purchase.controller.js';
 import {
+  askChaseSchema,
   draftManufacturerSchema,
   draftProductSchema,
   draftSkuSchema,
@@ -33,6 +34,13 @@ purchaseRouter.get(
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
   controller.getAskSellerStates,
+);
+purchaseRouter.post(
+  '/staff/purchase/asks/:askId/chase',
+  authenticate,
+  requirePermission(PERMISSIONS.DEMAND_READ),
+  validateBody(askChaseSchema),
+  controller.postAskChase,
 );
 purchaseRouter.get(
   '/staff/purchase/coverage-map',
@@ -130,6 +138,12 @@ purchaseRouter.get(
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
   controller.getPilesAwaitingDecision,
+);
+purchaseRouter.post(
+  '/staff/purchase/piles/:pileId/chase',
+  authenticate,
+  requirePermission(PERMISSIONS.DEMAND_READ),
+  controller.postPileChase,
 );
 
 // Dispatch — Purchase's own pre-leg-1 chase queue. `po:edit` (already held —

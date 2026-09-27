@@ -1,8 +1,10 @@
 import { z } from 'zod';
+import { isValidHsn } from '../../shared/validators.js';
 
 export const createManufacturerSchema = z
   .object({
     name: z.string().min(1),
+    aka: z.array(z.string().min(1)).optional(),
   })
   .strict();
 
@@ -36,7 +38,10 @@ export const createProductSchema = z
     brand: z.string().min(1),
     technical: z.string().min(1),
     manufacturerId: z.string().min(1),
-    hsn: z.string().min(1),
+    hsn: z
+      .string()
+      .min(1)
+      .refine(isValidHsn, { message: 'HSN must be 6 or 8 digits starting with 3808.' }),
     class: z.enum(['A', 'B', 'C']).optional(),
   })
   .strict();
@@ -44,6 +49,7 @@ export const createProductSchema = z
 export const updateManufacturerSchema = z
   .object({
     name: z.string().min(1).optional(),
+    aka: z.array(z.string().min(1)).optional(),
     // Purchase-desk v2 — Admin's confirm action. One direction only: there is
     // no path back to 'draft', so 'draft' is not an accepted value here.
     state: z.literal('live').optional(),
@@ -55,7 +61,11 @@ export const updateProductSchema = z
     brand: z.string().min(1).optional(),
     technical: z.string().min(1).optional(),
     manufacturerId: z.string().min(1).optional(),
-    hsn: z.string().min(1).optional(),
+    hsn: z
+      .string()
+      .min(1)
+      .refine(isValidHsn, { message: 'HSN must be 6 or 8 digits starting with 3808.' })
+      .optional(),
     class: z.enum(['A', 'B', 'C']).optional(),
     active: z.boolean().optional(),
     // Purchase-desk v2 — Admin's confirm action, same one-direction shape.
@@ -68,8 +78,12 @@ export const updateProductSchema = z
 export const updateSkuSchema = z
   .object({
     packLabel: z.string().min(1).optional(),
-    packSize: z.number().positive().optional(),
-    unitsPerBox: z.number().int().positive().optional(),
+    packSize: z.number().positive({ message: 'Pack size must be a positive number.' }).optional(),
+    unitsPerBox: z
+      .number()
+      .int()
+      .positive({ message: 'Units per box must be a positive number.' })
+      .optional(),
     active: z.boolean().optional(),
     // Purchase-desk v2 — Admin's confirm action, same one-direction shape.
     state: z.literal('live').optional(),

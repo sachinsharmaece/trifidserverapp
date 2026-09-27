@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
+import { Types } from 'mongoose';
 import { createApp } from '../src/app.js';
 import { Sku } from '../src/models/Sku.js';
 import { Seller } from '../src/models/Seller.js';
 import { Listing } from '../src/models/Listing.js';
 import { ListingLine } from '../src/models/ListingLine.js';
 import { Po } from '../src/models/Po.js';
+import { Pile } from '../src/models/Pile.js';
+import { PileRequest } from '../src/models/PileRequest.js';
+import { AuditLog } from '../src/models/AuditLog.js';
 import * as catalogService from '../src/modules/catalog/catalog.service.js';
 import * as purchaseService from '../src/modules/desk/purchase/purchase.service.js';
 import { staffToken, createTestSku } from './m4helpers.js';
@@ -14,6 +18,7 @@ import {
   createApprovedSellerAtTehsils,
   createApprovedBuyerAtTehsil,
 } from './m5helpers.js';
+import { randomGstin, randomMobile } from './helpers.js';
 
 const app = createApp();
 
@@ -21,6 +26,234 @@ async function makeSeller(purchaseToken: string): Promise<string> {
   const tehsil = await createTehsil();
   return createApprovedSellerAtTehsils(app, purchaseToken, [tehsil]);
 }
+
+// Every call needs its own fresh, checksum-valid GSTIN and mobile — reusing
+// a fixed one across calls would collide with `assertGstinAndMobileAreFree`
+// and fail for the wrong reason.
+async function baseSellerRegistrationBody(
+  overrides: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
+  return {
+    mobile: randomMobile(),
+    firm: `Test Seller ${Date.now()}-${Math.random()}`,
+    gstin: await randomGstin(),
+    ownerName: 'Owner Name',
+    licenceNo: 'MP/IND/INS/2016/0771',
+    references: [
+      { firm: 'Ref One', phone: '9000000001', relationship: 'Supplier', whatTheySaid: 'Reliable' },
+      { firm: 'Ref Two', phone: '9000000002', relationship: 'Supplier', whatTheySaid: 'Reliable' },
+    ],
+    bankDetail: {
+      accountNumber: '000900012345678',
+      ifsc: 'HDFC0001234',
+      accountName: 'Owner Name',
+    },
+    consent: { noticeVersion: 'v1', marketingOptIn: false },
+    callNote: 'Called on 27 Sep, confirmed everything.',
+    ...overrides,
+  };
+}
+
+describe('QA fixes — parity audit, 2026-09-27', () => {
+  it('rejects a referee phone that is not a real 10-digit mobile number', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const res = await request(app)
+      .post('/api/v1/staff/registrations/seller')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(
+        await baseSellerRegistrationBody({
+          references: [
+            { firm: 'Ref One', phone: '123', relationship: 'Supplier', whatTheySaid: 'Reliable' },
+            { firm: 'Ref Two', phone: '456', relationship: 'Supplier', whatTheySaid: 'Reliable' },
+          ],
+        }),
+      );
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_FAILED');
+    // Both bad phones are reported at once, not just the first — the whole
+    // point of the "only one error shows at a time" fix.
+    const fields = (res.body.error.fieldErrors as Array<{ field: string }>).map((f) => f.field);
+    expect(fields).toContain('references.0.phone');
+    expect(fields).toContain('references.1.phone');
+  });
+
+  it('rejects a bare "LIC" licence number but accepts a real-shaped one', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const badRes = await request(app)
+      .post('/api/v1/staff/registrations/seller')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(await baseSellerRegistrationBody({ licenceNo: 'LIC' }));
+    expect(badRes.status).toBe(400);
+    expect(badRes.body.error.field ?? (badRes.body.error.fieldErrors?.[0]?.field as string)).toBe(
+      'licenceNo',
+    );
+
+    const goodRes = await request(app)
+      .post('/api/v1/staff/registrations/seller')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(await baseSellerRegistrationBody());
+    expect(goodRes.status).toBe(201);
+  });
+
+  it('flags an account name that does not resemble the owner or firm, without blocking registration', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const res = await request(app)
+      .post('/api/v1/staff/registrations/seller')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(
+        await baseSellerRegistrationBody({
+          ownerName: 'Dinesh Maheshwari',
+          firm: 'Maheshwari Agro Agencies',
+          bankDetail: {
+            accountNumber: '000900012345678',
+            ifsc: 'HDFC0001234',
+            accountName: 'Someone Else Entirely',
+          },
+        }),
+      );
+    expect(res.status).toBe(201);
+    expect(res.body.data.accountNameWarning).toBeTruthy();
+    expect(res.body.data.accountNameWarning as string).toContain('Someone Else Entirely');
+  });
+
+  it('does not warn when the account name reasonably matches the owner or firm', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const res = await request(app)
+      .post('/api/v1/staff/registrations/seller')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(
+        await baseSellerRegistrationBody({
+          ownerName: 'Dinesh Maheshwari',
+          firm: 'Maheshwari Agro Agencies',
+          bankDetail: {
+            accountNumber: '000900012345678',
+            ifsc: 'HDFC0001234',
+            accountName: 'Dinesh Maheshwari',
+          },
+        }),
+      );
+    expect(res.status).toBe(201);
+    expect(res.body.data.accountNameWarning).toBeNull();
+  });
+
+  it('blocks a case-insensitive duplicate company', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const name = `Syngenta-${Date.now()}`;
+    const first = await request(app)
+      .post('/api/v1/staff/purchase/masters/manufacturers')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({ name });
+    expect(first.status).toBe(201);
+
+    const second = await request(app)
+      .post('/api/v1/staff/purchase/masters/manufacturers')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({ name: name.toLowerCase() });
+    expect(second.status).toBe(400);
+    expect(second.body.error.field).toBe('name');
+  });
+
+  it('rejects an invalid HSN and a pack label that does not match its base unit, on a draft product/pack', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const { manufacturerId } = await catalogService.createManufacturerDraft(
+      `Mfr-${Date.now()}`,
+      purchase.employeeId,
+    );
+
+    const badHsn = await request(app)
+      .post('/api/v1/staff/purchase/masters/products')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({ brand: `Brand-${Date.now()}`, technical: 'Test', manufacturerId, hsn: 'ABC' });
+    expect(badHsn.status).toBe(400);
+
+    const { productId } = await catalogService.createProductDraft(
+      { brand: `Brand-${Date.now()}`, technical: 'Test', manufacturerId, hsn: '38089199' },
+      purchase.employeeId,
+    );
+
+    const mismatchedPack = await request(app)
+      .post('/api/v1/staff/purchase/masters/skus')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({ productId, packLabel: '500 GM', packSize: 0.5, baseUnit: 'LTR', unitsPerBox: 12 });
+    expect(mismatchedPack.status).toBe(400);
+  });
+
+  it('gives a friendly message on a duplicate pack instead of a 500', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const { manufacturerId } = await catalogService.createManufacturerDraft(
+      `Mfr-${Date.now()}`,
+      purchase.employeeId,
+    );
+    const { productId } = await catalogService.createProductDraft(
+      { brand: `Brand-${Date.now()}`, technical: 'Test', manufacturerId, hsn: '38089199' },
+      purchase.employeeId,
+    );
+
+    const input = {
+      productId,
+      packLabel: '1 LTR',
+      packSize: 1,
+      baseUnit: 'LTR' as const,
+      unitsPerBox: 20,
+    };
+    const first = await request(app)
+      .post('/api/v1/staff/purchase/masters/skus')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(input);
+    expect(first.status).toBe(201);
+
+    const second = await request(app)
+      .post('/api/v1/staff/purchase/masters/skus')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(input);
+    expect(second.status).toBe(400);
+    expect(second.body.error.code).toBe('VALIDATION_FAILED');
+    expect(second.body.error.message_en).toContain('already exists');
+  });
+
+  it('the demand and dispatch/confirmations/recovery reads carry readable names, not bare seller-id hashes', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const sellerId = await makeSeller(purchase.token);
+    const skuId = await createTestSku('B');
+    const sku = await Sku.findById(skuId);
+    const productId = sku!.productId.toString();
+
+    await purchaseService.upsertSellerCatalogueEntry(
+      { sellerId, productId, skuIds: [skuId] },
+      { employeeId: purchase.employeeId },
+    );
+    const listing = await Listing.create({
+      sellerId,
+      productId,
+      origin: 'seller_initiated',
+      scopeType: 'all_india',
+      state: 'live',
+      frozenTehsilIds: [],
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    await ListingLine.create({
+      listingId: listing._id,
+      skuId,
+      ratePaise: 40000,
+      expiryBand: 'over12',
+      moqExact: 1,
+      deliveryBand: '2-5d',
+      provenance: 'company',
+      qty: 10,
+    });
+
+    const demand = await purchaseService.getActiveDemandList({});
+    for (const item of demand) {
+      expect(item).toHaveProperty('brand');
+      expect(item).toHaveProperty('technical');
+    }
+
+    const dispatchQueue = await purchaseService.getDispatchChaseQueue();
+    for (const row of dispatchQueue) {
+      expect(row).toHaveProperty('sellerFirm');
+    }
+  });
+});
 
 describe('Purchase-desk v2 — the seller catalogue', () => {
   it('adds a catalogue entry, then reads it back with pack detail and listed state', async () => {
@@ -270,6 +503,9 @@ describe('Purchase-desk v2 — dispatch chase queue', () => {
     expect(row).toBeTruthy();
     expect(row!.bucket).toBe('overdue');
     expect(row!.hoursLeft).toBeLessThan(0);
+    // QA fix — a seller name, not a raw ObjectId hash, on the dispatch screen.
+    expect(row!.sellerFirm).toBeTruthy();
+    expect(row!.sellerFirm).not.toBe('—');
   });
 });
 
@@ -374,5 +610,95 @@ describe('Purchase-desk v2 — per-ask seller states and the product funnel', ()
     expect(funnel.inq).toBeGreaterThanOrEqual(1);
     expect(funnel.quoted).toBeGreaterThanOrEqual(1);
     expect(funnel.sellerCount).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('Purchase-desk v2 — active demand list shows product, not a hash', () => {
+  it('resolves brand/technical/manufacturerName for an ask, not just its raw ids', async () => {
+    const sales = await staffToken(app, 'sales');
+    const skuId = await createTestSku('B');
+    const sku = await Sku.findById(skuId);
+    const productId = sku!.productId.toString();
+    const { Product } = await import('../src/models/Product.js');
+    const product = await Product.findById(productId);
+
+    const tehsil = await createTehsil();
+    const buyerId = await createApprovedBuyerAtTehsil(app, sales.token, tehsil, 'dealer');
+    const { Buyer } = await import('../src/models/Buyer.js');
+    const buyer = await Buyer.findById(buyerId);
+    const demandService = await import('../src/modules/demand/demand.service.js');
+
+    const { askId } = await demandService.raiseAsk(
+      (buyer!.counterpartyId as unknown as string).toString(),
+      { skuId, allPacks: false, qty: 5, conditionRequirement: { expiryBand: 'over12' } },
+    );
+
+    const items = await purchaseService.getActiveDemandList({});
+    const row = items.find((i) => i.askId === askId);
+    expect(row).toBeTruthy();
+    expect(row!.brand).toBe(product!.brand);
+    expect(row!.technical).toBe(product!.technical);
+    expect(row!.manufacturerName).not.toBe('—');
+  });
+});
+
+describe('Purchase-desk v2 — confirmations: the gap signal and the chase log', () => {
+  it('computes the gap from what buyers piled against what the listing line said, and logs a chase against the pile', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const sellerId = await makeSeller(purchase.token);
+    const skuId = await createTestSku('B');
+    const sku = await Sku.findById(skuId);
+    const productId = sku!.productId.toString();
+
+    const listing = await Listing.create({
+      sellerId,
+      productId,
+      origin: 'seller_initiated',
+      scopeType: 'all_india',
+      state: 'live',
+      frozenTehsilIds: [],
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    const line = await ListingLine.create({
+      listingId: listing._id,
+      skuId,
+      ratePaise: 40000,
+      expiryBand: 'over12',
+      moqExact: 1,
+      deliveryBand: '2-5d',
+      provenance: 'company',
+      qty: 10,
+    });
+
+    const opened = new Date();
+    const pile = await Pile.create({
+      listingLineId: line._id,
+      openedAt: opened,
+      confirmWindowEndsAt: new Date(opened.getTime() + 11 * 60 * 60 * 1000),
+      decision: null,
+    });
+    await PileRequest.create({
+      pileId: pile._id,
+      buyerId: new Types.ObjectId(),
+      qty: 15,
+      deliveryLocationId: new Types.ObjectId(),
+      requestedAt: opened,
+    });
+
+    const piles = await purchaseService.getPilesAwaitingDecision();
+    const row = piles.find((p) => p.pileId === (pile._id as Types.ObjectId).toString());
+    expect(row).toBeTruthy();
+    expect(row!.boxes).toBe(15);
+    expect(row!.lineQty).toBe(10);
+    expect(row!.gapText).toBe('15 of 10 boxes in his listing');
+
+    const res = await request(app)
+      .post(`/api/v1/staff/purchase/piles/${row!.pileId}/chase`)
+      .set('Authorization', `Bearer ${purchase.token}`);
+    expect(res.status).toBe(201);
+    expect(res.body.data).toEqual({ logged: true });
+
+    const entry = await AuditLog.findOne({ entityId: pile._id, field: 'pile_chase_logged' });
+    expect(entry).not.toBeNull();
   });
 });

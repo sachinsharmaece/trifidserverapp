@@ -123,6 +123,9 @@ interface AppErrorOptions {
   field?: string;
   retryable?: boolean;
   status?: number;
+  // Small, non-secret structured extras (e.g. an existing record's id for a
+  // "this already exists" error) — never a stack trace or raw internals.
+  meta?: Record<string, unknown>;
 }
 
 /**
@@ -136,6 +139,7 @@ export class AppError extends Error {
   field?: string;
   retryable: boolean;
   status: number;
+  meta?: Record<string, unknown>;
 
   constructor(options: AppErrorOptions) {
     super(options.messageEn);
@@ -146,6 +150,7 @@ export class AppError extends Error {
     this.field = options.field;
     this.retryable = options.retryable ?? false;
     this.status = options.status ?? HTTP_STATUS_BY_CODE[options.code];
+    this.meta = options.meta;
   }
 }
 

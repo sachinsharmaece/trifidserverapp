@@ -102,6 +102,17 @@ export async function postDispatchChase(req: Request, res: Response): Promise<vo
   ok(res, req, { logged: true }, 201);
 }
 
+export async function postAskChase(req: Request, res: Response): Promise<void> {
+  const { sellerId } = req.body as { sellerId: string };
+  await purchaseService.logAskChase(req.params.askId as string, sellerId, staffActor(req));
+  ok(res, req, { logged: true }, 201);
+}
+
+export async function postPileChase(req: Request, res: Response): Promise<void> {
+  await purchaseService.logPileChase(req.params.pileId as string, staffActor(req));
+  ok(res, req, { logged: true }, 201);
+}
+
 export async function getInspectionsPendingApply(req: Request, res: Response): Promise<void> {
   ok(res, req, await purchaseService.getInspectionsPendingApply());
 }
@@ -134,8 +145,8 @@ export async function getOpenSellerDebits(req: Request, res: Response): Promise<
 }
 
 export async function postDraftManufacturer(req: Request, res: Response): Promise<void> {
-  const { name } = draftManufacturerSchema.parse(req.body);
-  const result = await catalogService.createManufacturerDraft(name, req.auth!.employeeId!);
+  const { name, aka } = draftManufacturerSchema.parse(req.body);
+  const result = await catalogService.createManufacturerDraft(name, req.auth!.employeeId!, aka);
   ok(res, req, result, 201);
 }
 

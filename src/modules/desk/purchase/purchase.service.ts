@@ -37,6 +37,29 @@ import { getSellerScorecard, type SellerScorecardDto } from '../../conduct/condu
 
 const RETURN_NOTE_WINDOW_DAYS = 30; // BR-189.
 
+/**
+ * Purchase is a supplier-side desk — a seller's firm name is exactly the
+ * identity it is meant to see (unlike a buyer's, BR-067). Every queue on
+ * this desk that used to show a raw `sellerId` hash now joins through this
+ * instead, so a seller is always readable, never a hex string.
+ */
+async function getFirmBySellerId(sellerIds: Types.ObjectId[]): Promise<Map<string, string>> {
+  if (sellerIds.length === 0) return new Map();
+  const sellers = await Seller.find({ _id: { $in: sellerIds } });
+  const counterparties = await Counterparty.find({
+    _id: { $in: sellers.map((s) => s.counterpartyId) },
+  });
+  const firmByCounterpartyId = new Map(
+    counterparties.map((c) => [(c._id as Types.ObjectId).toString(), c.firm ?? '—']),
+  );
+  return new Map(
+    sellers.map((s) => [
+      (s._id as Types.ObjectId).toString(),
+      firmByCounterpartyId.get((s.counterpartyId as Types.ObjectId).toString()) ?? '—',
+    ]),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Active demand list — BR-272's four seller states + the No-seller filter.
 //
@@ -60,6 +83,9 @@ export interface ActiveDemandItem {
   createdAt: string;
   sellerCounts: Record<SellerDemandState, number>; // Counts only — BR-067 (no buyer identity), BR-069 (no rupee figure).
   noSeller: boolean;
+  brand: string;
+  technical: string;
+  manufacturerName: string;
 }
 
 async function skuIdsForAsk(ask: InstanceType<typeof Ask>): Promise<Types.ObjectId[]> {
@@ -75,10 +101,18 @@ export async function getActiveDemandList(filters: {
   noSellerOnly?: boolean;
 }): Promise<ActiveDemandItem[]> {
   const asks = await Ask.find({ state: { $in: ['open', 'quoted'] } }).sort({ createdAt: -1 });
-  const items: ActiveDemandItem[] = [];
+  const items: Array<Omit<ActiveDemandItem, 'brand' | 'technical' | 'manufacturerName'>> = [];
+  const productIdByAskId = new Map<string, string>();
 
   for (const ask of asks) {
     const skuIds = await skuIdsForAsk(ask);
+
+    let productId = ask.productId ? (ask.productId as Types.ObjectId).toString() : null;
+    if (!productId && skuIds.length) {
+      const sku = await Sku.findById(skuIds[0]);
+      productId = sku ? (sku.productId as Types.ObjectId).toString() : null;
+    }
+    if (productId) productIdByAskId.set((ask._id as Types.ObjectId).toString(), productId);
 
     const quotedSellerIds = new Set(
       (await Quote.find({ askId: ask._id })).map((q) => (q.sellerId as Types.ObjectId).toString()),
@@ -122,7 +156,31 @@ export async function getActiveDemandList(filters: {
       noSeller,
     });
   }
-  return items;
+
+  const products = productIdByAskId.size
+    ? await Product.find({ _id: { $in: [...new Set(productIdByAskId.values())] } })
+    : [];
+  const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+  const manufacturers = products.length
+    ? await Manufacturer.find({ _id: { $in: products.map((p) => p.manufacturerId) } })
+    : [];
+  const manufacturerById = new Map(
+    manufacturers.map((m) => [(m._id as Types.ObjectId).toString(), m]),
+  );
+
+  return items.map((item) => {
+    const productId = productIdByAskId.get(item.askId);
+    const product = productId ? productById.get(productId) : undefined;
+    const manufacturer = product
+      ? manufacturerById.get((product.manufacturerId as unknown as Types.ObjectId).toString())
+      : undefined;
+    return {
+      ...item,
+      brand: product?.brand ?? '—',
+      technical: product?.technical ?? '—',
+      manufacturerName: manufacturer?.name ?? '—',
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -427,6 +485,7 @@ export async function recordSupplyGapReason(
 export interface SellerRecoveryItem {
   complaintId: string;
   sellerId: string;
+  sellerFirm: string;
   debitNoteId: string | null;
   decidedAt: string | null;
 }
@@ -441,12 +500,17 @@ export async function getSellerRecoveryQueue(): Promise<SellerRecoveryItem[]> {
       (so.sellerId as Types.ObjectId).toString(),
     ]),
   );
-  return complaints.map((c) => ({
-    complaintId: (c._id as Types.ObjectId).toString(),
-    sellerId: soIdToSellerId.get(c.soId.toString()) ?? '',
-    debitNoteId: c.debitNoteId ? c.debitNoteId.toString() : null,
-    decidedAt: c.decidedAt ? c.decidedAt.toISOString() : null,
-  }));
+  const firmBySellerId = await getFirmBySellerId(sos.map((so) => so.sellerId as Types.ObjectId));
+  return complaints.map((c) => {
+    const sellerId = soIdToSellerId.get(c.soId.toString()) ?? '';
+    return {
+      complaintId: (c._id as Types.ObjectId).toString(),
+      sellerId,
+      sellerFirm: firmBySellerId.get(sellerId) ?? '—',
+      debitNoteId: c.debitNoteId ? c.debitNoteId.toString() : null,
+      decidedAt: c.decidedAt ? c.decidedAt.toISOString() : null,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -744,13 +808,18 @@ export interface PileAwaitingDecisionItem {
   pileId: string;
   sellerId: string;
   sellerCounterpartyId: string;
+  sellerFirm: string;
   skuId: string;
+  packLabel: string;
+  brand: string;
   ratePaise: number;
   boxes: number;
+  lineQty: number;
   buyers: number;
   openedAt: string;
   confirmWindowEndsAt: string;
   chaseLeftHours: number;
+  gapText: string | null;
 }
 
 export async function getPilesAwaitingDecision(): Promise<PileAwaitingDecisionItem[]> {
@@ -761,6 +830,11 @@ export async function getPilesAwaitingDecision(): Promise<PileAwaitingDecisionIt
   const listingById = new Map(listings.map((l) => [(l._id as Types.ObjectId).toString(), l]));
   const sellers = await Seller.find({ _id: { $in: listings.map((l) => l.sellerId) } });
   const sellerById = new Map(sellers.map((s) => [(s._id as Types.ObjectId).toString(), s]));
+  const firmBySellerId = await getFirmBySellerId(listings.map((l) => l.sellerId as Types.ObjectId));
+  const skus = await Sku.find({ _id: { $in: lines.map((l) => l.skuId) } });
+  const skuById = new Map(skus.map((s) => [(s._id as Types.ObjectId).toString(), s]));
+  const products = await Product.find({ _id: { $in: skus.map((s) => s.productId) } });
+  const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
   const requests = await PileRequest.find({ pileId: { $in: piles.map((p) => p._id) } });
   const now = Date.now();
 
@@ -771,21 +845,36 @@ export async function getPilesAwaitingDecision(): Promise<PileAwaitingDecisionIt
       : undefined;
     const sellerId = listing ? (listing.sellerId as Types.ObjectId).toString() : '';
     const seller = sellerById.get(sellerId);
+    const sku = line ? skuById.get((line.skuId as Types.ObjectId).toString()) : undefined;
+    const product = sku ? productById.get((sku.productId as Types.ObjectId).toString()) : undefined;
     const myRequests = requests.filter((r) =>
       (r.pileId as Types.ObjectId).equals(pile._id as Types.ObjectId),
     );
+    const boxes = myRequests.reduce((sum, r) => sum + r.qty, 0);
+    const lineQty = line?.qty ?? 0;
+    // The one gap this data can actually support without inventing a
+    // signal the seller hasn't given yet: what he originally said he had
+    // (the listing line's own `qty`) against what buyers have now piled on
+    // top of it. Anything finer (why he's short) is his to say when he
+    // answers — that's exactly what Confirm/Requote/Decline is for.
+    const gapText = boxes > lineQty ? `${boxes} of ${lineQty} boxes in his listing` : null;
     return {
       pileId: (pile._id as Types.ObjectId).toString(),
       sellerId,
       sellerCounterpartyId: seller ? (seller.counterpartyId as Types.ObjectId).toString() : '',
+      sellerFirm: firmBySellerId.get(sellerId) ?? '—',
       skuId: line ? (line.skuId as Types.ObjectId).toString() : '',
+      packLabel: sku?.packLabel ?? '—',
+      brand: product?.brand ?? '—',
       ratePaise: line?.ratePaise ?? 0,
-      boxes: myRequests.reduce((sum, r) => sum + r.qty, 0),
+      boxes,
+      lineQty,
       buyers: new Set(myRequests.map((r) => (r.buyerId as Types.ObjectId).toString())).size,
       openedAt: pile.openedAt.toISOString(),
       confirmWindowEndsAt: pile.confirmWindowEndsAt.toISOString(),
       chaseLeftHours:
         Math.round(((pile.confirmWindowEndsAt.getTime() - now) / (60 * 60 * 1000)) * 10) / 10,
+      gapText,
     };
   });
 }
@@ -802,6 +891,11 @@ export interface DispatchQueueItem {
   poId: string;
   poNo: string;
   sellerId: string;
+  sellerFirm: string;
+  sellerCutoffTime: string;
+  brand: string;
+  packLabel: string;
+  boxes: number;
   bucket: 'due' | 'overdue' | 'in_transit';
   dispatchDueDate: string;
   hoursLeft: number | null;
@@ -817,6 +911,7 @@ export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
     Po.find({ state: 'released', failed: false }),
     Po.find({ state: 'dispatched_leg1', failed: false, receivedAt: null }),
   ]);
+  const allPos = [...pending, ...dispatchedLeg1];
   const movements = await Movement.find({
     chainId: { $in: dispatchedLeg1.map((p) => p.chainId) },
     leg: 1,
@@ -825,12 +920,42 @@ export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
     movements.map((m) => [(m.chainId as Types.ObjectId).toString(), m]),
   );
 
+  const firmBySellerId = await getFirmBySellerId(allPos.map((p) => p.sellerId));
+  const sellers = await Seller.find({ _id: { $in: allPos.map((p) => p.sellerId) } });
+  const cutoffBySellerId = new Map(
+    sellers.map((s) => [(s._id as Types.ObjectId).toString(), s.dispatchCutoffTime]),
+  );
+
+  // Goods — the PO's own line, joined through to the product/pack it names.
+  // A PO carries exactly one line (Q4/BR-030's own single-SKU-per-order design).
+  const poLines = await PoLine.find({ poId: { $in: allPos.map((p) => p._id) } });
+  const poLineByPoId = new Map(poLines.map((l) => [l.poId.toString(), l]));
+  const skus = await Sku.find({ _id: { $in: poLines.map((l) => l.skuId) } });
+  const skuById = new Map(skus.map((s) => [(s._id as Types.ObjectId).toString(), s]));
+  const products = await Product.find({ _id: { $in: skus.map((s) => s.productId) } });
+  const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+
+  function goodsFor(poId: string): { brand: string; packLabel: string; boxes: number } {
+    const line = poLineByPoId.get(poId);
+    const sku = line ? skuById.get((line.skuId as Types.ObjectId).toString()) : undefined;
+    const product = sku ? productById.get((sku.productId as Types.ObjectId).toString()) : undefined;
+    return {
+      brand: product?.brand ?? '—',
+      packLabel: sku?.packLabel ?? '—',
+      boxes: line?.boxes ?? 0,
+    };
+  }
+
   const dueOrOverdue: DispatchQueueItem[] = pending.map((po) => {
     const hoursLeft = (po.dispatchDueDate.getTime() - now) / (60 * 60 * 1000);
+    const sellerId = (po.sellerId as Types.ObjectId).toString();
     return {
       poId: (po._id as Types.ObjectId).toString(),
       poNo: po.poNo,
-      sellerId: (po.sellerId as Types.ObjectId).toString(),
+      sellerId,
+      sellerFirm: firmBySellerId.get(sellerId) ?? '—',
+      sellerCutoffTime: cutoffBySellerId.get(sellerId) ?? '—',
+      ...goodsFor((po._id as Types.ObjectId).toString()),
       bucket: hoursLeft < 0 ? 'overdue' : 'due',
       dispatchDueDate: po.dispatchDueDate.toISOString(),
       hoursLeft: Math.round(hoursLeft * 10) / 10,
@@ -844,10 +969,14 @@ export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
   const inTransit: DispatchQueueItem[] = dispatchedLeg1.map((po) => {
     const movement = movementByChain.get((po.chainId as Types.ObjectId).toString());
     const dispatchedAt = movement?.dispatchedAt ?? null;
+    const sellerId = (po.sellerId as Types.ObjectId).toString();
     return {
       poId: (po._id as Types.ObjectId).toString(),
       poNo: po.poNo,
-      sellerId: (po.sellerId as Types.ObjectId).toString(),
+      sellerId,
+      sellerFirm: firmBySellerId.get(sellerId) ?? '—',
+      sellerCutoffTime: cutoffBySellerId.get(sellerId) ?? '—',
+      ...goodsFor((po._id as Types.ObjectId).toString()),
       bucket: 'in_transit',
       dispatchDueDate: po.dispatchDueDate.toISOString(),
       hoursLeft: null,
@@ -880,6 +1009,45 @@ export async function logDispatchChase(
   });
 }
 
+/** The same logged-chase pattern as `logDispatchChase`, for an ask instead
+ * of a PO — a seller who is 'listed' or 'carries' but hasn't quoted this
+ * ask yet. Never a state change, just an audit trail Purchase can point to. */
+export async function logAskChase(
+  askId: string,
+  sellerId: string,
+  actor: { employeeId: string; correlationId: string },
+): Promise<void> {
+  const ask = await Ask.findById(askId);
+  if (!ask) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Ask not found.' });
+  await writeAuditLog({
+    actorId: actor.employeeId,
+    actorType: 'staff',
+    entity: 'ask',
+    entityId: ask._id as Types.ObjectId,
+    field: 'ask_chase_logged',
+    reason: `Seller ${sellerId} chased.`,
+    correlationId: actor.correlationId,
+  });
+}
+
+/** The same logged-chase pattern as `logDispatchChase`/`logAskChase`, for a
+ * pile still waiting on the one seller it's piled against. */
+export async function logPileChase(
+  pileId: string,
+  actor: { employeeId: string; correlationId: string },
+): Promise<void> {
+  const pile = await Pile.findById(pileId);
+  if (!pile) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Pile not found.' });
+  await writeAuditLog({
+    actorId: actor.employeeId,
+    actorType: 'staff',
+    entity: 'pile',
+    entityId: pile._id as Types.ObjectId,
+    field: 'pile_chase_logged',
+    correlationId: actor.correlationId,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Recovery — dock findings still waiting on Purchase's own act (BR-190: "the
 // dock records, Purchase applies"). `Po.inspected` flips true only once
@@ -893,6 +1061,7 @@ export interface InspectionPendingApplyItem {
   poId: string;
   poNo: string;
   sellerId: string;
+  sellerFirm: string;
   casesAccepted: number;
   casesRejected: number;
   reasons: string[];
@@ -908,15 +1077,18 @@ export async function getInspectionsPendingApply(): Promise<InspectionPendingApp
     failed: false,
   });
   const poById = new Map(pos.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+  const firmBySellerId = await getFirmBySellerId(pos.map((p) => p.sellerId as Types.ObjectId));
   return inspections
     .filter((i) => poById.has(i.poId.toString()))
     .map((i) => {
       const po = poById.get(i.poId.toString())!;
+      const sellerId = (po.sellerId as Types.ObjectId).toString();
       return {
         inspectionId: (i._id as Types.ObjectId).toString(),
         poId: (po._id as Types.ObjectId).toString(),
         poNo: po.poNo,
-        sellerId: (po.sellerId as Types.ObjectId).toString(),
+        sellerId,
+        sellerFirm: firmBySellerId.get(sellerId) ?? '—',
         casesAccepted: i.casesAccepted,
         casesRejected: i.casesRejected,
         reasons: i.reasons,
@@ -1128,6 +1300,7 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
 export interface OpenSellerDebitItem {
   debitId: string;
   sellerId: string;
+  sellerFirm: string;
   reason: string;
   amountPaise: number;
   raisedAt: string;
@@ -1135,13 +1308,20 @@ export interface OpenSellerDebitItem {
 
 export async function getOpenSellerDebits(): Promise<OpenSellerDebitItem[]> {
   const debits = await SellerDebit.find({ nettedAgainst: null }).sort({ createdAt: -1 });
-  return debits.map((d) => ({
-    debitId: (d._id as Types.ObjectId).toString(),
-    sellerId: d.counterpartyId.toString(),
-    reason: d.reason,
-    amountPaise: d.amountPaise,
-    raisedAt: (d as unknown as { createdAt: Date }).createdAt.toISOString(),
-  }));
+  const firmBySellerId = await getFirmBySellerId(
+    debits.map((d) => d.counterpartyId as Types.ObjectId),
+  );
+  return debits.map((d) => {
+    const sellerId = d.counterpartyId.toString();
+    return {
+      debitId: (d._id as Types.ObjectId).toString(),
+      sellerId,
+      sellerFirm: firmBySellerId.get(sellerId) ?? '—',
+      reason: d.reason,
+      amountPaise: d.amountPaise,
+      raisedAt: (d as unknown as { createdAt: Date }).createdAt.toISOString(),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

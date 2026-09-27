@@ -7,10 +7,17 @@ import { Schema, model, type InferSchemaType } from 'mongoose';
  * (`state: 'live'`, the default — every row created through `/admin/*`
  * stays exactly as before). See `modules/catalog/catalog.service.ts`'s
  * `createManufacturerDraft` and `listing.service.ts#createListing`'s guard.
+ *
+ * `aka` — the prototype this desk was built against names this exact gap:
+ * without it, "Bayer", "Bayer CropScience" and "Bayer India" become three
+ * companies instead of one, silently, and every report and the coverage
+ * map built on `manufacturerId` is wrong from then on. Matched (not just
+ * stored) inside `isNearMatch`'s near-duplicate check, both directions.
  */
 const manufacturerSchema = new Schema(
   {
     name: { type: String, required: true, unique: true },
+    aka: { type: [String], default: [] },
     active: { type: Boolean, required: true, default: true },
     state: { type: String, enum: ['draft', 'live'], required: true, default: 'live' },
     createdBy: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },

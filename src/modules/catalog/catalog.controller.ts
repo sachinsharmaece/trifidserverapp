@@ -14,15 +14,15 @@ export async function getAllManufacturers(req: Request, res: Response): Promise<
 }
 
 export async function postManufacturer(req: Request, res: Response): Promise<void> {
-  const { name } = req.body as { name: string };
-  ok(res, req, await catalogService.createManufacturer(name), 201);
+  const { name, aka } = req.body as { name: string; aka?: string[] };
+  ok(res, req, await catalogService.createManufacturer(name, aka), 201);
 }
 
 // Purchase-desk v2 — Admin's rename/confirm action.
 export async function patchManufacturer(req: Request, res: Response): Promise<void> {
   const result = await catalogService.updateManufacturer(
     req.params.id as string,
-    req.body as { name?: string; state?: 'live' },
+    req.body as { name?: string; aka?: string[]; state?: 'live' },
   );
   ok(res, req, result);
 }

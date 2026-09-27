@@ -12,7 +12,7 @@ import { Tehsil } from '../../models/Tehsil.js';
 import { AuditLog } from '../../models/AuditLog.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
-import { isValidGstin, isValidIfsc } from '../../shared/validators.js';
+import { isValidGstin, isValidIfsc, namesAreSimilar } from '../../shared/validators.js';
 import { encryptAccountNumber } from '../../shared/encryption.js';
 import { enqueueNotification } from '../notification/notification.outbox.js';
 import { toBankDetailDto, type BankDetailDto } from './onboarding.dto.js';
@@ -61,8 +61,60 @@ async function assertGstinAndMobileAreFree(gstin: string, mobile: string): Promi
       messageEn: 'An account already exists for this GSTIN or mobile number.',
       field: existing.gstin === gstin ? 'gstin' : 'mobile',
       retryable: false,
+      meta: { existingCounterpartyId: (existing._id as Types.ObjectId).toString() },
     });
   }
+}
+
+// Payout-fraud signal, not a validation gate — a bank account name
+// legitimately differs from a trade/firm name often enough (a proprietor's
+// personal name on the account vs. the firm's trade name) that this must
+// never block registration. It is audit-logged for whoever approves the
+// registration to review, per the confirmed soft/audit-only posture.
+function accountNameMismatchReason(
+  accountName: string,
+  ownerName: string,
+  firm: string,
+): string | null {
+  if (namesAreSimilar(accountName, ownerName) || namesAreSimilar(accountName, firm)) {
+    return null;
+  }
+  return `Bank account name "${accountName}" does not resemble the owner name "${ownerName}" or the firm name "${firm}".`;
+}
+
+/**
+ * Audit-logs a mismatch for later review AND returns it, so the person
+ * registering this account sees the same signal immediately rather than it
+ * living only in a log nobody reads until an audit — a payout-fraud
+ * signal that stayed invisible at the point someone could actually still
+ * ask the seller about it is barely a signal at all. Still never blocks:
+ * the return value is a warning to show, not a reason to fail the call.
+ */
+async function auditAccountNameMismatchIfAny(
+  params: {
+    accountName: string;
+    ownerName: string;
+    firm: string;
+    entityId: Types.ObjectId;
+    correlationId: string;
+  },
+  session?: ClientSession,
+): Promise<string | null> {
+  const reason = accountNameMismatchReason(params.accountName, params.ownerName, params.firm);
+  if (!reason) return null;
+  await writeAuditLog(
+    {
+      actorId: params.entityId,
+      actorType: 'system',
+      entity: 'counterparty',
+      entityId: params.entityId,
+      field: 'bank_account_name_mismatch',
+      reason,
+      correlationId: params.correlationId,
+    },
+    session,
+  );
+  return reason;
 }
 
 // Staff-assisted enquiries — a registration raised on a phone call cannot be
@@ -156,10 +208,12 @@ interface RegisterBuyerInput {
 export async function registerBuyer(
   input: RegisterBuyerInput,
   staffAssisted?: StaffAssistedRegistration,
-): Promise<{ registrationId: string }> {
+  correlationId = 'unknown',
+): Promise<{ registrationId: string; accountNameWarning: string | null }> {
   await assertGstinAndMobileAreFree(input.gstin, input.mobile);
   assertBankDetailIsWellFormed(input.bankDetail);
 
+  let accountNameWarning: string | null = null;
   const registrationId = await withTransaction(async (session) => {
     const [counterparty] = await Counterparty.create(
       [
@@ -219,10 +273,21 @@ export async function registerBuyer(
       );
     }
 
+    accountNameWarning = await auditAccountNameMismatchIfAny(
+      {
+        accountName: input.bankDetail.accountName,
+        ownerName: input.ownerName,
+        firm: input.firm,
+        entityId: counterparty._id as Types.ObjectId,
+        correlationId: staffAssisted?.correlationId ?? correlationId,
+      },
+      session,
+    );
+
     return (counterparty._id as Types.ObjectId).toString();
   });
 
-  return { registrationId };
+  return { registrationId, accountNameWarning };
 }
 
 interface RegisterSellerInput {
@@ -240,10 +305,12 @@ interface RegisterSellerInput {
 export async function registerSeller(
   input: RegisterSellerInput,
   staffAssisted?: StaffAssistedRegistration,
-): Promise<{ registrationId: string }> {
+  correlationId = 'unknown',
+): Promise<{ registrationId: string; accountNameWarning: string | null }> {
   await assertGstinAndMobileAreFree(input.gstin, input.mobile);
   assertBankDetailIsWellFormed(input.bankDetail);
 
+  let accountNameWarning: string | null = null;
   const registrationId = await withTransaction(async (session) => {
     const [counterparty] = await Counterparty.create(
       [
@@ -294,10 +361,21 @@ export async function registerSeller(
       );
     }
 
+    accountNameWarning = await auditAccountNameMismatchIfAny(
+      {
+        accountName: input.bankDetail.accountName,
+        ownerName: input.ownerName,
+        firm: input.firm,
+        entityId: counterparty._id as Types.ObjectId,
+        correlationId: staffAssisted?.correlationId ?? correlationId,
+      },
+      session,
+    );
+
     return (counterparty._id as Types.ObjectId).toString();
   });
 
-  return { registrationId };
+  return { registrationId, accountNameWarning };
 }
 
 interface RegistrationStatusDto {
@@ -658,6 +736,14 @@ export async function changeBankDetail(
     entity: 'bank_detail',
     entityId: pending._id as Types.ObjectId,
     field: 'create_pending_change',
+    correlationId: actor.correlationId,
+  });
+
+  await auditAccountNameMismatchIfAny({
+    accountName: input.accountName,
+    ownerName: counterparty.ownerName ?? '',
+    firm: counterparty.firm ?? '',
+    entityId: counterparty._id as Types.ObjectId,
     correlationId: actor.correlationId,
   });
 
