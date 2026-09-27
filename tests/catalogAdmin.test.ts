@@ -273,3 +273,40 @@ describe('Admin catalog management — duplicate pack', () => {
     expect(mismatchRes.status).toBe(400);
   });
 });
+
+/** New — `aka` stops a seller's shorthand for a company becoming a second row. */
+describe('Admin catalog management — manufacturer aka', () => {
+  it('persists aka on create and on a later PATCH', async () => {
+    const admin = await staffToken(app, 'admin');
+    const name = `Bayer-${Date.now()}-${Math.random()}`;
+
+    const createRes = await request(app)
+      .post('/api/v1/admin/manufacturers')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ name, aka: ['Bayer CropScience'] });
+    expect(createRes.status).toBe(201);
+    const { manufacturerId } = createRes.body.data as { manufacturerId: string };
+
+    const listRes = await request(app)
+      .get('/api/v1/admin/manufacturers')
+      .set('Authorization', `Bearer ${admin.token}`);
+    const row = (listRes.body.data as Array<{ manufacturerId: string; aka?: string[] }>).find(
+      (m) => m.manufacturerId === manufacturerId,
+    );
+    expect(row?.aka).toEqual(['Bayer CropScience']);
+
+    const patchRes = await request(app)
+      .patch(`/api/v1/admin/manufacturers/${manufacturerId}`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ aka: ['Bayer CropScience', 'Bayer India'] });
+    expect(patchRes.status).toBe(200);
+
+    const listAfter = await request(app)
+      .get('/api/v1/admin/manufacturers')
+      .set('Authorization', `Bearer ${admin.token}`);
+    const rowAfter = (
+      listAfter.body.data as Array<{ manufacturerId: string; aka?: string[] }>
+    ).find((m) => m.manufacturerId === manufacturerId);
+    expect(rowAfter?.aka).toEqual(['Bayer CropScience', 'Bayer India']);
+  });
+});

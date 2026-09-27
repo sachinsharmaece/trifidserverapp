@@ -4,6 +4,7 @@ import { isValidHsn } from '../../shared/validators.js';
 export const createManufacturerSchema = z
   .object({
     name: z.string().min(1),
+    aka: z.array(z.string().min(1)).optional(),
   })
   .strict();
 
@@ -48,6 +49,7 @@ export const createProductSchema = z
 export const updateManufacturerSchema = z
   .object({
     name: z.string().min(1).optional(),
+    aka: z.array(z.string().min(1)).optional(),
     // Purchase-desk v2 — Admin's confirm action. One direction only: there is
     // no path back to 'draft', so 'draft' is not an accepted value here.
     state: z.literal('live').optional(),

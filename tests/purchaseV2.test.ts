@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
+import { Types } from 'mongoose';
 import { createApp } from '../src/app.js';
 import { Sku } from '../src/models/Sku.js';
 import { Seller } from '../src/models/Seller.js';
 import { Listing } from '../src/models/Listing.js';
 import { ListingLine } from '../src/models/ListingLine.js';
 import { Po } from '../src/models/Po.js';
+import { Pile } from '../src/models/Pile.js';
+import { PileRequest } from '../src/models/PileRequest.js';
+import { AuditLog } from '../src/models/AuditLog.js';
 import * as catalogService from '../src/modules/catalog/catalog.service.js';
 import * as purchaseService from '../src/modules/desk/purchase/purchase.service.js';
 import { staffToken, createTestSku } from './m4helpers.js';
@@ -635,5 +639,66 @@ describe('Purchase-desk v2 — active demand list shows product, not a hash', ()
     expect(row!.brand).toBe(product!.brand);
     expect(row!.technical).toBe(product!.technical);
     expect(row!.manufacturerName).not.toBe('—');
+  });
+});
+
+describe('Purchase-desk v2 — confirmations: the gap signal and the chase log', () => {
+  it('computes the gap from what buyers piled against what the listing line said, and logs a chase against the pile', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const sellerId = await makeSeller(purchase.token);
+    const skuId = await createTestSku('B');
+    const sku = await Sku.findById(skuId);
+    const productId = sku!.productId.toString();
+
+    const listing = await Listing.create({
+      sellerId,
+      productId,
+      origin: 'seller_initiated',
+      scopeType: 'all_india',
+      state: 'live',
+      frozenTehsilIds: [],
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    const line = await ListingLine.create({
+      listingId: listing._id,
+      skuId,
+      ratePaise: 40000,
+      expiryBand: 'over12',
+      moqExact: 1,
+      deliveryBand: '2-5d',
+      provenance: 'company',
+      qty: 10,
+    });
+
+    const opened = new Date();
+    const pile = await Pile.create({
+      listingLineId: line._id,
+      openedAt: opened,
+      confirmWindowEndsAt: new Date(opened.getTime() + 11 * 60 * 60 * 1000),
+      decision: null,
+    });
+    await PileRequest.create({
+      pileId: pile._id,
+      buyerId: new Types.ObjectId(),
+      qty: 15,
+      deliveryLocationId: new Types.ObjectId(),
+      requestedAt: opened,
+    });
+
+    const piles = await purchaseService.getPilesAwaitingDecision();
+    const row = piles.find((p) => p.pileId === (pile._id as Types.ObjectId).toString());
+    expect(row).toBeTruthy();
+    expect(row!.boxes).toBe(15);
+    expect(row!.lineQty).toBe(10);
+    expect(row!.gapText).toBe('15 of 10 boxes in his listing');
+
+    const res = await request(app)
+      .post(`/api/v1/staff/purchase/piles/${row!.pileId}/chase`)
+      .set('Authorization', `Bearer ${purchase.token}`);
+    expect(res.status).toBe(201);
+    expect(res.body.data).toEqual({ logged: true });
+
+    const entry = await AuditLog.findOne({ entityId: pile._id, field: 'pile_chase_logged' });
+    expect(entry).not.toBeNull();
   });
 });

@@ -814,10 +814,12 @@ export interface PileAwaitingDecisionItem {
   brand: string;
   ratePaise: number;
   boxes: number;
+  lineQty: number;
   buyers: number;
   openedAt: string;
   confirmWindowEndsAt: string;
   chaseLeftHours: number;
+  gapText: string | null;
 }
 
 export async function getPilesAwaitingDecision(): Promise<PileAwaitingDecisionItem[]> {
@@ -848,6 +850,14 @@ export async function getPilesAwaitingDecision(): Promise<PileAwaitingDecisionIt
     const myRequests = requests.filter((r) =>
       (r.pileId as Types.ObjectId).equals(pile._id as Types.ObjectId),
     );
+    const boxes = myRequests.reduce((sum, r) => sum + r.qty, 0);
+    const lineQty = line?.qty ?? 0;
+    // The one gap this data can actually support without inventing a
+    // signal the seller hasn't given yet: what he originally said he had
+    // (the listing line's own `qty`) against what buyers have now piled on
+    // top of it. Anything finer (why he's short) is his to say when he
+    // answers — that's exactly what Confirm/Requote/Decline is for.
+    const gapText = boxes > lineQty ? `${boxes} of ${lineQty} boxes in his listing` : null;
     return {
       pileId: (pile._id as Types.ObjectId).toString(),
       sellerId,
@@ -857,12 +867,14 @@ export async function getPilesAwaitingDecision(): Promise<PileAwaitingDecisionIt
       packLabel: sku?.packLabel ?? '—',
       brand: product?.brand ?? '—',
       ratePaise: line?.ratePaise ?? 0,
-      boxes: myRequests.reduce((sum, r) => sum + r.qty, 0),
+      boxes,
+      lineQty,
       buyers: new Set(myRequests.map((r) => (r.buyerId as Types.ObjectId).toString())).size,
       openedAt: pile.openedAt.toISOString(),
       confirmWindowEndsAt: pile.confirmWindowEndsAt.toISOString(),
       chaseLeftHours:
         Math.round(((pile.confirmWindowEndsAt.getTime() - now) / (60 * 60 * 1000)) * 10) / 10,
+      gapText,
     };
   });
 }
@@ -880,6 +892,10 @@ export interface DispatchQueueItem {
   poNo: string;
   sellerId: string;
   sellerFirm: string;
+  sellerCutoffTime: string;
+  brand: string;
+  packLabel: string;
+  boxes: number;
   bucket: 'due' | 'overdue' | 'in_transit';
   dispatchDueDate: string;
   hoursLeft: number | null;
@@ -895,6 +911,7 @@ export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
     Po.find({ state: 'released', failed: false }),
     Po.find({ state: 'dispatched_leg1', failed: false, receivedAt: null }),
   ]);
+  const allPos = [...pending, ...dispatchedLeg1];
   const movements = await Movement.find({
     chainId: { $in: dispatchedLeg1.map((p) => p.chainId) },
     leg: 1,
@@ -903,17 +920,42 @@ export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
     movements.map((m) => [(m.chainId as Types.ObjectId).toString(), m]),
   );
 
-  const firmBySellerId = await getFirmBySellerId(
-    [...pending, ...dispatchedLeg1].map((p) => p.sellerId),
+  const firmBySellerId = await getFirmBySellerId(allPos.map((p) => p.sellerId));
+  const sellers = await Seller.find({ _id: { $in: allPos.map((p) => p.sellerId) } });
+  const cutoffBySellerId = new Map(
+    sellers.map((s) => [(s._id as Types.ObjectId).toString(), s.dispatchCutoffTime]),
   );
+
+  // Goods — the PO's own line, joined through to the product/pack it names.
+  // A PO carries exactly one line (Q4/BR-030's own single-SKU-per-order design).
+  const poLines = await PoLine.find({ poId: { $in: allPos.map((p) => p._id) } });
+  const poLineByPoId = new Map(poLines.map((l) => [l.poId.toString(), l]));
+  const skus = await Sku.find({ _id: { $in: poLines.map((l) => l.skuId) } });
+  const skuById = new Map(skus.map((s) => [(s._id as Types.ObjectId).toString(), s]));
+  const products = await Product.find({ _id: { $in: skus.map((s) => s.productId) } });
+  const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+
+  function goodsFor(poId: string): { brand: string; packLabel: string; boxes: number } {
+    const line = poLineByPoId.get(poId);
+    const sku = line ? skuById.get((line.skuId as Types.ObjectId).toString()) : undefined;
+    const product = sku ? productById.get((sku.productId as Types.ObjectId).toString()) : undefined;
+    return {
+      brand: product?.brand ?? '—',
+      packLabel: sku?.packLabel ?? '—',
+      boxes: line?.boxes ?? 0,
+    };
+  }
 
   const dueOrOverdue: DispatchQueueItem[] = pending.map((po) => {
     const hoursLeft = (po.dispatchDueDate.getTime() - now) / (60 * 60 * 1000);
+    const sellerId = (po.sellerId as Types.ObjectId).toString();
     return {
       poId: (po._id as Types.ObjectId).toString(),
       poNo: po.poNo,
-      sellerId: (po.sellerId as Types.ObjectId).toString(),
-      sellerFirm: firmBySellerId.get((po.sellerId as Types.ObjectId).toString()) ?? '—',
+      sellerId,
+      sellerFirm: firmBySellerId.get(sellerId) ?? '—',
+      sellerCutoffTime: cutoffBySellerId.get(sellerId) ?? '—',
+      ...goodsFor((po._id as Types.ObjectId).toString()),
       bucket: hoursLeft < 0 ? 'overdue' : 'due',
       dispatchDueDate: po.dispatchDueDate.toISOString(),
       hoursLeft: Math.round(hoursLeft * 10) / 10,
@@ -927,11 +969,14 @@ export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
   const inTransit: DispatchQueueItem[] = dispatchedLeg1.map((po) => {
     const movement = movementByChain.get((po.chainId as Types.ObjectId).toString());
     const dispatchedAt = movement?.dispatchedAt ?? null;
+    const sellerId = (po.sellerId as Types.ObjectId).toString();
     return {
       poId: (po._id as Types.ObjectId).toString(),
       poNo: po.poNo,
-      sellerId: (po.sellerId as Types.ObjectId).toString(),
-      sellerFirm: firmBySellerId.get((po.sellerId as Types.ObjectId).toString()) ?? '—',
+      sellerId,
+      sellerFirm: firmBySellerId.get(sellerId) ?? '—',
+      sellerCutoffTime: cutoffBySellerId.get(sellerId) ?? '—',
+      ...goodsFor((po._id as Types.ObjectId).toString()),
       bucket: 'in_transit',
       dispatchDueDate: po.dispatchDueDate.toISOString(),
       hoursLeft: null,
@@ -960,6 +1005,45 @@ export async function logDispatchChase(
     entity: 'po',
     entityId: po._id as Types.ObjectId,
     field: 'dispatch_chase_logged',
+    correlationId: actor.correlationId,
+  });
+}
+
+/** The same logged-chase pattern as `logDispatchChase`, for an ask instead
+ * of a PO — a seller who is 'listed' or 'carries' but hasn't quoted this
+ * ask yet. Never a state change, just an audit trail Purchase can point to. */
+export async function logAskChase(
+  askId: string,
+  sellerId: string,
+  actor: { employeeId: string; correlationId: string },
+): Promise<void> {
+  const ask = await Ask.findById(askId);
+  if (!ask) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Ask not found.' });
+  await writeAuditLog({
+    actorId: actor.employeeId,
+    actorType: 'staff',
+    entity: 'ask',
+    entityId: ask._id as Types.ObjectId,
+    field: 'ask_chase_logged',
+    reason: `Seller ${sellerId} chased.`,
+    correlationId: actor.correlationId,
+  });
+}
+
+/** The same logged-chase pattern as `logDispatchChase`/`logAskChase`, for a
+ * pile still waiting on the one seller it's piled against. */
+export async function logPileChase(
+  pileId: string,
+  actor: { employeeId: string; correlationId: string },
+): Promise<void> {
+  const pile = await Pile.findById(pileId);
+  if (!pile) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Pile not found.' });
+  await writeAuditLog({
+    actorId: actor.employeeId,
+    actorType: 'staff',
+    entity: 'pile',
+    entityId: pile._id as Types.ObjectId,
+    field: 'pile_chase_logged',
     correlationId: actor.correlationId,
   });
 }

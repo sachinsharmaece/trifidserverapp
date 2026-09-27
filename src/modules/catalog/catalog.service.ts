@@ -10,7 +10,10 @@ import { AppError } from '../../shared/errors.js';
  * `manufacturerId` that already exists. Without this, the product masters
  * screen would have no way to populate its manufacturer picker.
  */
-export async function createManufacturer(name: string): Promise<{ manufacturerId: string }> {
+export async function createManufacturer(
+  name: string,
+  aka: string[] = [],
+): Promise<{ manufacturerId: string }> {
   const existing = await Manufacturer.findOne({ name }).collation({ locale: 'en', strength: 2 });
   if (existing) {
     throw new AppError({
@@ -19,17 +22,18 @@ export async function createManufacturer(name: string): Promise<{ manufacturerId
       field: 'name',
     });
   }
-  const manufacturer = await Manufacturer.create({ name });
+  const manufacturer = await Manufacturer.create({ name, aka });
   return { manufacturerId: (manufacturer._id as Types.ObjectId).toString() };
 }
 
 export async function listAllManufacturers(): Promise<
-  Array<{ manufacturerId: string; name: string; state: string }>
+  Array<{ manufacturerId: string; name: string; aka: string[]; state: string }>
 > {
   const manufacturers = await Manufacturer.find({ active: true }).sort({ name: 1 });
   return manufacturers.map((manufacturer) => ({
     manufacturerId: (manufacturer._id as Types.ObjectId).toString(),
     name: manufacturer.name,
+    aka: manufacturer.aka,
     state: manufacturer.state,
   }));
 }
@@ -42,7 +46,7 @@ export async function listAllManufacturers(): Promise<
  */
 export async function updateManufacturer(
   manufacturerId: string,
-  updates: { name?: string; state?: 'live' },
+  updates: { name?: string; aka?: string[]; state?: 'live' },
 ): Promise<{ manufacturerId: string }> {
   const manufacturer = await Manufacturer.findByIdAndUpdate(
     manufacturerId,
@@ -266,6 +270,7 @@ export async function updateProduct(
 export async function createManufacturerDraft(
   name: string,
   createdBy: string,
+  aka: string[] = [],
 ): Promise<{ manufacturerId: string }> {
   const existing = await Manufacturer.findOne({ name }).collation({ locale: 'en', strength: 2 });
   if (existing) {
@@ -275,7 +280,7 @@ export async function createManufacturerDraft(
       field: 'name',
     });
   }
-  const manufacturer = await Manufacturer.create({ name, state: 'draft', createdBy });
+  const manufacturer = await Manufacturer.create({ name, aka, state: 'draft', createdBy });
   return { manufacturerId: (manufacturer._id as Types.ObjectId).toString() };
 }
 

@@ -17,6 +17,12 @@ export const nonOrderReasonSchema = z
 // Purchase-desk v2.
 // ---------------------------------------------------------------------------
 
+export const askChaseSchema = z
+  .object({
+    sellerId: z.string().min(1),
+  })
+  .strict();
+
 export const sellerCatalogueEntrySchema = z
   .object({
     sellerId: z.string().min(1),
@@ -28,6 +34,7 @@ export const sellerCatalogueEntrySchema = z
 export const draftManufacturerSchema = z
   .object({
     name: z.string().min(1),
+    aka: z.array(z.string().min(1)).optional(),
   })
   .strict();
 
