@@ -60,6 +60,9 @@ export interface ActiveDemandItem {
   createdAt: string;
   sellerCounts: Record<SellerDemandState, number>; // Counts only — BR-067 (no buyer identity), BR-069 (no rupee figure).
   noSeller: boolean;
+  brand: string;
+  technical: string;
+  manufacturerName: string;
 }
 
 async function skuIdsForAsk(ask: InstanceType<typeof Ask>): Promise<Types.ObjectId[]> {
@@ -75,10 +78,18 @@ export async function getActiveDemandList(filters: {
   noSellerOnly?: boolean;
 }): Promise<ActiveDemandItem[]> {
   const asks = await Ask.find({ state: { $in: ['open', 'quoted'] } }).sort({ createdAt: -1 });
-  const items: ActiveDemandItem[] = [];
+  const items: Array<Omit<ActiveDemandItem, 'brand' | 'technical' | 'manufacturerName'>> = [];
+  const productIdByAskId = new Map<string, string>();
 
   for (const ask of asks) {
     const skuIds = await skuIdsForAsk(ask);
+
+    let productId = ask.productId ? (ask.productId as Types.ObjectId).toString() : null;
+    if (!productId && skuIds.length) {
+      const sku = await Sku.findById(skuIds[0]);
+      productId = sku ? (sku.productId as Types.ObjectId).toString() : null;
+    }
+    if (productId) productIdByAskId.set((ask._id as Types.ObjectId).toString(), productId);
 
     const quotedSellerIds = new Set(
       (await Quote.find({ askId: ask._id })).map((q) => (q.sellerId as Types.ObjectId).toString()),
@@ -122,7 +133,31 @@ export async function getActiveDemandList(filters: {
       noSeller,
     });
   }
-  return items;
+
+  const products = productIdByAskId.size
+    ? await Product.find({ _id: { $in: [...new Set(productIdByAskId.values())] } })
+    : [];
+  const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+  const manufacturers = products.length
+    ? await Manufacturer.find({ _id: { $in: products.map((p) => p.manufacturerId) } })
+    : [];
+  const manufacturerById = new Map(
+    manufacturers.map((m) => [(m._id as Types.ObjectId).toString(), m]),
+  );
+
+  return items.map((item) => {
+    const productId = productIdByAskId.get(item.askId);
+    const product = productId ? productById.get(productId) : undefined;
+    const manufacturer = product
+      ? manufacturerById.get((product.manufacturerId as unknown as Types.ObjectId).toString())
+      : undefined;
+    return {
+      ...item,
+      brand: product?.brand ?? '—',
+      technical: product?.technical ?? '—',
+      manufacturerName: manufacturer?.name ?? '—',
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -802,6 +837,7 @@ export interface DispatchQueueItem {
   poId: string;
   poNo: string;
   sellerId: string;
+  sellerFirm: string;
   bucket: 'due' | 'overdue' | 'in_transit';
   dispatchDueDate: string;
   hoursLeft: number | null;
@@ -825,12 +861,28 @@ export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
     movements.map((m) => [(m.chainId as Types.ObjectId).toString(), m]),
   );
 
+  const sellerIds = [...pending, ...dispatchedLeg1].map((p) => p.sellerId);
+  const sellers = sellerIds.length ? await Seller.find({ _id: { $in: sellerIds } }) : [];
+  const counterparties = sellers.length
+    ? await Counterparty.find({ _id: { $in: sellers.map((s) => s.counterpartyId) } })
+    : [];
+  const firmByCounterpartyId = new Map(
+    counterparties.map((c) => [(c._id as Types.ObjectId).toString(), c.firm ?? '—']),
+  );
+  const firmBySellerId = new Map(
+    sellers.map((s) => [
+      (s._id as Types.ObjectId).toString(),
+      firmByCounterpartyId.get((s.counterpartyId as Types.ObjectId).toString()) ?? '—',
+    ]),
+  );
+
   const dueOrOverdue: DispatchQueueItem[] = pending.map((po) => {
     const hoursLeft = (po.dispatchDueDate.getTime() - now) / (60 * 60 * 1000);
     return {
       poId: (po._id as Types.ObjectId).toString(),
       poNo: po.poNo,
       sellerId: (po.sellerId as Types.ObjectId).toString(),
+      sellerFirm: firmBySellerId.get((po.sellerId as Types.ObjectId).toString()) ?? '—',
       bucket: hoursLeft < 0 ? 'overdue' : 'due',
       dispatchDueDate: po.dispatchDueDate.toISOString(),
       hoursLeft: Math.round(hoursLeft * 10) / 10,
@@ -848,6 +900,7 @@ export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
       poId: (po._id as Types.ObjectId).toString(),
       poNo: po.poNo,
       sellerId: (po.sellerId as Types.ObjectId).toString(),
+      sellerFirm: firmBySellerId.get((po.sellerId as Types.ObjectId).toString()) ?? '—',
       bucket: 'in_transit',
       dispatchDueDate: po.dispatchDueDate.toISOString(),
       hoursLeft: null,

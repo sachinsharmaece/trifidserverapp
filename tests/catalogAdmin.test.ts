@@ -170,3 +170,106 @@ describe('Admin catalog management — SKU edit', () => {
     expect(res.status).toBe(404);
   });
 });
+
+/** QA fix — HSN must be 6/8 digits starting with 3808 (this desk is pesticides-only). */
+describe('Admin catalog management — HSN validation', () => {
+  it('rejects an HSN that is not numeric or does not start with 3808', async () => {
+    const admin = await staffToken(app, 'admin');
+    const mfrRes = await request(app)
+      .post('/api/v1/admin/manufacturers')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ name: `Mfr-${Date.now()}-${Math.random()}` });
+    const { manufacturerId } = mfrRes.body.data as { manufacturerId: string };
+
+    const badRes = await request(app)
+      .post('/api/v1/admin/products')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ brand: 'B', technical: 'T', manufacturerId, hsn: 'ABC' });
+    expect(badRes.status).toBe(400);
+
+    const wrongPrefixRes = await request(app)
+      .post('/api/v1/admin/products')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ brand: 'B', technical: 'T', manufacturerId, hsn: '1234' });
+    expect(wrongPrefixRes.status).toBe(400);
+
+    const goodRes = await request(app)
+      .post('/api/v1/admin/products')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ brand: 'B', technical: 'T', manufacturerId, hsn: '38089199' });
+    expect(goodRes.status).toBe(201);
+  });
+});
+
+/** QA fix — a case-only difference must not create a second manufacturer row. */
+describe('Admin catalog management — duplicate manufacturer names', () => {
+  it('blocks a case-insensitive duplicate company name', async () => {
+    const admin = await staffToken(app, 'admin');
+    const name = `Syngenta-${Date.now()}-${Math.random()}`;
+
+    const firstRes = await request(app)
+      .post('/api/v1/admin/manufacturers')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ name });
+    expect(firstRes.status).toBe(201);
+
+    const dupeRes = await request(app)
+      .post('/api/v1/admin/manufacturers')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ name: name.toLowerCase() });
+    expect(dupeRes.status).toBe(400);
+    expect(dupeRes.body.error.field).toBe('name');
+  });
+});
+
+/** QA fix — a duplicate pack must fail cleanly, not with a raw 500. */
+describe('Admin catalog management — duplicate pack', () => {
+  it('rejects creating the same pack twice on the purchase-desk draft path', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const admin = await staffToken(app, 'admin');
+    const mfrRes = await request(app)
+      .post('/api/v1/admin/manufacturers')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ name: `Mfr-${Date.now()}-${Math.random()}` });
+    const { manufacturerId } = mfrRes.body.data as { manufacturerId: string };
+    const productRes = await request(app)
+      .post('/api/v1/admin/products')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ brand: 'B', technical: 'T', manufacturerId, hsn: '38089199' });
+    const { productId } = productRes.body.data as { productId: string };
+
+    const firstPack = await request(app)
+      .post('/api/v1/staff/purchase/masters/skus')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({ productId, packLabel: '1 LTR', packSize: 1, baseUnit: 'LTR', unitsPerBox: 12 });
+    expect(firstPack.status).toBe(201);
+
+    const dupePack = await request(app)
+      .post('/api/v1/staff/purchase/masters/skus')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({ productId, packLabel: '1 LTR', packSize: 1, baseUnit: 'LTR', unitsPerBox: 12 });
+    expect(dupePack.status).toBe(400);
+    expect(dupePack.body.error.field).toBe('packLabel');
+  });
+
+  it('rejects a pack label that does not match its base unit', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const admin = await staffToken(app, 'admin');
+    const mfrRes = await request(app)
+      .post('/api/v1/admin/manufacturers')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ name: `Mfr-${Date.now()}-${Math.random()}` });
+    const { manufacturerId } = mfrRes.body.data as { manufacturerId: string };
+    const productRes = await request(app)
+      .post('/api/v1/admin/products')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ brand: 'B', technical: 'T', manufacturerId, hsn: '38089199' });
+    const { productId } = productRes.body.data as { productId: string };
+
+    const mismatchRes = await request(app)
+      .post('/api/v1/staff/purchase/masters/skus')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({ productId, packLabel: '500 GM', packSize: 500, baseUnit: 'LTR', unitsPerBox: 12 });
+    expect(mismatchRes.status).toBe(400);
+  });
+});

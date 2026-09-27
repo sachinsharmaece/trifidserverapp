@@ -14,12 +14,12 @@ function ok(res: Response, req: Request, data: unknown, status = 200): void {
 }
 
 export async function postRegisterBuyer(req: Request, res: Response): Promise<void> {
-  const result = await onboardingService.registerBuyer(req.body);
+  const result = await onboardingService.registerBuyer(req.body, undefined, req.correlationId);
   ok(res, req, result, 201);
 }
 
 export async function postRegisterSeller(req: Request, res: Response): Promise<void> {
-  const result = await onboardingService.registerSeller(req.body);
+  const result = await onboardingService.registerSeller(req.body, undefined, req.correlationId);
   ok(res, req, result, 201);
 }
 

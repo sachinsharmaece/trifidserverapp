@@ -42,3 +42,58 @@ const IFSC_SHAPE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 export function isValidIfsc(ifsc: string): boolean {
   return IFSC_SHAPE.test(ifsc);
 }
+
+// This desk trades agrochemicals only (sellers hold an insecticide licence,
+// products carry a "technical" active ingredient) — every HSN on file is
+// chapter 3808, so the prefix is enforced unconditionally rather than
+// gated on a product field that has no chemistry meaning (see `class` on
+// the Product model, which is a margin/pricing tier, BR-040).
+const HSN_SHAPE = /^3808\d{2,4}$/; // 3808 + 2/4/6 digits = 6 or 8 digits total.
+
+export function isValidHsn(hsn: string): boolean {
+  return HSN_SHAPE.test(hsn);
+}
+
+// No single national format exists for state-issued insecticide dealer
+// licence numbers (Insecticides Act, 1968 / Insecticides Rules, 1971) — this
+// is a length/charset guard, not a shape+checksum validator like GSTIN/IFSC.
+// Minimum length of 4 rejects the reported "LIC"/"LIC-1"-style non-values
+// while staying compatible with the shortest real fixture/licence formats.
+const LICENCE_SHAPE = /^[A-Za-z0-9/-]{4,}$/;
+
+export function isValidLicenceNo(licenceNo: string): boolean {
+  return LICENCE_SHAPE.test(licenceNo.trim());
+}
+
+const PACK_UNIT_TOKEN = /\b(ML|LTRS?|L|GMS?|G|KGS?)\b/i;
+
+/** PC packs are described too many ways ("10x10 strip", box counts, ...) to require an explicit unit token. */
+export function packLabelMatchesBaseUnit(
+  packLabel: string,
+  baseUnit: 'LTR' | 'KG' | 'PC',
+): boolean {
+  if (baseUnit === 'PC') return true;
+  const match = PACK_UNIT_TOKEN.exec(packLabel);
+  if (!match) return false;
+  const token = match[1]!.toUpperCase();
+  const impliedUnit = token.startsWith('L') || token.startsWith('M') ? 'LTR' : 'KG';
+  return impliedUnit === baseUnit;
+}
+
+function normalizeForSimilarity(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** Loose token-overlap check — a soft signal, not a rejection (bank account names legitimately differ from trade names). */
+export function namesAreSimilar(a: string, b: string): boolean {
+  const na = normalizeForSimilarity(a);
+  const nb = normalizeForSimilarity(b);
+  if (na.length < 2 || nb.length < 2) return false;
+  if (na.includes(nb) || nb.includes(na)) return true;
+  const wordsA = new Set(a.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
+  const wordsB = new Set(b.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
+  for (const w of wordsA) {
+    if (wordsB.has(w)) return true;
+  }
+  return false;
+}

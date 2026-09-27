@@ -1,8 +1,13 @@
 import { z } from 'zod';
+import { isValidLicenceNo } from '../../shared/validators.js';
 
 const mobileSchema = z.string().regex(/^[6-9]\d{9}$/, 'Enter a valid 10-digit mobile number.');
 const gstinSchema = z.string().length(15, 'GSTIN must be 15 characters.');
 const ifscSchema = z.string().length(11, 'IFSC must be 11 characters.');
+const licenceNoSchema = z
+  .string()
+  .min(1)
+  .refine(isValidLicenceNo, { message: 'Enter a valid licence number (at least 6 characters).' });
 
 const bankDetailInputSchema = z
   .object({
@@ -25,7 +30,7 @@ export const registerBuyerSchema = z
     firm: z.string().min(1),
     gstin: gstinSchema,
     ownerName: z.string().min(1),
-    licenceNo: z.string().min(1),
+    licenceNo: licenceNoSchema,
     gstPpobAddress: z.string().min(1),
     dealerships: z
       .array(
@@ -43,14 +48,14 @@ export const registerSellerSchema = z
     firm: z.string().min(1),
     gstin: gstinSchema,
     ownerName: z.string().min(1),
-    licenceNo: z.string().min(1),
+    licenceNo: licenceNoSchema,
     // BR-250 — two or more named referees.
     references: z
       .array(
         z
           .object({
             firm: z.string().min(1),
-            phone: z.string().min(1),
+            phone: mobileSchema,
             relationship: z.string().min(1),
             whatTheySaid: z.string().min(1),
           })

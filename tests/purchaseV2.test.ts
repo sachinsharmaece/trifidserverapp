@@ -270,6 +270,9 @@ describe('Purchase-desk v2 — dispatch chase queue', () => {
     expect(row).toBeTruthy();
     expect(row!.bucket).toBe('overdue');
     expect(row!.hoursLeft).toBeLessThan(0);
+    // QA fix — a seller name, not a raw ObjectId hash, on the dispatch screen.
+    expect(row!.sellerFirm).toBeTruthy();
+    expect(row!.sellerFirm).not.toBe('—');
   });
 });
 
@@ -374,5 +377,34 @@ describe('Purchase-desk v2 — per-ask seller states and the product funnel', ()
     expect(funnel.inq).toBeGreaterThanOrEqual(1);
     expect(funnel.quoted).toBeGreaterThanOrEqual(1);
     expect(funnel.sellerCount).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('Purchase-desk v2 — active demand list shows product, not a hash', () => {
+  it('resolves brand/technical/manufacturerName for an ask, not just its raw ids', async () => {
+    const sales = await staffToken(app, 'sales');
+    const skuId = await createTestSku('B');
+    const sku = await Sku.findById(skuId);
+    const productId = sku!.productId.toString();
+    const { Product } = await import('../src/models/Product.js');
+    const product = await Product.findById(productId);
+
+    const tehsil = await createTehsil();
+    const buyerId = await createApprovedBuyerAtTehsil(app, sales.token, tehsil, 'dealer');
+    const { Buyer } = await import('../src/models/Buyer.js');
+    const buyer = await Buyer.findById(buyerId);
+    const demandService = await import('../src/modules/demand/demand.service.js');
+
+    const { askId } = await demandService.raiseAsk(
+      (buyer!.counterpartyId as unknown as string).toString(),
+      { skuId, allPacks: false, qty: 5, conditionRequirement: { expiryBand: 'over12' } },
+    );
+
+    const items = await purchaseService.getActiveDemandList({});
+    const row = items.find((i) => i.askId === askId);
+    expect(row).toBeTruthy();
+    expect(row!.brand).toBe(product!.brand);
+    expect(row!.technical).toBe(product!.technical);
+    expect(row!.manufacturerName).not.toBe('—');
   });
 });

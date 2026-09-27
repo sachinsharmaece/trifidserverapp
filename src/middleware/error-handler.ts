@@ -21,6 +21,7 @@ export const errorHandler: ErrorRequestHandler = (error, request, response, next
         field: error.field,
         retryable: error.retryable,
         correlationId,
+        ...(error.meta ? { meta: error.meta } : {}),
       },
     });
     return;
@@ -35,6 +36,10 @@ export const errorHandler: ErrorRequestHandler = (error, request, response, next
         field: firstIssue?.path.join('.'),
         retryable: false,
         correlationId,
+        fieldErrors: error.issues.map((issue) => ({
+          field: issue.path.join('.'),
+          message: issue.message,
+        })),
       },
     });
     return;
