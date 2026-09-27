@@ -316,8 +316,18 @@ describe('GET /staff/sales/orders', () => {
       .get('/api/v1/staff/sales/orders?tab=live')
       .set('Authorization', `Bearer ${sales.token}`);
     expect(res.status).toBe(200);
-    const row = (res.body.data as Array<{ soId: string }>).find((r) => r.soId === soId);
+    const row = (
+      res.body.data as Array<{
+        soId: string;
+        buyerId: string;
+        buyerCounterpartyId: string;
+        upcomingReceiptId: string | null;
+      }>
+    ).find((r) => r.soId === soId);
     expect(row).toBeDefined();
+    expect(typeof row?.buyerId).toBe('string');
+    expect(typeof row?.buyerCounterpartyId).toBe('string');
+    expect(row?.upcomingReceiptId).toBeNull();
     const raw = JSON.stringify(res.body).toLowerCase();
     expect(raw).not.toContain('sellerid');
     expect(raw).not.toContain('sellernet');

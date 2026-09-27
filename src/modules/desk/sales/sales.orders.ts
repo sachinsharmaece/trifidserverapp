@@ -13,6 +13,8 @@ import { UpcomingReceipt } from '../../../models/UpcomingReceipt.js';
 export interface SalesOrderRow {
   soId: string;
   soNo: string;
+  buyerId: string;
+  buyerCounterpartyId: string;
   buyerFirm: string;
   productDisplay: string;
   totalPaise: number;
@@ -22,6 +24,9 @@ export interface SalesOrderRow {
   // True when a buyer of this order has a claim still `waiting` that has not
   // yet named this SO — i.e. money is in and nobody has pointed it here yet.
   claimNeedsApplying: boolean;
+  // The matching `UpcomingReceipt._id` when `claimNeedsApplying` is true —
+  // what the Sales-desk Orders screen passes to `allocateUpcomingReceipt`.
+  upcomingReceiptId: string | null;
   claimedAt: string | null;
   claimedAmountPaise: number | null;
 }
@@ -79,19 +84,22 @@ export async function listOrders(filters: {
     const appliedClaim = buyerReceipts.find((r) =>
       r.soIds.some((id) => (id as Types.ObjectId).toString() === soIdStr),
     );
-    const needsApplying = buyerReceipts.some(
+    const waitingClaim = buyerReceipts.find(
       (r) => r.state === 'waiting' && !r.soIds.some((id) => (id as Types.ObjectId).toString() === soIdStr),
     );
 
     return {
       soId: soIdStr,
       soNo: so.soNo,
+      buyerId: buyerIdStr,
+      buyerCounterpartyId: buyer ? (buyer.counterpartyId as Types.ObjectId).toString() : '',
       buyerFirm: firm,
       productDisplay,
       totalPaise: so.totalPaise,
       state: so.state as SoState,
       payDeadline: so.payDeadline.toISOString(),
-      claimNeedsApplying: needsApplying,
+      claimNeedsApplying: Boolean(waitingClaim),
+      upcomingReceiptId: waitingClaim ? (waitingClaim._id as Types.ObjectId).toString() : null,
       claimedAt: appliedClaim ? appliedClaim.claimedAt.toISOString() : null,
       claimedAmountPaise: appliedClaim ? appliedClaim.amountPaise : null,
     };
