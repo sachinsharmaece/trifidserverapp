@@ -1,0 +1,99 @@
+import type { Types } from 'mongoose';
+import { So, type SoState } from '../../../models/So.js';
+import { SoLine } from '../../../models/SoLine.js';
+import { Sku } from '../../../models/Sku.js';
+import { Product } from '../../../models/Product.js';
+import { Buyer } from '../../../models/Buyer.js';
+import { Counterparty } from '../../../models/Counterparty.js';
+import { UpcomingReceipt } from '../../../models/UpcomingReceipt.js';
+
+// BR-060 — this list carries no `sellerId` and nothing seller-derived,
+// matching `SalesWorkItem` (sales.service.ts) and every other Sales-facing
+// row in this module.
+export interface SalesOrderRow {
+  soId: string;
+  soNo: string;
+  buyerFirm: string;
+  productDisplay: string;
+  totalPaise: number;
+  state: SoState;
+  payDeadline: string;
+  // BR-012 — Sales, not Accounts, picks which SO an `UpcomingReceipt` covers.
+  // True when a buyer of this order has a claim still `waiting` that has not
+  // yet named this SO — i.e. money is in and nobody has pointed it here yet.
+  claimNeedsApplying: boolean;
+  claimedAt: string | null;
+  claimedAmountPaise: number | null;
+}
+
+const CLOSED_SO_STATES: SoState[] = ['delivered', 'closed', 'cancelled', 'supply_failed'];
+
+/** GET /staff/sales/orders?tab=live|closed — optionally scoped to one buyer for the buyer file. */
+export async function listOrders(filters: {
+  tab?: 'live' | 'closed';
+  buyerId?: string;
+}): Promise<SalesOrderRow[]> {
+  const query: Record<string, unknown> = {};
+  if (filters.tab === 'closed') query.state = { $in: CLOSED_SO_STATES };
+  else if (filters.tab === 'live') query.state = { $nin: CLOSED_SO_STATES };
+  if (filters.buyerId) query.buyerId = filters.buyerId;
+
+  const sos = await So.find(query).sort({ createdAt: -1 }).limit(500);
+  if (sos.length === 0) return [];
+
+  const buyerIds = [...new Set(sos.map((so) => (so.buyerId as Types.ObjectId).toString()))];
+  const buyers = await Buyer.find({ _id: { $in: buyerIds } });
+  const buyerById = new Map(buyers.map((b) => [(b._id as Types.ObjectId).toString(), b]));
+  const counterparties = await Counterparty.find({ _id: { $in: buyers.map((b) => b.counterpartyId) } });
+  const firmByCounterpartyId = new Map(
+    counterparties.map((c) => [(c._id as Types.ObjectId).toString(), c.firm ?? '']),
+  );
+
+  const lines = await SoLine.find({ soId: { $in: sos.map((so) => so._id) } });
+  const firstLineBySo = new Map<string, InstanceType<typeof SoLine>>();
+  for (const line of lines) {
+    const key = (line.soId as Types.ObjectId).toString();
+    if (!firstLineBySo.has(key)) firstLineBySo.set(key, line);
+  }
+  const skus = await Sku.find({ _id: { $in: lines.map((l) => l.skuId) } });
+  const skuById = new Map(skus.map((s) => [(s._id as Types.ObjectId).toString(), s]));
+  const products = await Product.find({ _id: { $in: skus.map((s) => s.productId) } });
+  const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+
+  const receipts = await UpcomingReceipt.find({ buyerId: { $in: buyerIds } });
+
+  return sos.map((so) => {
+    const soIdStr = (so._id as Types.ObjectId).toString();
+    const buyerIdStr = (so.buyerId as Types.ObjectId).toString();
+    const buyer = buyerById.get(buyerIdStr);
+    const firm = buyer
+      ? (firmByCounterpartyId.get((buyer.counterpartyId as Types.ObjectId).toString()) ?? '')
+      : '';
+
+    const line = firstLineBySo.get(soIdStr);
+    const sku = line ? skuById.get((line.skuId as Types.ObjectId).toString()) : undefined;
+    const product = sku ? productById.get((sku.productId as Types.ObjectId).toString()) : undefined;
+    const productDisplay = product && sku ? `${product.brand} — ${sku.packLabel}` : '';
+
+    const buyerReceipts = receipts.filter((r) => (r.buyerId as Types.ObjectId).toString() === buyerIdStr);
+    const appliedClaim = buyerReceipts.find((r) =>
+      r.soIds.some((id) => (id as Types.ObjectId).toString() === soIdStr),
+    );
+    const needsApplying = buyerReceipts.some(
+      (r) => r.state === 'waiting' && !r.soIds.some((id) => (id as Types.ObjectId).toString() === soIdStr),
+    );
+
+    return {
+      soId: soIdStr,
+      soNo: so.soNo,
+      buyerFirm: firm,
+      productDisplay,
+      totalPaise: so.totalPaise,
+      state: so.state as SoState,
+      payDeadline: so.payDeadline.toISOString(),
+      claimNeedsApplying: needsApplying,
+      claimedAt: appliedClaim ? appliedClaim.claimedAt.toISOString() : null,
+      claimedAmountPaise: appliedClaim ? appliedClaim.amountPaise : null,
+    };
+  });
+}

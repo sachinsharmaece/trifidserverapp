@@ -44,6 +44,75 @@ salesRouter.post(
   controller.postMspResponse,
 );
 
+// Sales desk v2 — work-stream A. Every route below reuses SALES_WORKLIST_READ
+// as the read gate (no new permission keys), matching the spec for this batch.
+salesRouter.post(
+  '/staff/sales/calls',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.postCallLog,
+);
+salesRouter.get(
+  '/staff/sales/calls',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getCallLogs,
+);
+salesRouter.get(
+  '/staff/sales/promises',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getPromises,
+);
+salesRouter.get(
+  '/staff/sales/board',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getBoard,
+);
+salesRouter.get(
+  '/staff/sales/board/:productId',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getBoardProduct,
+);
+salesRouter.get(
+  '/staff/sales/pools',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getPools,
+);
+salesRouter.get(
+  '/staff/sales/pools/:poolId',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getPool,
+);
+salesRouter.get(
+  '/staff/sales/buyers',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getBuyers,
+);
+salesRouter.get(
+  '/staff/sales/buyers/:buyerId',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getBuyerFile,
+);
+salesRouter.get(
+  '/staff/sales/orders',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getOrders,
+);
+salesRouter.get(
+  '/staff/sales/funnel',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getFunnel,
+);
+
 // 👤B — a buyer requesting a rate the board does not show him.
 salesRouter.post('/me/msp-requests', authenticate, controller.postMspRequest);
 salesRouter.get('/me/msp-requests', authenticate, controller.getMyMspRequests);
