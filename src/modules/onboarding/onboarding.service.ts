@@ -500,7 +500,9 @@ export async function approveBuyer(
       messageEn: 'This registration has already been decided.',
     });
   }
-  assertStaffAssistedOtpConfirmed(counterparty);
+  // TEMP: buyer OTP gate disabled 2026-09-28 at product's request — re-enable
+  // by restoring this call before launch. Seller keeps the gate (below).
+  // assertStaffAssistedOtpConfirmed(counterparty);
 
   await withTransaction(async (session) => {
     await Buyer.updateOne(

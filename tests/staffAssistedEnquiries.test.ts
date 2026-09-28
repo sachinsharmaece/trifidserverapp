@@ -55,7 +55,82 @@ async function identityOf(kind: 'buyer' | 'seller', docId: string): Promise<Iden
 }
 
 describe('Staff-assisted registration — the OTP gate (client decision A)', () => {
-  it('cannot be approved without a completed OTP confirmation, even with every other field correct', async () => {
+  // Buyer is carved out of this gate temporarily — see the dedicated test
+  // below and onboarding.service.ts's approveBuyer (TEMP, 2026-09-28).
+  it('seller cannot be approved without a completed OTP confirmation, even with every other field correct', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const mobile = randomMobile();
+
+    const registerRes = await request(app)
+      .post('/api/v1/staff/registrations/seller')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({
+        mobile,
+        firm: 'Phone Seller Firm',
+        gstin: await randomGstin(),
+        ownerName: 'Owner',
+        licenceNo: 'MP/IND/INS/2016/0771',
+        references: [
+          { firm: 'Ref One', phone: '9000000001', relationship: 'Supplier', whatTheySaid: 'Reliable' },
+          { firm: 'Ref Two', phone: '9000000002', relationship: 'Supplier', whatTheySaid: 'Reliable' },
+        ],
+        bankDetail: bankDetail(),
+        consent: consent(),
+        callNote: 'Called in asking to register, quoted GSTIN over the phone.',
+      });
+    expect(registerRes.status).toBe(201);
+    const { registrationId } = registerRes.body.data as { registrationId: string };
+
+    const counterparty = await Counterparty.findById(registrationId);
+    expect(counterparty!.staffAssisted).toBe(true);
+    expect(counterparty!.staffAssistedCallNote).toContain('quoted GSTIN');
+
+    const tehsil = await Tehsil.create({
+      name: `Tehsil ${Date.now()}-${Math.random()}`,
+      district: 'D',
+      state: 'MP',
+    });
+
+    // Every field correct — area and dispatch cutoff set — but no OTP yet.
+    const approveBeforeOtp = await request(app)
+      .post(`/api/v1/staff/registrations/${registrationId}/approve`)
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({
+        tehsilIds: [(tehsil._id as unknown as string).toString()],
+        dispatchCutoffTime: '18:00',
+      });
+    expect(approveBeforeOtp.status).toBe(409);
+    expect(approveBeforeOtp.body.error.code).toBe('OTP_CONFIRMATION_REQUIRED');
+
+    // The same, unmodified OTP mechanism confirms the real phone number.
+    const otpRequestRes = await request(app).post('/api/v1/auth/otp/request').send({ mobile });
+    const { requestId, devCode } = otpRequestRes.body.data as {
+      requestId: string;
+      devCode: string;
+    };
+    const otpVerifyRes = await request(app)
+      .post('/api/v1/auth/otp/verify')
+      .send({ requestId, code: devCode, deviceFingerprint: 'device-registration-confirm' });
+    expect(otpVerifyRes.status).toBe(200);
+
+    const confirmed = await Counterparty.findById(registrationId);
+    expect(confirmed!.staffAssistedOtpVerifiedAt).toBeTruthy();
+
+    const approveAfterOtp = await request(app)
+      .post(`/api/v1/staff/registrations/${registrationId}/approve`)
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({
+        tehsilIds: [(tehsil._id as unknown as string).toString()],
+        dispatchCutoffTime: '18:00',
+      });
+    expect(approveAfterOtp.status).toBe(200);
+  });
+
+  // TEMP (2026-09-28): buyer's OTP gate is disabled at product's request — see
+  // onboarding.service.ts's approveBuyer. This test asserts the current,
+  // temporary behaviour, and should fail loudly (reminding to update it) once
+  // the gate is restored.
+  it('buyer approves fine without an OTP confirmation, while the gate is temporarily off', async () => {
     const sales = await staffToken(app, 'sales');
     const mobile = randomMobile();
 
@@ -77,8 +152,7 @@ describe('Staff-assisted registration — the OTP gate (client decision A)', () 
     const { registrationId } = registerRes.body.data as { registrationId: string };
 
     const counterparty = await Counterparty.findById(registrationId);
-    expect(counterparty!.staffAssisted).toBe(true);
-    expect(counterparty!.staffAssistedCallNote).toContain('quoted GSTIN');
+    expect(counterparty!.staffAssistedOtpVerifiedAt).toBeFalsy();
 
     const tehsil = await Tehsil.create({
       name: `Tehsil ${Date.now()}-${Math.random()}`,
@@ -86,7 +160,6 @@ describe('Staff-assisted registration — the OTP gate (client decision A)', () 
       state: 'MP',
     });
 
-    // Every field correct — tehsil set, trade position set — but no OTP yet.
     const approveBeforeOtp = await request(app)
       .post(`/api/v1/staff/registrations/${registrationId}/approve`)
       .set('Authorization', `Bearer ${sales.token}`)
@@ -95,32 +168,7 @@ describe('Staff-assisted registration — the OTP gate (client decision A)', () 
         tradePosition: 'dealer',
         isTrader: false,
       });
-    expect(approveBeforeOtp.status).toBe(409);
-    expect(approveBeforeOtp.body.error.code).toBe('OTP_CONFIRMATION_REQUIRED');
-
-    // The same, unmodified OTP mechanism confirms the real phone number.
-    const otpRequestRes = await request(app).post('/api/v1/auth/otp/request').send({ mobile });
-    const { requestId, devCode } = otpRequestRes.body.data as {
-      requestId: string;
-      devCode: string;
-    };
-    const otpVerifyRes = await request(app)
-      .post('/api/v1/auth/otp/verify')
-      .send({ requestId, code: devCode, deviceFingerprint: 'device-registration-confirm' });
-    expect(otpVerifyRes.status).toBe(200);
-
-    const confirmed = await Counterparty.findById(registrationId);
-    expect(confirmed!.staffAssistedOtpVerifiedAt).toBeTruthy();
-
-    const approveAfterOtp = await request(app)
-      .post(`/api/v1/staff/registrations/${registrationId}/approve`)
-      .set('Authorization', `Bearer ${sales.token}`)
-      .send({
-        tehsilId: (tehsil._id as unknown as string).toString(),
-        tradePosition: 'dealer',
-        isTrader: false,
-      });
-    expect(approveAfterOtp.status).toBe(200);
+    expect(approveBeforeOtp.status).toBe(200);
   });
 
   it('desk boundary — Purchase cannot raise a staff-assisted buyer registration', async () => {
