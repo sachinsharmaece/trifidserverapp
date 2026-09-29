@@ -48,6 +48,12 @@ export const env = {
   // only way in. Never consumed when NODE_ENV === 'production'.
   mfaDevBypassCode: process.env.MFA_DEV_BYPASS_CODE || undefined,
 
+  // Developer addition, not in ARCHITECTURE.md §10.1. Lets a developer skip
+  // Zod schema validation on request bodies/queries entirely (e.g. to hand-craft
+  // malformed payloads while testing a downstream handler). Never consumed when
+  // NODE_ENV === 'production' (see validate.ts) — unset/false by default.
+  disableInputValidation: process.env.DISABLE_INPUT_VALIDATION === 'true',
+
   staffPasswordMinLength: optionalNumber('STAFF_PASSWORD_MIN_LENGTH', 12),
   staffLockoutAttempts: optionalNumber('STAFF_LOCKOUT_ATTEMPTS', 5),
   staffIdleTimeoutMinutes: optionalNumber('STAFF_IDLE_TIMEOUT_MINUTES', 30),
