@@ -13,6 +13,7 @@ import { AuditLog } from '../../models/AuditLog.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { isValidGstin, isValidIfsc, namesAreSimilar } from '../../shared/validators.js';
+import { env, isProduction } from '../../config/env.js';
 import { encryptAccountNumber } from '../../shared/encryption.js';
 import { enqueueNotification } from '../notification/notification.outbox.js';
 import { toBankDetailDto, type BankDetailDto } from './onboarding.dto.js';
@@ -46,8 +47,13 @@ interface ConsentInput {
   marketingOptIn: boolean;
 }
 
+// DISABLE_INPUT_VALIDATION (see middleware/validate.ts) also lifts these
+// service-layer checksum/shape checks, which sit below the Zod boundary and
+// so aren't skipped by validateBody alone. Never true in production.
+const validationDisabled = !isProduction && env.disableInputValidation;
+
 async function assertGstinAndMobileAreFree(gstin: string, mobile: string): Promise<void> {
-  if (!isValidGstin(gstin)) {
+  if (!validationDisabled && !isValidGstin(gstin)) {
     throw new AppError({
       code: 'VALIDATION_FAILED',
       messageEn: 'That GSTIN does not check out.',
@@ -136,7 +142,7 @@ function assertStaffAssistedOtpConfirmed(counterparty: {
 }
 
 function assertBankDetailIsWellFormed(bankDetail: BankDetailInput): void {
-  if (!isValidIfsc(bankDetail.ifsc)) {
+  if (!validationDisabled && !isValidIfsc(bankDetail.ifsc)) {
     throw new AppError({
       code: 'VALIDATION_FAILED',
       messageEn: 'That IFSC code is not valid.',
