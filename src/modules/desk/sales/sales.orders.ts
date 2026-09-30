@@ -49,7 +49,9 @@ export async function listOrders(filters: {
   const buyerIds = [...new Set(sos.map((so) => (so.buyerId as Types.ObjectId).toString()))];
   const buyers = await Buyer.find({ _id: { $in: buyerIds } });
   const buyerById = new Map(buyers.map((b) => [(b._id as Types.ObjectId).toString(), b]));
-  const counterparties = await Counterparty.find({ _id: { $in: buyers.map((b) => b.counterpartyId) } });
+  const counterparties = await Counterparty.find({
+    _id: { $in: buyers.map((b) => b.counterpartyId) },
+  });
   const firmByCounterpartyId = new Map(
     counterparties.map((c) => [(c._id as Types.ObjectId).toString(), c.firm ?? '']),
   );
@@ -80,12 +82,16 @@ export async function listOrders(filters: {
     const product = sku ? productById.get((sku.productId as Types.ObjectId).toString()) : undefined;
     const productDisplay = product && sku ? `${product.brand} — ${sku.packLabel}` : '';
 
-    const buyerReceipts = receipts.filter((r) => (r.buyerId as Types.ObjectId).toString() === buyerIdStr);
+    const buyerReceipts = receipts.filter(
+      (r) => (r.buyerId as Types.ObjectId).toString() === buyerIdStr,
+    );
     const appliedClaim = buyerReceipts.find((r) =>
       r.soIds.some((id) => (id as Types.ObjectId).toString() === soIdStr),
     );
     const waitingClaim = buyerReceipts.find(
-      (r) => r.state === 'waiting' && !r.soIds.some((id) => (id as Types.ObjectId).toString() === soIdStr),
+      (r) =>
+        r.state === 'waiting' &&
+        !r.soIds.some((id) => (id as Types.ObjectId).toString() === soIdStr),
     );
 
     return {

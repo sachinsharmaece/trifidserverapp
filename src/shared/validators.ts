@@ -66,7 +66,14 @@ export function isValidLicenceNo(licenceNo: string): boolean {
   return LICENCE_SHAPE.test(licenceNo.trim());
 }
 
-const PACK_UNIT_TOKEN = /\b(ML|LTRS?|L|GMS?|G|KGS?)\b/i;
+// B-21 follow-up (found by the existing test suite, not the ticket): a
+// plain `\b` boundary never fires between a digit and a letter, so "1L" or
+// "2L" — as common as "500 GM" — never matched at all once this same
+// function got wired into more call sites. The boundary before the token
+// is now "start of string, whitespace, or a digit"; after, "end of string
+// or a non-letter", so it still won't match a unit letter buried in an
+// unrelated word (e.g. "Gold").
+const PACK_UNIT_TOKEN = /(?<=^|[\s\d])(ML|LTRS?|L|GMS?|G|KGS?)(?=$|[^a-zA-Z])/i;
 
 /** PC packs are described too many ways ("10x10 strip", box counts, ...) to require an explicit unit token. */
 export function packLabelMatchesBaseUnit(

@@ -56,10 +56,13 @@ describe('SKU import (BR-055)', () => {
 
   it('reports each row independently in a mixed batch', async () => {
     const product = await makeProduct();
+    // B-21 — real-looking labels: "good-1"/"good-2" never carried a unit
+    // token at all, which importSkus now checks (packLabelMatchesBaseUnit),
+    // so this fixture is updated to what it always meant to exercise.
     const results = await importSkus((product._id as unknown as string).toString(), [
-      { packLabel: 'good-1', packSize: 1, baseUnit: 'LTR', unitsPerBox: 12 },
+      { packLabel: '1L', packSize: 1, baseUnit: 'LTR', unitsPerBox: 12 },
       { packLabel: 'bad-1', packSize: 1, baseUnit: 'GAL', unitsPerBox: 12 },
-      { packLabel: 'good-2', packSize: 5, baseUnit: 'KG', unitsPerBox: 4 },
+      { packLabel: '5KG', packSize: 5, baseUnit: 'KG', unitsPerBox: 4 },
     ]);
     expect(results.map((r) => r.accepted)).toEqual([true, false, true]);
   });

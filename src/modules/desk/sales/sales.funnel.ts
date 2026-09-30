@@ -78,7 +78,8 @@ async function classifiedMetric(): Promise<FunnelMetric> {
   return {
     key: 'classified',
     label: 'Classified',
-    formula: 'Count of buyers a desk has classified (BR-044) — tier and trader status set — right now.',
+    formula:
+      'Count of buyers a desk has classified (BR-044) — tier and trader status set — right now.',
     unit: 'count',
     value: count,
     numerator: count,
@@ -125,7 +126,7 @@ async function rateHeldMetric(): Promise<FunnelMetric> {
   return {
     key: 'rate_held',
     label: 'Rate held',
-    formula: 'Count of quotes currently `live` — a buyer holding a rate right now.',
+    formula: 'Count of quotes currently live — a buyer holding a rate right now.',
     unit: 'count',
     value: count,
     numerator: count,
@@ -135,11 +136,14 @@ async function rateHeldMetric(): Promise<FunnelMetric> {
 }
 
 async function tookItMetric(): Promise<FunnelMetric> {
-  const count = await So.countDocuments({ state: { $in: ['awaiting_payment', 'payment_verifying'] } });
+  const count = await So.countDocuments({
+    state: { $in: ['awaiting_payment', 'payment_verifying'] },
+  });
   return {
     key: 'took_it',
     label: 'Took it',
-    formula: 'Count of sales orders currently awaiting payment or with payment being verified, right now.',
+    formula:
+      'Count of sales orders currently awaiting payment or with payment being verified, right now.',
     unit: 'count',
     value: count,
     numerator: count,
@@ -177,7 +181,7 @@ async function deliveredMetric(): Promise<FunnelMetric> {
   return {
     key: 'delivered',
     label: 'Delivered',
-    formula: 'Count of sales orders currently `delivered` or `closed`, right now.',
+    formula: 'Count of sales orders currently delivered or closed, right now.',
     unit: 'count',
     value: count,
     numerator: count,
@@ -194,7 +198,8 @@ async function orderedAgainMetric(): Promise<FunnelMetric> {
   return {
     key: 'ordered_again',
     label: 'Ordered again',
-    formula: 'Count of distinct buyers who have placed more than one sales order, of any state, ever.',
+    formula:
+      'Count of distinct buyers who have placed more than one sales order, of any state, ever.',
     unit: 'count',
     value: rows.length,
     numerator: rows.length,

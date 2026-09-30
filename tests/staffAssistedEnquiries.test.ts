@@ -71,8 +71,18 @@ describe('Staff-assisted registration — the OTP gate (client decision A)', () 
         ownerName: 'Owner',
         licenceNo: 'MP/IND/INS/2016/0771',
         references: [
-          { firm: 'Ref One', phone: '9000000001', relationship: 'Supplier', whatTheySaid: 'Reliable' },
-          { firm: 'Ref Two', phone: '9000000002', relationship: 'Supplier', whatTheySaid: 'Reliable' },
+          {
+            firm: 'Ref One',
+            phone: '9000000001',
+            relationship: 'Supplier',
+            whatTheySaid: 'Reliable',
+          },
+          {
+            firm: 'Ref Two',
+            phone: '9000000002',
+            relationship: 'Supplier',
+            whatTheySaid: 'Reliable',
+          },
         ],
         bankDetail: bankDetail(),
         consent: consent(),

@@ -206,7 +206,9 @@ interface RegisterBuyerInput {
   licenceNo: string;
   gstPpobAddress: string;
   dealerships?: Array<{ manufacturerId: string; isStrong?: boolean }>;
-  bankDetail: BankDetailInput;
+  // B-25 — optional for a buyer (he pays TriFid; a refund destination
+  // traces to the payment itself, BR-018), unlike a seller, who is paid.
+  bankDetail?: BankDetailInput;
   consent: ConsentInput;
 }
 
@@ -217,7 +219,7 @@ export async function registerBuyer(
   correlationId = 'unknown',
 ): Promise<{ registrationId: string; accountNameWarning: string | null }> {
   await assertGstinAndMobileAreFree(input.gstin, input.mobile);
-  assertBankDetailIsWellFormed(input.bankDetail);
+  if (input.bankDetail) assertBankDetailIsWellFormed(input.bankDetail);
 
   let accountNameWarning: string | null = null;
   const registrationId = await withTransaction(async (session) => {
@@ -261,7 +263,9 @@ export async function registerBuyer(
       );
     }
 
-    await createPendingBankDetail(counterparty._id, input.bankDetail, session);
+    if (input.bankDetail) {
+      await createPendingBankDetail(counterparty._id, input.bankDetail, session);
+    }
     await writeConsents(counterparty._id, input.consent, session);
 
     if (staffAssisted) {
@@ -279,16 +283,18 @@ export async function registerBuyer(
       );
     }
 
-    accountNameWarning = await auditAccountNameMismatchIfAny(
-      {
-        accountName: input.bankDetail.accountName,
-        ownerName: input.ownerName,
-        firm: input.firm,
-        entityId: counterparty._id as Types.ObjectId,
-        correlationId: staffAssisted?.correlationId ?? correlationId,
-      },
-      session,
-    );
+    if (input.bankDetail) {
+      accountNameWarning = await auditAccountNameMismatchIfAny(
+        {
+          accountName: input.bankDetail.accountName,
+          ownerName: input.ownerName,
+          firm: input.firm,
+          entityId: counterparty._id as Types.ObjectId,
+          correlationId: staffAssisted?.correlationId ?? correlationId,
+        },
+        session,
+      );
+    }
 
     return (counterparty._id as Types.ObjectId).toString();
   });
@@ -388,6 +394,10 @@ interface RegistrationStatusDto {
   registrationId: string;
   kind: string;
   status: string;
+  // B-50 — the approval panel showed neither, a real risk of approving the
+  // wrong registration when several are open at once.
+  firm: string;
+  gstin: string;
   rejectionReason?: string;
   staffAssisted: boolean;
   staffAssistedOtpVerifiedAt: Date | null;
@@ -412,6 +422,8 @@ export async function getRegistration(
     registrationId: (counterparty._id as Types.ObjectId).toString(),
     kind: counterparty.kind,
     status: counterparty.status,
+    firm: counterparty.firm ?? '',
+    gstin: counterparty.gstin ?? '',
     staffAssisted: counterparty.staffAssisted ?? false,
     staffAssistedOtpVerifiedAt: counterparty.staffAssistedOtpVerifiedAt ?? null,
   };
@@ -504,6 +516,16 @@ export async function approveBuyer(
     throw new AppError({
       code: 'VALIDATION_FAILED',
       messageEn: 'This registration has already been decided.',
+    });
+  }
+  // B-28 — registration-time validation already requires both (min(1) on
+  // the schema); this is the backstop for a record that predates it or was
+  // written outside that path, so approval can't turn a blank firm/GSTIN
+  // into an active account.
+  if (!counterparty.firm?.trim() || !counterparty.gstin?.trim()) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'This registration is missing a firm name or GSTIN and cannot be approved as is.',
     });
   }
   // TEMP: buyer OTP gate disabled 2026-09-28 at product's request — re-enable

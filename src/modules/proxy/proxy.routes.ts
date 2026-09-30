@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
 import { requirePermission } from '../../middleware/requirePermission.js';
 import { requireIdempotencyKey } from '../../middleware/idempotency.js';
-import { validateBody } from '../../middleware/validate.js';
+import { validateBody, validateQuery } from '../../middleware/validate.js';
 import { PERMISSIONS } from '../../config/permissions.js';
 import * as controller from './proxy.controller.js';
 import {
@@ -13,6 +13,7 @@ import {
   proxyCreateListingSchema,
   proxyConfirmPileSchema,
   proxyPileDecisionSchema,
+  proxyListBuyerAsksQuerySchema,
 } from './proxy.validation.js';
 
 /**
@@ -37,6 +38,13 @@ proxyRouter.post(
   ...buyerCall,
   validateBody(proxyRaiseAskSchema),
   controller.postBuyerCallAsk,
+);
+// Feeds the ask/quote pickers on "Advance an ask on a call".
+proxyRouter.get(
+  '/staff/proxy/buyer/asks',
+  ...buyerCall,
+  validateQuery(proxyListBuyerAsksQuerySchema),
+  controller.getBuyerCallAsks,
 );
 // Maps to API-042.
 proxyRouter.post(

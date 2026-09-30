@@ -1,10 +1,6 @@
 import { z } from 'zod';
 import { MSP_REFUSAL_CODES } from '../../../models/MspRequest.js';
-import {
-  CALL_OUTCOMES,
-  CALL_LOG_KINDS,
-  CALL_LOG_UPDATE_KINDS,
-} from '../../../models/CallLog.js';
+import { CALL_OUTCOMES, CALL_LOG_KINDS, CALL_LOG_UPDATE_KINDS } from '../../../models/CallLog.js';
 
 export const requestMspSchema = z
   .object({

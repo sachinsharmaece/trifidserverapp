@@ -3,6 +3,7 @@ import { Manufacturer } from '../../models/Manufacturer.js';
 import { Product } from '../../models/Product.js';
 import { Sku } from '../../models/Sku.js';
 import { AppError } from '../../shared/errors.js';
+import { packLabelMatchesBaseUnit } from '../../shared/validators.js';
 
 /**
  * New — not in the original API_CONTRACT.md. Nothing else creates a
@@ -92,7 +93,16 @@ export async function listProducts(
   technical: string,
   manufacturerId?: string,
 ): Promise<Array<{ productId: string; brand: string; hsn: string; class: string }>> {
-  const query: Record<string, unknown> = { technical, active: true, deletedAt: null };
+  // B-22 — this feeds every technical→product→pack picker (counterparty
+  // and staff-proxy alike); a draft "cannot back a live listing until Admin
+  // confirms it" (listing.service.ts), so it never belongs as a choice here
+  // — filtered at the source instead of by each picker re-checking `state`.
+  const query: Record<string, unknown> = {
+    technical,
+    active: true,
+    state: 'live',
+    deletedAt: null,
+  };
   if (manufacturerId) query.manufacturerId = manufacturerId;
   const products = await Product.find(query).sort({ brand: 1 });
   return products.map((product) => ({
@@ -203,7 +213,11 @@ interface SkuListItem {
 
 // API-023.
 export async function listSkusForProduct(productId: string): Promise<SkuListItem[]> {
-  const skus = await Sku.find({ productId, active: true, deletedAt: null }).sort({ packLabel: 1 });
+  // B-22 — same reasoning as `listProducts` above: this is the pack picker,
+  // never the Manage desk's own draft-review list (`listAllProducts`).
+  const skus = await Sku.find({ productId, active: true, state: 'live', deletedAt: null }).sort({
+    packLabel: 1,
+  });
   return skus.map((sku) => ({
     skuId: (sku._id as Types.ObjectId).toString(),
     packLabel: sku.packLabel,
@@ -442,6 +456,19 @@ export async function updateSku(
     throw new AppError({ code: 'NOT_FOUND', messageEn: 'SKU not found.' });
   }
 
+  // B-21 — the same cross-check as `importSkus`: an edited label must still
+  // match this SKU's (immutable) base unit.
+  if (
+    updates.packLabel !== undefined &&
+    !packLabelMatchesBaseUnit(updates.packLabel, sku.baseUnit as 'LTR' | 'KG' | 'PC')
+  ) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: `The pack "${updates.packLabel}" does not look like a ${sku.baseUnit} pack.`,
+      field: 'packLabel',
+    });
+  }
+
   if (updates.packLabel !== undefined) sku.packLabel = updates.packLabel;
   if (updates.packSize !== undefined) sku.packSize = updates.packSize;
   if (updates.unitsPerBox !== undefined) sku.unitsPerBox = updates.unitsPerBox;
@@ -501,6 +528,17 @@ export async function importSkus(
     }
     if (typeof packSize !== 'number' || !Number.isFinite(packSize) || packSize <= 0) {
       results.push({ index, accepted: false, reason: 'packSize must be a positive number.' });
+      continue;
+    }
+    // B-21 — the Purchase desk's own draft-SKU path already cross-checks
+    // this (`draftSkuSchema`'s superRefine); this path let "500 GM" through
+    // with `baseUnit: 'LTR'` because it never called the same check.
+    if (!packLabelMatchesBaseUnit(row.packLabel, baseUnit as 'LTR' | 'KG' | 'PC')) {
+      results.push({
+        index,
+        accepted: false,
+        reason: `The pack "${row.packLabel}" does not look like a ${baseUnit} pack.`,
+      });
       continue;
     }
 

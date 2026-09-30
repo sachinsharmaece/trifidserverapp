@@ -15,6 +15,7 @@ import type {
   proxyCreateListingSchema,
   proxyConfirmPileSchema,
   proxyPileDecisionSchema,
+  proxyListBuyerAsksQuerySchema,
 } from './proxy.validation.js';
 import type { z } from 'zod';
 
@@ -46,6 +47,17 @@ export async function postBuyerCallAsk(req: Request, res: Response): Promise<voi
     action: 'raise_ask',
   });
   ok(res, req, result, 201);
+}
+
+// Feeds the "Advance an ask on a call" pickers — same read a buyer's own
+// GET /asks calls, just addressed at the counterparty the staff member has
+// on the phone rather than the token's own identity.
+export async function getBuyerCallAsks(req: Request, res: Response): Promise<void> {
+  const { buyerCounterpartyId } = req.validatedQuery as z.infer<
+    typeof proxyListBuyerAsksQuerySchema
+  >;
+  const result = await demandService.listMyAsks(buyerCounterpartyId);
+  ok(res, req, result);
 }
 
 // Maps to API-042 — advancing an ask, or confirming a rate over the phone;

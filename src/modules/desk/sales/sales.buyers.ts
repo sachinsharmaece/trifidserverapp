@@ -13,6 +13,17 @@ import { AppError } from '../../../shared/errors.js';
 import { listCallLogsForBuyer, type CallLogDto } from './sales.calls.js';
 import { listOrders, type SalesOrderRow } from './sales.orders.js';
 
+// B-52 — `tradePosition` is stored lowercase (the enum); `rateTier` (the
+// pricing-side computation in chain.service.ts#toRateTier) already
+// capitalizes it for that reason, but this desk re-derives the same "tier"
+// label inline without doing so, showing e.g. "retailer" next to "Trader".
+// Not reusing `toRateTier` outright: it defaults an unclassified buyer to
+// Retailer for pricing (BR-044), but this screen means to show blank for
+// "not yet classified" — a real, separate signal for staff, not lost here.
+function capitalizeTradePosition(tradePosition: string): string {
+  return tradePosition.charAt(0).toUpperCase() + tradePosition.slice(1);
+}
+
 export interface BuyerListRow {
   buyerId: string;
   firm: string;
@@ -39,36 +50,51 @@ export async function listBuyers(filters: {
   if (filters.tab === 'book') {
     buyers = buyers.filter((b) => ownerEmployeeIdByBuyer.has((b._id as Types.ObjectId).toString()));
   } else if (filters.tab === 'queue') {
-    buyers = buyers.filter((b) => !ownerEmployeeIdByBuyer.has((b._id as Types.ObjectId).toString()));
+    buyers = buyers.filter(
+      (b) => !ownerEmployeeIdByBuyer.has((b._id as Types.ObjectId).toString()),
+    );
   }
 
-  const counterparties = await Counterparty.find({ _id: { $in: buyers.map((b) => b.counterpartyId) } });
-  const counterpartyById = new Map(counterparties.map((c) => [(c._id as Types.ObjectId).toString(), c]));
+  const counterparties = await Counterparty.find({
+    _id: { $in: buyers.map((b) => b.counterpartyId) },
+  });
+  const counterpartyById = new Map(
+    counterparties.map((c) => [(c._id as Types.ObjectId).toString(), c]),
+  );
 
   if (filters.q) {
     const q = filters.q.toLowerCase();
     const matchingTehsils = await Tehsil.find({ name: { $regex: filters.q, $options: 'i' } });
-    const matchingTehsilIds = new Set(matchingTehsils.map((t) => (t._id as Types.ObjectId).toString()));
+    const matchingTehsilIds = new Set(
+      matchingTehsils.map((t) => (t._id as Types.ObjectId).toString()),
+    );
     buyers = buyers.filter((b) => {
       const cp = counterpartyById.get((b.counterpartyId as Types.ObjectId).toString());
-      const inTehsil = Boolean(b.tehsilId) && matchingTehsilIds.has((b.tehsilId as Types.ObjectId).toString());
+      const inTehsil =
+        Boolean(b.tehsilId) && matchingTehsilIds.has((b.tehsilId as Types.ObjectId).toString());
       return Boolean(
         cp?.firm?.toLowerCase().includes(q) ||
-          cp?.gstin?.toLowerCase().includes(q) ||
-          cp?.mobile?.toLowerCase().includes(q) ||
-          inTehsil,
+        cp?.gstin?.toLowerCase().includes(q) ||
+        cp?.mobile?.toLowerCase().includes(q) ||
+        inTehsil,
       );
     });
   }
 
   const tehsilIds = [
-    ...new Set(buyers.filter((b) => b.tehsilId).map((b) => (b.tehsilId as Types.ObjectId).toString())),
+    ...new Set(
+      buyers.filter((b) => b.tehsilId).map((b) => (b.tehsilId as Types.ObjectId).toString()),
+    ),
   ];
   const tehsils = await Tehsil.find({ _id: { $in: tehsilIds } });
-  const tehsilNameById = new Map(tehsils.map((t) => [(t._id as Types.ObjectId).toString(), t.name]));
+  const tehsilNameById = new Map(
+    tehsils.map((t) => [(t._id as Types.ObjectId).toString(), t.name]),
+  );
 
   const employees = await Employee.find({ _id: { $in: [...ownerEmployeeIdByBuyer.values()] } });
-  const employeeNameById = new Map(employees.map((e) => [(e._id as Types.ObjectId).toString(), e.person]));
+  const employeeNameById = new Map(
+    employees.map((e) => [(e._id as Types.ObjectId).toString(), e.person]),
+  );
 
   const sos = await So.find({ buyerId: { $in: buyers.map((b) => b._id) } })
     .select('buyerId createdAt')
@@ -91,12 +117,20 @@ export async function listBuyers(filters: {
       buyerId: idStr,
       firm: cp?.firm ?? '',
       gstin: cp?.gstin ?? null,
-      tehsil: b.tehsilId ? (tehsilNameById.get((b.tehsilId as Types.ObjectId).toString()) ?? null) : null,
-      tier: b.isTrader ? 'Trader' : (b.tradePosition ?? null),
+      tehsil: b.tehsilId
+        ? (tehsilNameById.get((b.tehsilId as Types.ObjectId).toString()) ?? null)
+        : null,
+      tier: b.isTrader
+        ? 'Trader'
+        : b.tradePosition
+          ? capitalizeTradePosition(b.tradePosition)
+          : null,
       orderCount: stats?.count ?? 0,
       lastOrderAt: stats?.lastOrderAt ? stats.lastOrderAt.toISOString() : null,
       rateViews: b.rateViews,
-      ownerName: ownerEmployeeId ? (employeeNameById.get(ownerEmployeeId.toString()) ?? null) : null,
+      ownerName: ownerEmployeeId
+        ? (employeeNameById.get(ownerEmployeeId.toString()) ?? null)
+        : null,
     };
   });
 }
@@ -117,6 +151,7 @@ export interface BuyerFileOpenAsk {
 
 export interface BuyerFileDto {
   buyerId: string;
+  counterpartyId: string;
   firm: string;
   gstin: string | null;
   mobile: string;
@@ -162,7 +197,10 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     }),
   );
 
-  const openAsks = await Ask.find({ buyerId: buyer._id, state: { $nin: ['lapsed', 'withdrawn'] } }).sort({
+  const openAsks = await Ask.find({
+    buyerId: buyer._id,
+    state: { $nin: ['lapsed', 'withdrawn'] },
+  }).sort({
     createdAt: -1,
   });
 
@@ -173,11 +211,22 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
 
   return {
     buyerId: (buyer._id as Types.ObjectId).toString(),
+    // BR-088-adjacent — `buyerId` here is the Buyer document, not the
+    // Counterparty; the proxy endpoints (`requireActiveBuyer`) key on
+    // `Buyer.counterpartyId`, so callers that hand this DTO's id straight to
+    // a proxy action get a guaranteed "Buyers only." — this is the correct
+    // id for that (same field EnterListingPage.tsx already uses on the
+    // seller side).
+    counterpartyId: (buyer.counterpartyId as Types.ObjectId).toString(),
     firm: counterparty?.firm ?? '',
     gstin: counterparty?.gstin ?? null,
     mobile: counterparty?.mobile ?? '',
     tehsil: tehsil?.name ?? null,
-    tier: buyer.isTrader ? 'Trader' : (buyer.tradePosition ?? null),
+    tier: buyer.isTrader
+      ? 'Trader'
+      : buyer.tradePosition
+        ? capitalizeTradePosition(buyer.tradePosition)
+        : null,
     classified: buyer.classified,
     rateViews: buyer.rateViews,
     ownerName: owner?.person ?? null,

@@ -38,7 +38,12 @@ buyerSchema.virtual('rateTier').get(function getRateTier(this: {
   isTrader: boolean;
   tradePosition: string | null;
 }) {
-  return this.isTrader ? 'Trader' : this.tradePosition;
+  // B-52 — `tradePosition` is stored lowercase (the enum); this virtual's
+  // own doc comment above promises `isTrader ? 'Trader' : tradePosition`,
+  // which read as `retailer` next to `Trader` for anyone actually using it.
+  if (this.isTrader) return 'Trader';
+  if (!this.tradePosition) return null;
+  return this.tradePosition.charAt(0).toUpperCase() + this.tradePosition.slice(1);
 });
 buyerSchema.set('toJSON', { virtuals: true });
 buyerSchema.set('toObject', { virtuals: true });
