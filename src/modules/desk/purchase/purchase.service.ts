@@ -674,47 +674,65 @@ export interface SupplyMatrixProductRow {
   listedCount: number;
 }
 
+/**
+ * B-04 — the one read behind every "how many sellers carry/list this" count
+ * on the Purchase desk: the products' Analysis tab (`getProductFunnel`'s
+ * `sellerCount`) and both Supply Matrix tabs each used to run their own,
+ * separately-written query over `SellerCatalogueEntry`/`Listing` and could
+ * drift apart. This is the shared aggregate, the same "one source of truth"
+ * discipline `chain.view.ts` uses for the wall-projected chain view.
+ *
+ * `productId` narrows both queries for a single-product caller
+ * (`getProductFunnel`); omitted, it builds the whole-catalogue picture the
+ * two Supply Matrix tabs need. Return type is inferred rather than
+ * re-declared — the exact seller-catalogue-entry document shape is
+ * Mongoose's to define, not this function's to repeat.
+ */
+async function computeSellerCatalogueCoverage(productId?: string) {
+  const entries = await SellerCatalogueEntry.find(productId ? { productId } : {});
+  const carrySellersByProduct = new Map<string, Set<string>>();
+  const entriesBySeller = new Map<string, typeof entries>();
+  for (const e of entries) {
+    const productKey = (e.productId as Types.ObjectId).toString();
+    const sellerKey = (e.sellerId as Types.ObjectId).toString();
+    if (!carrySellersByProduct.has(productKey)) carrySellersByProduct.set(productKey, new Set());
+    carrySellersByProduct.get(productKey)!.add(sellerKey);
+    if (!entriesBySeller.has(sellerKey)) entriesBySeller.set(sellerKey, []);
+    entriesBySeller.get(sellerKey)!.push(e);
+  }
+
+  // `Listing.productId` is direct — every line under a listing belongs to
+  // the same product it was created for, so this needs no SKU join.
+  const liveListings = await Listing.find(
+    productId ? { state: 'live', productId } : { state: 'live' },
+  );
+  const listedSellersByProduct = new Map<string, Set<string>>();
+  const listedProductIdsBySeller = new Map<string, Set<string>>();
+  for (const l of liveListings) {
+    const productKey = (l.productId as Types.ObjectId).toString();
+    const sellerKey = (l.sellerId as Types.ObjectId).toString();
+    if (!listedSellersByProduct.has(productKey)) listedSellersByProduct.set(productKey, new Set());
+    listedSellersByProduct.get(productKey)!.add(sellerKey);
+    if (!listedProductIdsBySeller.has(sellerKey))
+      listedProductIdsBySeller.set(sellerKey, new Set());
+    listedProductIdsBySeller.get(sellerKey)!.add(productKey);
+  }
+
+  return {
+    carrySellersByProduct,
+    listedSellersByProduct,
+    entriesBySeller,
+    listedProductIdsBySeller,
+  };
+}
+
 export async function getSupplyMatrixByProduct(): Promise<SupplyMatrixProductRow[]> {
   const products = await Product.find({ active: true });
   const manufacturers = await Manufacturer.find({});
   const manufacturerById = new Map(
     manufacturers.map((m) => [(m._id as Types.ObjectId).toString(), m]),
   );
-  const entries = await SellerCatalogueEntry.find({});
-  const carrySellersByProduct = new Map<string, Set<string>>();
-  for (const e of entries) {
-    const key = (e.productId as Types.ObjectId).toString();
-    if (!carrySellersByProduct.has(key)) carrySellersByProduct.set(key, new Set());
-    carrySellersByProduct.get(key)!.add((e.sellerId as Types.ObjectId).toString());
-  }
-
-  const skus = await Sku.find({ productId: { $in: products.map((p) => p._id) } });
-  const skuToProduct = new Map(
-    skus.map((s) => [
-      (s._id as Types.ObjectId).toString(),
-      (s.productId as Types.ObjectId).toString(),
-    ]),
-  );
-  const listingLines = await ListingLine.find({ skuId: { $in: skus.map((s) => s._id) } });
-  const liveListings = await Listing.find({
-    _id: { $in: listingLines.map((l) => l.listingId) },
-    state: 'live',
-  });
-  const sellerByListingId = new Map(
-    liveListings.map((l) => [
-      (l._id as Types.ObjectId).toString(),
-      (l.sellerId as Types.ObjectId).toString(),
-    ]),
-  );
-  const listedSellersByProduct = new Map<string, Set<string>>();
-  for (const line of listingLines) {
-    const sellerId = sellerByListingId.get((line.listingId as Types.ObjectId).toString());
-    if (!sellerId) continue;
-    const productKey = skuToProduct.get((line.skuId as Types.ObjectId).toString());
-    if (!productKey) continue;
-    if (!listedSellersByProduct.has(productKey)) listedSellersByProduct.set(productKey, new Set());
-    listedSellersByProduct.get(productKey)!.add(sellerId);
-  }
+  const { carrySellersByProduct, listedSellersByProduct } = await computeSellerCatalogueCoverage();
 
   return products.map((p) => {
     const key = (p._id as Types.ObjectId).toString();
@@ -750,8 +768,9 @@ export async function getSupplyMatrixBySeller(): Promise<SupplyMatrixSellerRow[]
   const counterpartyById = new Map(
     counterparties.map((c) => [(c._id as Types.ObjectId).toString(), c]),
   );
-  const entries = await SellerCatalogueEntry.find({});
-  const products = await Product.find({ _id: { $in: entries.map((e) => e.productId) } });
+  const { entriesBySeller, listedProductIdsBySeller } = await computeSellerCatalogueCoverage();
+  const allEntries = [...entriesBySeller.values()].flat();
+  const products = await Product.find({ _id: { $in: allEntries.map((e) => e.productId) } });
   const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
   const manufacturers = await Manufacturer.find({
     _id: { $in: products.map((p) => p.manufacturerId) },
@@ -759,22 +778,11 @@ export async function getSupplyMatrixBySeller(): Promise<SupplyMatrixSellerRow[]
   const manufacturerById = new Map(
     manufacturers.map((m) => [(m._id as Types.ObjectId).toString(), m]),
   );
-  const entriesBySeller = new Map<string, (typeof entries)[number][]>();
-  for (const e of entries) {
-    const key = (e.sellerId as Types.ObjectId).toString();
-    if (!entriesBySeller.has(key)) entriesBySeller.set(key, []);
-    entriesBySeller.get(key)!.push(e);
-  }
-  const liveListings = await Listing.find({ state: 'live' });
 
   return sellers.map((s) => {
     const key = (s._id as Types.ObjectId).toString();
     const myEntries = entriesBySeller.get(key) ?? [];
-    const myListedProductIds = new Set(
-      liveListings
-        .filter((l) => (l.sellerId as Types.ObjectId).toString() === key)
-        .map((l) => (l.productId as Types.ObjectId).toString()),
-    );
+    const myListedProductIds = listedProductIdsBySeller.get(key) ?? new Set<string>();
     const manufacturerNames = [
       ...new Set(
         myEntries.map((e) => {
@@ -1353,7 +1361,7 @@ export async function getProductFunnel(
   const skus = await Sku.find({ productId });
   const skuIds = skus.map((s) => s._id as Types.ObjectId);
 
-  const [windowAsks, openAsks, sellerCount] = await Promise.all([
+  const [windowAsks, openAsks, coverage] = await Promise.all([
     Ask.find({
       createdAt: { $gte: from },
       $or: [{ productId }, { skuId: { $in: skuIds } }],
@@ -1362,8 +1370,11 @@ export async function getProductFunnel(
       state: { $in: ['open', 'quoted'] },
       $or: [{ productId }, { skuId: { $in: skuIds } }],
     }),
-    SellerCatalogueEntry.countDocuments({ productId }),
+    // B-04 — the same shared read the Supply Matrix tabs use, so this
+    // column can never drift from theirs again.
+    computeSellerCatalogueCoverage(productId),
   ]);
+  const sellerCount = coverage.carrySellersByProduct.get(productId)?.size ?? 0;
 
   const quotedAskIds = new Set(
     (await Quote.find({ askId: { $in: windowAsks.map((a) => a._id) } })).map((q) =>

@@ -68,6 +68,11 @@ export type ErrorCode =
   // enquiry that is no longer pre-trade, or walking away from an ask that is
   // no longer open. A state refusal, not a business rule.
   | 'ENQUIRY_NOT_OPEN'
+  // B-03 — a double-submit producing two identical live listing lines (same
+  // seller, SKU, rate and condition set) is a data-integrity guard, not a
+  // business rule: BR-087's "no merge rule" governs two DIFFERENT rates or
+  // scopes on the same product, which this never touches.
+  | 'DUPLICATE_LISTING'
   | 'INTERNAL_ERROR';
 
 const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
@@ -113,6 +118,7 @@ const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
   MFA_ENROLMENT_REQUIRED: 403,
   OTP_CONFIRMATION_REQUIRED: 409,
   ENQUIRY_NOT_OPEN: 409,
+  DUPLICATE_LISTING: 409,
   INTERNAL_ERROR: 500,
 };
 

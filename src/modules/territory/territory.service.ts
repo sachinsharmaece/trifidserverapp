@@ -19,20 +19,46 @@ export async function listTehsils(
   }));
 }
 
+// B-52 — "ujjain" and "Ujjain" kept reading as two different tehsils to
+// anything grouping on the raw string, because nothing normalised the name
+// at write time; a display-only fix would leave every existing grouping
+// (visibility resolver, coverage map) still seeing two. Title-cased,
+// trimmed, once, here, rather than at every reader.
+function toTitleCase(value: string): string {
+  return value
+    .trim()
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+}
+
 export async function createTehsil(
   name: string,
   district: string,
   state: string,
 ): Promise<{ tehsilId: string }> {
-  const existing = await Tehsil.findOne({ name, district });
+  const normalizedName = toTitleCase(name);
+  const normalizedDistrict = toTitleCase(district);
+  const normalizedState = toTitleCase(state);
+  // B-54's duplicate backstop, made case-insensitive rather than exact-match
+  // only — the same reasoning as B-52, since a same-name-different-case
+  // tehsil is exactly the duplicate this is meant to catch.
+  const existing = await Tehsil.findOne({
+    name: normalizedName,
+    district: normalizedDistrict,
+  }).collation({ locale: 'en', strength: 2 });
   if (existing) {
     throw new AppError({
       code: 'VALIDATION_FAILED',
-      messageEn: `${name} already exists in ${district}.`,
+      messageEn: `${normalizedName} already exists in ${normalizedDistrict}.`,
       field: 'name',
     });
   }
-  const tehsil = await Tehsil.create({ name, district, state });
+  const tehsil = await Tehsil.create({
+    name: normalizedName,
+    district: normalizedDistrict,
+    state: normalizedState,
+  });
   return { tehsilId: (tehsil._id as Types.ObjectId).toString() };
 }
 

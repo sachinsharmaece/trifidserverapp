@@ -25,6 +25,14 @@ import { computeBuyerFacingRatePaise } from '../listing/listing.service.js';
 const PAY_WINDOW_HOURS = 16; // BR-156.
 const RECONFIRM_THRESHOLD = 0.75; // BR-154.
 
+// B-41 — "NaN of 200 boxes": one commitment with a missing/non-numeric
+// `qty` (stale data predating a schema change, going by the "Prototype v6"
+// pool name it showed up on) poisoned the whole running sum, since
+// `sum + undefined` is `NaN` and stays `NaN` for every addition after it.
+export function sumQty(commitments: Array<{ qty: number }>): number {
+  return commitments.reduce((sum, c) => sum + (Number.isFinite(c.qty) ? c.qty : 0), 0);
+}
+
 async function requireActiveBuyer(buyerCounterpartyId: string) {
   const buyer = await Buyer.findOne({ counterpartyId: buyerCounterpartyId });
   if (!buyer) throw new AppError({ code: 'PERMISSION_DENIED', messageEn: 'Buyers only.' });
@@ -51,8 +59,8 @@ interface PoolSummaryDto {
 
 async function summarize(pool: InstanceType<typeof Pool>): Promise<PoolSummaryDto> {
   const commitments = await PoolCommitment.find({ poolId: pool._id, withdrawnAt: null });
-  const bindingQty = commitments.filter((c) => c.isBinding).reduce((sum, c) => sum + c.qty, 0);
-  const totalQty = commitments.reduce((sum, c) => sum + c.qty, 0);
+  const bindingQty = sumQty(commitments.filter((c) => c.isBinding));
+  const totalQty = sumQty(commitments);
   return {
     poolId: (pool._id as Types.ObjectId).toString(),
     skuId: (pool.skuId as Types.ObjectId).toString(),
@@ -253,7 +261,7 @@ export async function checkPoolThresholds(poolId: string): Promise<void> {
   if (!pool || pool.status === 'triggered' || pool.status === 'converted') return;
 
   const commitments = await PoolCommitment.find({ poolId: pool._id, withdrawnAt: null });
-  const totalQty = commitments.reduce((sum, c) => sum + c.qty, 0);
+  const totalQty = sumQty(commitments);
   const crossedThreshold = totalQty >= pool.moq * RECONFIRM_THRESHOLD;
 
   if (crossedThreshold && pool.status === 'open' && !pool.reconfirmRequestedAt) {
@@ -290,7 +298,7 @@ export async function checkPoolThresholds(poolId: string): Promise<void> {
     return;
   }
 
-  const bindingQty = commitments.filter((c) => c.isBinding).reduce((sum, c) => sum + c.qty, 0);
+  const bindingQty = sumQty(commitments.filter((c) => c.isBinding));
   if (bindingQty >= pool.moq) {
     await triggerPool(poolId);
   }

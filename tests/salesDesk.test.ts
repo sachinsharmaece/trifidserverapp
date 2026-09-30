@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
+import { Types } from 'mongoose';
 import { createApp } from '../src/app.js';
 import { Chain } from '../src/models/Chain.js';
 import { So } from '../src/models/So.js';
@@ -10,6 +11,8 @@ import { Pool, buildConditionSetKey } from '../src/models/Pool.js';
 import { PoolCommitment } from '../src/models/PoolCommitment.js';
 import { BuyerLocation } from '../src/models/BuyerLocation.js';
 import { Buyer } from '../src/models/Buyer.js';
+import { Counterparty } from '../src/models/Counterparty.js';
+import { Ask } from '../src/models/Ask.js';
 import { Sku } from '../src/models/Sku.js';
 import {
   staffToken,
@@ -29,14 +32,22 @@ const app = createApp();
  * no Sales permission at all.
  */
 
-async function seedSoWithLine(): Promise<{ buyerId: string; sellerId: string; soId: string; skuId: string }> {
+async function seedSoWithLine(): Promise<{
+  buyerId: string;
+  sellerId: string;
+  soId: string;
+  skuId: string;
+}> {
   const sales = await staffToken(app, 'sales');
   const purchase = await staffToken(app, 'purchase');
   const buyerId = await createApprovedBuyer(app, sales.token);
   const sellerId = await createApprovedSeller(app, purchase.token);
   const skuId = await createTestSku('B');
 
-  const chain = await Chain.create({ chainNo: `C-TEST-${Date.now()}-${Math.random()}`, source: 'inquiry' });
+  const chain = await Chain.create({
+    chainNo: `C-TEST-${Date.now()}-${Math.random()}`,
+    source: 'inquiry',
+  });
   const so = await So.create({
     soNo: `SO-TEST-${Date.now()}-${Math.random()}`,
     chainId: chain._id,
@@ -66,7 +77,11 @@ async function seedSoWithLine(): Promise<{ buyerId: string; sellerId: string; so
   return { buyerId, sellerId, soId: (so._id as unknown as string).toString(), skuId };
 }
 
-async function seedLiveListingLine(): Promise<{ productId: string; sellerId: string; skuId: string }> {
+async function seedLiveListingLine(): Promise<{
+  productId: string;
+  sellerId: string;
+  skuId: string;
+}> {
   const purchase = await staffToken(app, 'purchase');
   const admin = await staffToken(app, 'admin');
   const sellerId = await createApprovedSeller(app, purchase.token);
@@ -207,7 +222,9 @@ describe('GET /staff/sales/board, /staff/sales/board/:productId', () => {
       .get('/api/v1/staff/sales/board')
       .set('Authorization', `Bearer ${sales.token}`);
     expect(boardRes.status).toBe(200);
-    const row = (boardRes.body.data as Array<{ productId: string }>).find((r) => r.productId === productId);
+    const row = (boardRes.body.data as Array<{ productId: string }>).find(
+      (r) => r.productId === productId,
+    );
     expect(row).toBeDefined();
     expect(row!.ladderCount).toBeGreaterThanOrEqual(1);
 
@@ -227,6 +244,35 @@ describe('GET /staff/sales/board, /staff/sales/board/:productId', () => {
       .get('/api/v1/staff/sales/board')
       .set('Authorization', `Bearer ${logistics.token}`);
     expect(res.status).toBe(403);
+  });
+
+  // Regression — B-27 ("demand" showed a raw truncated buyer id, never the
+  // firm behind it).
+  it('resolves the buyer firm on demand against a product, not just his id', async () => {
+    const sales = await staffToken(app, 'sales');
+    const { productId } = await seedLiveListingLine();
+    const buyerId = await createApprovedBuyer(app, sales.token);
+    const buyer = await Buyer.findById(buyerId);
+    const counterparty = await Counterparty.findById(buyer!.counterpartyId);
+    await Ask.create({
+      buyerId,
+      productId,
+      qty: 5,
+      conditionRequirement: { expiryBand: 'over12' },
+      visibleToAllAt: new Date(),
+      state: 'open',
+      ttlAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+
+    const detailRes = await request(app)
+      .get(`/api/v1/staff/sales/board/${productId}`)
+      .set('Authorization', `Bearer ${sales.token}`);
+    expect(detailRes.status).toBe(200);
+    const ask = (
+      detailRes.body.data.openAsks as Array<{ buyerId: string; buyerFirm: string }>
+    ).find((a) => a.buyerId === buyerId);
+    expect(ask).toBeDefined();
+    expect(ask!.buyerFirm).toBe(counterparty!.firm);
   });
 });
 
@@ -266,6 +312,34 @@ describe('GET /staff/sales/pools, /staff/sales/pools/:poolId', () => {
       .set('Authorization', `Bearer ${logistics.token}`);
     expect(res.status).toBe(403);
   });
+
+  // Regression — B-41 ("NaN of 200 boxes"). One commitment with a
+  // missing/non-numeric `qty` — the schema requires it, so this can only
+  // happen via stale data or a write outside Mongoose's validation, which is
+  // exactly why the raw driver is used here instead of `.create()` — poisoned
+  // the running sum, since `n + undefined` is `NaN` and every further
+  // addition to a `NaN` stays `NaN`.
+  it('a commitment with a missing qty does not turn the pool total into NaN', async () => {
+    const { poolId } = await seedPoolWithCommitment();
+    await PoolCommitment.collection.insertOne({
+      poolId: new Types.ObjectId(poolId),
+      buyerId: new Types.ObjectId(),
+      deliveryLocationId: new Types.ObjectId(),
+      isBinding: false,
+      withdrawnAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      // `qty` deliberately omitted.
+    });
+
+    const sales = await staffToken(app, 'sales');
+    const detailRes = await request(app)
+      .get(`/api/v1/staff/sales/pools/${poolId}`)
+      .set('Authorization', `Bearer ${sales.token}`);
+    expect(detailRes.status).toBe(200);
+    expect(Number.isNaN(detailRes.body.data.committedQty)).toBe(false);
+    expect(detailRes.body.data.committedQty).toBe(5); // the one well-formed commitment, unpoisoned.
+  });
 });
 
 describe('GET /staff/sales/buyers, /staff/sales/buyers/:buyerId', () => {
@@ -277,9 +351,9 @@ describe('GET /staff/sales/buyers, /staff/sales/buyers/:buyerId', () => {
       .get('/api/v1/staff/sales/buyers')
       .set('Authorization', `Bearer ${sales.token}`);
     expect(listRes.status).toBe(200);
-    expect((listRes.body.data as Array<{ buyerId: string }>).some((b) => b.buyerId === buyerId)).toBe(
-      true,
-    );
+    expect(
+      (listRes.body.data as Array<{ buyerId: string }>).some((b) => b.buyerId === buyerId),
+    ).toBe(true);
 
     const fileRes = await request(app)
       .get(`/api/v1/staff/sales/buyers/${buyerId}`)
@@ -304,6 +378,27 @@ describe('GET /staff/sales/buyers, /staff/sales/buyers/:buyerId', () => {
       .get('/api/v1/staff/sales/buyers')
       .set('Authorization', `Bearer ${logistics.token}`);
     expect(res.status).toBe(403);
+  });
+
+  // Regression — B-29/B-43/B-44 ("Buyers only." on every proxy call from the
+  // Sales call workspace, however the SKU was entered). The buyer file's own
+  // `buyerId` is the `Buyer` document's `_id`; every proxy endpoint
+  // (`requireActiveBuyer`) keys on `Buyer.counterpartyId` instead — a
+  // different id in a different collection. `SalesCallWorkspacePage.tsx` was
+  // sending `buyerId` where the proxy calls needed `counterpartyId`, which
+  // guaranteed the lookup found nothing. This asserts the buyer file exposes
+  // the real `counterpartyId` — the field the frontend fix now reads instead.
+  it('the buyer file exposes counterpartyId, distinct from buyerId, matching the real Buyer document', async () => {
+    const sales = await staffToken(app, 'sales');
+    const buyerId = await createApprovedBuyer(app, sales.token);
+    const buyer = await Buyer.findById(buyerId);
+
+    const fileRes = await request(app)
+      .get(`/api/v1/staff/sales/buyers/${buyerId}`)
+      .set('Authorization', `Bearer ${sales.token}`);
+    expect(fileRes.status).toBe(200);
+    expect(fileRes.body.data.counterpartyId).toBe(buyer!.counterpartyId.toString());
+    expect(fileRes.body.data.counterpartyId).not.toBe(buyerId);
   });
 });
 

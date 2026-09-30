@@ -144,3 +144,65 @@ describe('Seller registration — QA fixes', () => {
     expect(entry).toBeNull();
   });
 });
+
+function buyerBody(overrides: Record<string, unknown> = {}) {
+  return {
+    mobile: randomMobile(),
+    firm: 'Test Buyer Firm',
+    ownerName: 'Test Owner',
+    licenceNo: 'LIC-9001',
+    gstPpobAddress: 'Some address',
+    consent: consent(),
+    ...overrides,
+  };
+}
+
+describe('Buyer registration — QA fixes', () => {
+  // Regression — B-25: a buyer pays TriFid and is not routinely paid
+  // himself (BR-018), unlike a seller, so his bank detail is optional.
+  it('registers a buyer with no bankDetail at all', async () => {
+    const res = await request(app)
+      .post('/api/v1/registrations/buyer')
+      .send(buyerBody({ gstin: await randomGstin() }));
+    expect(res.status).toBe(201);
+    expect(res.body.data.registrationId).toBeTruthy();
+  });
+
+  it('still validates bankDetail when a buyer gives one', async () => {
+    const res = await request(app)
+      .post('/api/v1/registrations/buyer')
+      .send(
+        buyerBody({
+          gstin: await randomGstin(),
+          bankDetail: { accountNumber: '123456789012', ifsc: 'NOT-AN-IFSC', accountName: 'Test' },
+        }),
+      );
+    expect(res.status).toBe(400);
+  });
+
+  // Regression — B-48: format-and-checksum validation (isValidGstin) was
+  // only run at the service layer; the request-boundary schema checked
+  // length alone, so a 15-character, correctly-shaped but checksum-invalid
+  // GSTIN should still be caught here, at the boundary, with a field error.
+  it('rejects a 15-character GSTIN that fails the checksum, not just the length', async () => {
+    const valid = await randomGstin();
+    // `randomGstin` always sets the entity-code character (index 12) to
+    // '1'; flipping it to '2' keeps the shape valid (`[1-9A-Z]`) while
+    // invalidating the checksum the last character no longer matches.
+    expect(valid[12]).toBe('1');
+    const invalidChecksum = `${valid.slice(0, 12)}2${valid.slice(13)}`;
+    const res = await request(app)
+      .post('/api/v1/registrations/buyer')
+      .send(buyerBody({ gstin: invalidChecksum }));
+    expect(res.status).toBe(400);
+    expect(res.body.error.field).toBe('gstin');
+  });
+
+  it('rejects a 12-character string outright', async () => {
+    const res = await request(app)
+      .post('/api/v1/registrations/buyer')
+      .send(buyerBody({ gstin: 'TOOSHORT1234' }));
+    expect(res.status).toBe(400);
+    expect(res.body.error.field).toBe('gstin');
+  });
+});

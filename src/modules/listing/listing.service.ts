@@ -248,6 +248,36 @@ export async function createListing(
     }
   }
 
+  // B-03 — refuse an exact duplicate rather than silently creating a second,
+  // identical live listing line (a double-submit, not a genuine re-list;
+  // BR-087's "no merge rule" is about two DIFFERENT rates/scopes coexisting).
+  const sellersLiveListingIds = await Listing.find({
+    sellerId: seller._id,
+    productId: input.productId,
+    state: 'live',
+  }).distinct('_id');
+  for (const line of input.lines) {
+    const moqBand = deriveMoqBand(line.moqExact ?? 1);
+    const duplicate = await ListingLine.findOne({
+      listingId: { $in: sellersLiveListingIds },
+      skuId: line.skuId,
+      ratePaise: line.ratePaise,
+      expiryBand: line.expiryBand,
+      moqBand,
+      deliveryBand: line.deliveryBand,
+      provenance: line.provenance,
+    });
+    if (duplicate) {
+      throw new AppError({
+        code: 'DUPLICATE_LISTING',
+        messageEn:
+          'You already have a live listing at this exact rate and condition set on this pack.',
+        field: 'ratePaise',
+        meta: { existingListingLineId: (duplicate._id as Types.ObjectId).toString() },
+      });
+    }
+  }
+
   const frozenTehsilIds = await resolveFrozenTehsilIds(
     seller._id as Types.ObjectId,
     input.scopeType,

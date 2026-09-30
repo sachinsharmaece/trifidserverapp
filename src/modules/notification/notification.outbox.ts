@@ -146,7 +146,13 @@ export async function counterpartyIdForSeller(
   return seller.counterpartyId as Types.ObjectId;
 }
 
-/** Two-decimal rupees for a template placeholder. Money is integer paise everywhere else. */
+// B-33 — "unformatted ₹468980.00": a bare `toFixed(2)` on a five/six-figure
+// order value with no thousands grouping, in the one function every
+// notification template's rupee placeholder runs through.
+/** Two-decimal, Indian-grouped rupees for a template placeholder. Money is integer paise everywhere else. */
 export function paiseToRupeesText(paise: number): string {
-  return (paise / 100).toFixed(2);
+  return (paise / 100).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 }

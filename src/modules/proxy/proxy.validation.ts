@@ -51,3 +51,11 @@ export const proxyPileDecisionSchema = z
     callNote: callNoteSchema,
   })
   .strict();
+
+// Read-side query for the Sales call workspace's ask/quote pickers — no
+// call note, nothing is written.
+export const proxyListBuyerAsksQuerySchema = z
+  .object({
+    buyerCounterpartyId: z.string().min(1),
+  })
+  .strict();

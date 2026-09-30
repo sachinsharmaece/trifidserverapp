@@ -415,6 +415,47 @@ describe('Purchase-desk v2 — draft masters (LOCK-26-style)', () => {
       .send({ name: 'Should not work' });
     expect(res.status).toBe(403);
   });
+
+  // Regression — B-22: `listProducts`/`listSkusForProduct` feed every
+  // technical→product→pack picker (counterparty and staff-proxy). A draft
+  // "cannot back a live listing until Admin confirms it", so it should
+  // never even be offered as a choice there — unlike `listAllProducts`,
+  // the Manage desk's own unfiltered review list, which is untouched.
+  it('excludes a draft product/SKU from the technical→product→pack picker', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const technical = `Draft Technical ${Date.now()}-${Math.random()}`;
+    const draftProductRes = await request(app)
+      .post('/api/v1/staff/purchase/masters/products')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({
+        brand: `Draft Brand ${Date.now()}`,
+        technical,
+        manufacturerId: (
+          await catalogService.createManufacturer(`Draft Mfr ${Date.now()}-${Math.random()}`)
+        ).manufacturerId,
+        hsn: '38089110',
+      });
+    expect(draftProductRes.status).toBe(201);
+    const productId = draftProductRes.body.data.productId as string;
+
+    const pickerRes = await request(app)
+      .get(`/api/v1/catalog/products?technical=${encodeURIComponent(technical)}`)
+      .set('Authorization', `Bearer ${purchase.token}`);
+    expect(pickerRes.status).toBe(200);
+    expect(
+      (pickerRes.body.data as Array<{ productId: string }>).some((p) => p.productId === productId),
+    ).toBe(false);
+
+    await catalogService.updateProduct(productId, { state: 'live' });
+    const pickerAfterConfirm = await request(app)
+      .get(`/api/v1/catalog/products?technical=${encodeURIComponent(technical)}`)
+      .set('Authorization', `Bearer ${purchase.token}`);
+    expect(
+      (pickerAfterConfirm.body.data as Array<{ productId: string }>).some(
+        (p) => p.productId === productId,
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('Purchase-desk v2 — supply matrix', () => {
@@ -467,6 +508,102 @@ describe('Purchase-desk v2 — supply matrix', () => {
     expect(rowA!.listedCount).toBe(1);
     expect(rowB!.carryCount).toBe(1);
     expect(rowB!.listedCount).toBe(0);
+  });
+
+  // Regression — B-04: the products' Analysis tab (`getProductFunnel`'s
+  // `sellerCount`) used its own separately-written `countDocuments` query;
+  // both now read the same shared `computeSellerCatalogueCoverage`, so they
+  // can no longer drift apart the way the ticket described.
+  it("getProductFunnel's sellerCount agrees with the Supply Matrix's carryCount for the same product", async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const sellerA = await makeSeller(purchase.token);
+    const sellerB = await makeSeller(purchase.token);
+    const skuId = await createTestSku('B');
+    const sku = await Sku.findById(skuId);
+    const productId = sku!.productId.toString();
+
+    await purchaseService.upsertSellerCatalogueEntry(
+      { sellerId: sellerA, productId, skuIds: [skuId] },
+      { employeeId: purchase.employeeId },
+    );
+    await purchaseService.upsertSellerCatalogueEntry(
+      { sellerId: sellerB, productId, skuIds: [skuId] },
+      { employeeId: purchase.employeeId },
+    );
+
+    const byProduct = await purchaseService.getSupplyMatrixByProduct();
+    const matrixRow = byProduct.find((r) => r.productId === productId);
+    const funnelRow = await purchaseService.getProductFunnel(productId);
+    expect(funnelRow.sellerCount).toBe(matrixRow!.carryCount);
+    expect(funnelRow.sellerCount).toBe(2);
+  });
+});
+
+describe('Purchase-desk v2 — B-03, exact-duplicate listing', () => {
+  function listingInput(sellerCounterpartyId: string, productId: string, skuId: string) {
+    return {
+      sellerCounterpartyId,
+      productId,
+      scopeType: 'my_area' as const,
+      lines: [
+        {
+          skuId,
+          ratePaise: 28000,
+          expiryBand: 'over12' as const,
+          deliveryBand: '48h' as const,
+          provenance: 'company' as const,
+          qty: 10,
+        },
+      ],
+      callNote: 'Called 30 Sep, gave the same rate again by mistake.',
+    };
+  }
+
+  it('refuses an exact duplicate (same seller, SKU, rate and condition set) as a second live listing', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const sellerId = await makeSeller(purchase.token);
+    const seller = await Seller.findById(sellerId);
+    const sellerCounterpartyId = seller!.counterpartyId.toString();
+    const skuId = await createTestSku('B');
+    const sku = await Sku.findById(skuId);
+    const productId = sku!.productId.toString();
+
+    const first = await request(app)
+      .post('/api/v1/staff/proxy/seller/listings')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(listingInput(sellerCounterpartyId, productId, skuId));
+    expect(first.status).toBe(201);
+
+    const duplicate = await request(app)
+      .post('/api/v1/staff/proxy/seller/listings')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(listingInput(sellerCounterpartyId, productId, skuId));
+    expect(duplicate.status).toBe(409);
+    expect(duplicate.body.error.code).toBe('DUPLICATE_LISTING');
+  });
+
+  it('allows a second listing at a different rate on the same SKU (BR-087)', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const sellerId = await makeSeller(purchase.token);
+    const seller = await Seller.findById(sellerId);
+    const sellerCounterpartyId = seller!.counterpartyId.toString();
+    const skuId = await createTestSku('B');
+    const sku = await Sku.findById(skuId);
+    const productId = sku!.productId.toString();
+
+    const first = await request(app)
+      .post('/api/v1/staff/proxy/seller/listings')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(listingInput(sellerCounterpartyId, productId, skuId));
+    expect(first.status).toBe(201);
+
+    const secondInput = listingInput(sellerCounterpartyId, productId, skuId);
+    secondInput.lines[0].ratePaise = 30000; // different rate — not a duplicate.
+    const second = await request(app)
+      .post('/api/v1/staff/proxy/seller/listings')
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(secondInput);
+    expect(second.status).toBe(201);
   });
 });
 

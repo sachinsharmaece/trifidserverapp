@@ -8,6 +8,7 @@ import { So } from '../../../models/So.js';
 import { SoLine } from '../../../models/SoLine.js';
 import { Ask } from '../../../models/Ask.js';
 import { Buyer } from '../../../models/Buyer.js';
+import { Counterparty } from '../../../models/Counterparty.js';
 import { AppError } from '../../../shared/errors.js';
 import { computeBuyerFacingRatePaise } from '../../listing/listing.service.js';
 import type { RateTier } from '../../pricing/pricing.service.js';
@@ -25,7 +26,9 @@ const DEFAULT_TIER: RateTier = 'Retailer';
  */
 function buyerShapedForTier(tier: RateTier): InstanceType<typeof Buyer> {
   const isTrader = tier === 'Trader';
-  const tradePosition = isTrader ? null : (tier.toLowerCase() as 'distributor' | 'dealer' | 'retailer');
+  const tradePosition = isTrader
+    ? null
+    : (tier.toLowerCase() as 'distributor' | 'dealer' | 'retailer');
   return { isTrader, tradePosition } as unknown as InstanceType<typeof Buyer>;
 }
 
@@ -37,11 +40,19 @@ async function rateForTierOrBuyer(
   if (opts.buyerId) {
     const buyer = await Buyer.findById(opts.buyerId);
     if (!buyer) {
-      throw new AppError({ code: 'VALIDATION_FAILED', messageEn: 'Buyer not found.', field: 'buyerId' });
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: 'Buyer not found.',
+        field: 'buyerId',
+      });
     }
     return computeBuyerFacingRatePaise(buyer, skuId, sellerNetPaise);
   }
-  return computeBuyerFacingRatePaise(buyerShapedForTier(opts.tier ?? DEFAULT_TIER), skuId, sellerNetPaise);
+  return computeBuyerFacingRatePaise(
+    buyerShapedForTier(opts.tier ?? DEFAULT_TIER),
+    skuId,
+    sellerNetPaise,
+  );
 }
 
 export interface BoardProductRow {
@@ -59,7 +70,10 @@ export async function getBoardProducts(): Promise<BoardProductRow[]> {
   const liveListings = await Listing.find({ state: 'live' });
   const liveListingIds = liveListings.map((l) => l._id);
   const productIdByListingId = new Map(
-    liveListings.map((l) => [(l._id as Types.ObjectId).toString(), (l.productId as Types.ObjectId).toString()]),
+    liveListings.map((l) => [
+      (l._id as Types.ObjectId).toString(),
+      (l.productId as Types.ObjectId).toString(),
+    ]),
   );
   const lines = await ListingLine.find({ listingId: { $in: liveListingIds }, qty: { $gt: 0 } });
 
@@ -75,7 +89,9 @@ export async function getBoardProducts(): Promise<BoardProductRow[]> {
 
   const productIds = [...linesByProduct.keys()];
   const products = await Product.find({ _id: { $in: productIds } });
-  const manufacturers = await Manufacturer.find({ _id: { $in: products.map((p) => p.manufacturerId) } });
+  const manufacturers = await Manufacturer.find({
+    _id: { $in: products.map((p) => p.manufacturerId) },
+  });
   const manufacturerNameById = new Map(
     manufacturers.map((m) => [(m._id as Types.ObjectId).toString(), m.name]),
   );
@@ -120,7 +136,8 @@ export async function getBoardProducts(): Promise<BoardProductRow[]> {
       productId,
       brand: product.brand,
       technicalName: product.technical,
-      manufacturerName: manufacturerNameById.get((product.manufacturerId as Types.ObjectId).toString()) ?? '',
+      manufacturerName:
+        manufacturerNameById.get((product.manufacturerId as Types.ObjectId).toString()) ?? '',
       ladderCount: productLines.length,
       cheapestRatePaise,
       buyerCount: buyerIds.size,
@@ -145,6 +162,7 @@ export interface BoardLadderLine {
 export interface BoardOpenAsk {
   askId: string;
   buyerId: string;
+  buyerFirm: string;
   skuId: string | null;
   qty: number;
   state: string;
@@ -184,11 +202,17 @@ export async function getBoardProduct(
 
   const liveListings = await Listing.find({ productId: product._id, state: 'live' });
   const listingIds = liveListings.map((l) => l._id);
-  const lines = await ListingLine.find({ listingId: { $in: listingIds }, skuId: { $in: skuIds }, qty: { $gt: 0 } });
+  const lines = await ListingLine.find({
+    listingId: { $in: listingIds },
+    skuId: { $in: skuIds },
+    qty: { $gt: 0 },
+  });
 
   const ladder: BoardLadderLine[] = [];
   for (const line of lines) {
-    const listing = liveListings.find((l) => (l._id as Types.ObjectId).toString() === (line.listingId as Types.ObjectId).toString());
+    const listing = liveListings.find(
+      (l) => (l._id as Types.ObjectId).toString() === (line.listingId as Types.ObjectId).toString(),
+    );
     const sku = skuById.get((line.skuId as Types.ObjectId).toString());
     const ratePaise = await rateForTierOrBuyer(line.skuId, line.ratePaise, opts);
     ladder.push({
@@ -211,6 +235,22 @@ export async function getBoardProduct(
     state: { $nin: ['lapsed', 'withdrawn'] },
   }).sort({ createdAt: -1 });
 
+  // B-27 — the demand table showed a raw truncated buyer id as the only
+  // identifier, never the firm.
+  const askBuyers = await Buyer.find({ _id: { $in: openAsks.map((a) => a.buyerId) } });
+  const askBuyerCounterparties = await Counterparty.find({
+    _id: { $in: askBuyers.map((b) => b.counterpartyId) },
+  });
+  const askFirmByCounterpartyId = new Map(
+    askBuyerCounterparties.map((c) => [(c._id as Types.ObjectId).toString(), c.firm ?? '']),
+  );
+  const askFirmByBuyerId = new Map(
+    askBuyers.map((b) => [
+      (b._id as Types.ObjectId).toString(),
+      askFirmByCounterpartyId.get((b.counterpartyId as Types.ObjectId).toString()) ?? '',
+    ]),
+  );
+
   const detail: BoardProductDetail = {
     productId: (product._id as Types.ObjectId).toString(),
     brand: product.brand,
@@ -220,6 +260,7 @@ export async function getBoardProduct(
     openAsks: openAsks.map((a) => ({
       askId: (a._id as Types.ObjectId).toString(),
       buyerId: (a.buyerId as Types.ObjectId).toString(),
+      buyerFirm: askFirmByBuyerId.get((a.buyerId as Types.ObjectId).toString()) ?? '',
       skuId: a.skuId ? (a.skuId as Types.ObjectId).toString() : null,
       qty: a.qty,
       state: a.state,
@@ -230,7 +271,9 @@ export async function getBoardProduct(
   if (opts.buyerId) {
     const soLines = await SoLine.find({ skuId: { $in: skuIds } });
     const soIds = soLines.map((l) => l.soId);
-    const sos = await So.find({ _id: { $in: soIds }, buyerId: opts.buyerId }).sort({ createdAt: -1 });
+    const sos = await So.find({ _id: { $in: soIds }, buyerId: opts.buyerId }).sort({
+      createdAt: -1,
+    });
     detail.buyerHistory = sos.map((so) => ({
       soId: (so._id as Types.ObjectId).toString(),
       soNo: so.soNo,
