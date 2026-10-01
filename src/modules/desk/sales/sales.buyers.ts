@@ -139,6 +139,10 @@ export interface BuyerProductHistoryRow {
   productId: string;
   brand: string;
   orderCount: number;
+  // BR-045 — the five frozen values on an order line are never re-derived,
+  // so the latest order's own `ratePaise` is exactly "what he last paid",
+  // not a current-rate lookup.
+  lastPaidRatePaise: number | null;
 }
 
 export interface BuyerFileOpenAsk {
@@ -175,25 +179,37 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
   const assignment = await BookAssignment.findOne({ buyerId: buyer._id });
   const owner = assignment ? await Employee.findById(assignment.ownerEmployeeId) : null;
 
-  const sos = await So.find({ buyerId: buyer._id }).select('_id');
+  const sos = await So.find({ buyerId: buyer._id });
   const lines = await SoLine.find({ soId: { $in: sos.map((s) => s._id) } });
   const skus = await Sku.find({ _id: { $in: lines.map((l) => l.skuId) } });
   const skuById = new Map(skus.map((s) => [(s._id as Types.ObjectId).toString(), s]));
   const products = await Product.find({ _id: { $in: skus.map((s) => s.productId) } });
   const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+  const soById = new Map(sos.map((s) => [(s._id as Types.ObjectId).toString(), s]));
 
   const orderCountByProduct = new Map<string, number>();
+  const lastPaidByProduct = new Map<string, { ratePaise: number; at: Date }>();
   for (const line of lines) {
     const sku = skuById.get((line.skuId as Types.ObjectId).toString());
     if (!sku) continue;
     const productId = (sku.productId as Types.ObjectId).toString();
     orderCountByProduct.set(productId, (orderCountByProduct.get(productId) ?? 0) + 1);
+
+    const so = soById.get((line.soId as Types.ObjectId).toString());
+    const at = so ? (so as unknown as { createdAt: Date }).createdAt : null;
+    if (at) {
+      const current = lastPaidByProduct.get(productId);
+      if (!current || at > current.at) {
+        lastPaidByProduct.set(productId, { ratePaise: line.ratePaise, at });
+      }
+    }
   }
   const productHistory: BuyerProductHistoryRow[] = [...orderCountByProduct.entries()].map(
     ([productId, orderCount]) => ({
       productId,
       brand: productById.get(productId)?.brand ?? '',
       orderCount,
+      lastPaidRatePaise: lastPaidByProduct.get(productId)?.ratePaise ?? null,
     }),
   );
 

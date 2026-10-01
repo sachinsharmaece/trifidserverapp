@@ -144,6 +144,14 @@ export async function getOpenSellerDebits(req: Request, res: Response): Promise<
   ok(res, req, await purchaseService.getOpenSellerDebits());
 }
 
+export async function getSupplyMatrixCallList(req: Request, res: Response): Promise<void> {
+  ok(res, req, await purchaseService.getSupplyMatrixCallList(req.params.productId as string));
+}
+
+export async function getOnBoardNotQuotedQueue(req: Request, res: Response): Promise<void> {
+  ok(res, req, await purchaseService.getOnBoardNotQuotedQueue());
+}
+
 export async function postDraftManufacturer(req: Request, res: Response): Promise<void> {
   const { name, aka } = draftManufacturerSchema.parse(req.body);
   const result = await catalogService.createManufacturerDraft(name, req.auth!.employeeId!, aka);

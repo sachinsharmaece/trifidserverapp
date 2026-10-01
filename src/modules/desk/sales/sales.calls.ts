@@ -5,6 +5,7 @@ import {
   type CallLogKind,
   type CallLogUpdateKind,
 } from '../../../models/CallLog.js';
+import { Employee } from '../../../models/Employee.js';
 import { AppError } from '../../../shared/errors.js';
 import { writeAuditLog } from '../../../shared/audit.js';
 
@@ -30,6 +31,10 @@ export interface CallLogDto {
   callLogId: string;
   buyerId: string;
   employeeId: string;
+  // "BY" on the buyer-file call history — raw ids are not a reader's
+  // business, same resolve-don't-leave-raw rule every other Sales queue
+  // follows for a counterparty.
+  employeeName: string;
   direction: 'in' | 'out' | null;
   at: string;
   kind: CallLogKind;
@@ -43,11 +48,12 @@ export interface CallLogDto {
   promiseFulfilledAt: string | null;
 }
 
-function toDto(row: InstanceType<typeof CallLog>): CallLogDto {
+function toDto(row: InstanceType<typeof CallLog>, employeeName = '—'): CallLogDto {
   return {
     callLogId: (row._id as Types.ObjectId).toString(),
     buyerId: (row.buyerId as Types.ObjectId).toString(),
     employeeId: (row.employeeId as Types.ObjectId).toString(),
+    employeeName,
     direction: (row.direction as 'in' | 'out' | null) ?? null,
     at: row.at.toISOString(),
     kind: row.kind as CallLogKind,
@@ -109,12 +115,23 @@ export async function createCallLog(
     correlationId: actor.correlationId,
   });
 
-  return toDto(created);
+  const employee = await Employee.findById(actor.employeeId);
+  return toDto(created, employee?.person ?? '—');
+}
+
+async function employeeNamesByRow(
+  rows: InstanceType<typeof CallLog>[],
+): Promise<Map<string, string>> {
+  const employees = await Employee.find({ _id: { $in: rows.map((r) => r.employeeId) } });
+  return new Map(employees.map((e) => [(e._id as Types.ObjectId).toString(), e.person]));
 }
 
 export async function listCallLogsForBuyer(buyerId: string): Promise<CallLogDto[]> {
   const rows = await CallLog.find({ buyerId }).sort({ at: -1 });
-  return rows.map(toDto);
+  const nameById = await employeeNamesByRow(rows);
+  return rows.map((r) =>
+    toDto(r, nameById.get((r.employeeId as Types.ObjectId).toString()) ?? '—'),
+  );
 }
 
 /** The Today worklist's "Promised" bucket — a due date has arrived and nobody has closed it out. */
@@ -123,5 +140,8 @@ export async function listDuePromises(now: Date = new Date()): Promise<CallLogDt
     promiseDueAt: { $ne: null, $lte: now },
     promiseFulfilledAt: null,
   }).sort({ promiseDueAt: 1 });
-  return rows.map(toDto);
+  const nameById = await employeeNamesByRow(rows);
+  return rows.map((r) =>
+    toDto(r, nameById.get((r.employeeId as Types.ObjectId).toString()) ?? '—'),
+  );
 }

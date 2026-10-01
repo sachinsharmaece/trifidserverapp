@@ -8,6 +8,7 @@ import { Po } from '../../../models/Po.js';
 import { Movement } from '../../../models/Movement.js';
 import { Inspection } from '../../../models/Inspection.js';
 import { SellerDebit } from '../../../models/SellerDebit.js';
+import { SellerCatalogueEntry } from '../../../models/SellerCatalogueEntry.js';
 import { addDays, istDateKey } from '../../../shared/clock.js';
 
 /**
@@ -211,6 +212,84 @@ async function timeToFirstSeller(from: Date): Promise<FunnelMetric> {
 }
 
 /** GET /staff/purchase/funnel — and the funnel block on the Founder overview. */
+// ---------------------------------------------------------------------------
+// Per-seller performance panel (BR-275's own metrics, read for one seller
+// instead of the whole desk). `timeToFirstSeller` has no per-seller meaning
+// (it answers "how long until ANY seller quoted", not one seller's own
+// speed) so it stays desk-wide only — not reused here. `answerRate` is new:
+// nothing upstream computes it yet. Same wall as `getFunnelReport` — every
+// value here is a count or a percent, never a rupee figure.
+// ---------------------------------------------------------------------------
+
+export interface SellerFunnelMetrics {
+  sameDayDispatchPct: number | null;
+  rejectionRatePct: number | null;
+  debitsRaisedCount: number;
+  debitsRecoveredCount: number;
+  answerRatePct: number | null;
+}
+
+export async function getSellerFunnelMetrics(
+  sellerId: string,
+  now: Date = new Date(),
+): Promise<SellerFunnelMetrics> {
+  const from = addDays(now, -FUNNEL_WINDOW_DAYS);
+  const today = istDateKey(now);
+
+  const pos = await Po.find({ sellerId, createdAt: { $gte: from }, failed: false });
+  let sameDay = 0;
+  let dispatchCounted = 0;
+  for (const po of pos) {
+    const released = createdAtOf(po);
+    const leg1 = await Movement.findOne({ chainId: po.chainId, leg: 1 }).sort({ dispatchedAt: 1 });
+    if (leg1) {
+      dispatchCounted += 1;
+      if (istDateKey(leg1.dispatchedAt) === istDateKey(released)) sameDay += 1;
+    } else if (istDateKey(released) < today) {
+      dispatchCounted += 1;
+    }
+  }
+
+  const sellerPos = await Po.find({ sellerId }, { _id: 1 });
+  const inspections = await Inspection.find({
+    poId: { $in: sellerPos.map((p) => p._id) },
+    signedAt: { $gte: from },
+  });
+  const rejected = inspections.reduce((sum, i) => sum + i.casesRejected, 0);
+  const inspected = inspections.reduce((sum, i) => sum + i.casesAccepted + i.casesRejected, 0);
+
+  // `SellerDebit.counterpartyId` holds the Seller document's own `_id`
+  // despite the field name — the same usage `purchase.service.ts`'s
+  // `getSellerFile`/`getOpenSellerDebits` already rely on.
+  const debitsRaisedCount = await SellerDebit.countDocuments({
+    counterpartyId: sellerId,
+    createdAt: { $gte: from },
+  });
+  const debitsRecoveredCount = await SellerDebit.countDocuments({
+    counterpartyId: sellerId,
+    createdAt: { $gte: from },
+    nettedAgainst: { $ne: null },
+  });
+
+  const catalogueEntries = await SellerCatalogueEntry.find({ sellerId });
+  const productIds = catalogueEntries.map((e) => e.productId);
+  const asks = productIds.length
+    ? await Ask.find({ productId: { $in: productIds }, createdAt: { $gte: from } })
+    : [];
+  const quotes = asks.length
+    ? await Quote.find({ askId: { $in: asks.map((a) => a._id) }, sellerId })
+    : [];
+  const quotedAskIds = new Set(quotes.map((q) => q.askId.toString()));
+
+  return {
+    sameDayDispatchPct: percent(sameDay, dispatchCounted),
+    rejectionRatePct: percent(rejected, inspected),
+    debitsRaisedCount,
+    debitsRecoveredCount,
+    answerRatePct: percent(quotedAskIds.size, asks.length),
+  };
+}
+
 export async function getFunnelReport(now: Date = new Date()): Promise<FunnelReport> {
   const from = addDays(now, -FUNNEL_WINDOW_DAYS);
   const metrics = [

@@ -537,6 +537,201 @@ describe('Purchase-desk v2 — supply matrix', () => {
     expect(funnelRow.sellerCount).toBe(matrixRow!.carryCount);
     expect(funnelRow.sellerCount).toBe(2);
   });
+
+  // Feature-gap session, 2026-10-01 — the Supply Matrix diff tab wanted a
+  // Class A/B/C column; `Product.class` (BR-040) already exists, this just
+  // confirms it's actually joined through onto the matrix row.
+  it("surfaces the product's class (BR-040) on the Product×Seller row", async () => {
+    const skuId = await createTestSku('B');
+    const sku = await Sku.findById(skuId);
+    const productId = sku!.productId.toString();
+    const { Product } = await import('../src/models/Product.js');
+    const product = await Product.findById(productId);
+
+    const byProduct = await purchaseService.getSupplyMatrixByProduct();
+    const row = byProduct.find((r) => r.productId === productId);
+    expect(row!.class).toBe(product!.class);
+  });
+});
+
+describe('Purchase-desk v2 — supply matrix call list', () => {
+  it('lists a seller who is listed but has not quoted an open ask, and drops him once he quotes', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const sales = await staffToken(app, 'sales');
+    const sellerId = await makeSeller(purchase.token);
+    const seller = await Seller.findById(sellerId);
+    const sellerCounterpartyId = seller!.counterpartyId.toString();
+    const skuId = await createTestSku('B');
+    const sku = await Sku.findById(skuId);
+    const productId = sku!.productId.toString();
+
+    const listing = await Listing.create({
+      sellerId,
+      productId,
+      origin: 'seller_initiated',
+      scopeType: 'all_india',
+      state: 'live',
+      frozenTehsilIds: [],
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    await ListingLine.create({
+      listingId: listing._id,
+      skuId,
+      ratePaise: 40000,
+      expiryBand: 'over12',
+      moqExact: 1,
+      deliveryBand: '2-5d',
+      provenance: 'company',
+      qty: 10,
+    });
+
+    const tehsil = await createTehsil();
+    const buyerId = await createApprovedBuyerAtTehsil(app, sales.token, tehsil, 'dealer');
+    const { Buyer } = await import('../src/models/Buyer.js');
+    const buyer = await Buyer.findById(buyerId);
+    const demandService = await import('../src/modules/demand/demand.service.js');
+    const { askId } = await demandService.raiseAsk(
+      (buyer!.counterpartyId as unknown as string).toString(),
+      { skuId, allPacks: false, qty: 5, conditionRequirement: { expiryBand: 'over12' } },
+    );
+
+    let callList = await purchaseService.getSupplyMatrixCallList(productId);
+    expect(callList).toEqual([
+      expect.objectContaining({ sellerId, state: 'listed', ratePaise: 40000 }),
+    ]);
+
+    await demandService.postQuote(sellerCounterpartyId, askId, {
+      ratePaiseForIndore: 41000,
+      qtyAvailable: 5,
+      expiryBand: 'over12',
+      expiryExact: '12/2027',
+      deliveryBand: '2-5d',
+      provenance: 'company',
+      daysToIndore: 2,
+    });
+
+    callList = await purchaseService.getSupplyMatrixCallList(productId);
+    expect(callList).toEqual([]);
+  });
+});
+
+describe("Purchase-desk v2 — Today's on-board-not-quoted queue", () => {
+  it('surfaces an ask with a listed-but-silent seller, and drops it once he quotes', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const sales = await staffToken(app, 'sales');
+    const sellerId = await makeSeller(purchase.token);
+    const seller = await Seller.findById(sellerId);
+    const sellerCounterpartyId = seller!.counterpartyId.toString();
+    const skuId = await createTestSku('B');
+    const sku = await Sku.findById(skuId);
+    const productId = sku!.productId.toString();
+
+    const listing = await Listing.create({
+      sellerId,
+      productId,
+      origin: 'seller_initiated',
+      scopeType: 'all_india',
+      state: 'live',
+      frozenTehsilIds: [],
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    await ListingLine.create({
+      listingId: listing._id,
+      skuId,
+      ratePaise: 40000,
+      expiryBand: 'over12',
+      moqExact: 1,
+      deliveryBand: '2-5d',
+      provenance: 'company',
+      qty: 10,
+    });
+
+    const tehsil = await createTehsil();
+    const buyerId = await createApprovedBuyerAtTehsil(app, sales.token, tehsil, 'dealer');
+    const { Buyer } = await import('../src/models/Buyer.js');
+    const buyer = await Buyer.findById(buyerId);
+    const demandService = await import('../src/modules/demand/demand.service.js');
+    const { askId } = await demandService.raiseAsk(
+      (buyer!.counterpartyId as unknown as string).toString(),
+      { skuId, allPacks: false, qty: 5, conditionRequirement: { expiryBand: 'over12' } },
+    );
+
+    let queue = await purchaseService.getOnBoardNotQuotedQueue();
+    expect(queue.find((q) => q.askId === askId)).toMatchObject({ sellersListedNotQuoted: 1 });
+
+    await demandService.postQuote(sellerCounterpartyId, askId, {
+      ratePaiseForIndore: 41000,
+      qtyAvailable: 5,
+      expiryBand: 'over12',
+      expiryExact: '12/2027',
+      deliveryBand: '2-5d',
+      provenance: 'company',
+      daysToIndore: 2,
+    });
+
+    queue = await purchaseService.getOnBoardNotQuotedQueue();
+    expect(queue.find((q) => q.askId === askId)).toBeUndefined();
+  });
+});
+
+describe('Purchase-desk v2 — return-note due date', () => {
+  it("surfaces the already-stored ReturnNote.dueBy as the Recovery screen's due date", async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const sellerId = await makeSeller(purchase.token);
+    const { ReturnNote } = await import('../src/models/ReturnNote.js');
+    const dueBy = new Date(Date.now() + 25 * 24 * 60 * 60 * 1000);
+    const note = await ReturnNote.create({
+      poId: new Types.ObjectId(),
+      sellerId,
+      cases: 3,
+      reason: 'Damaged in transit',
+      dueBy,
+    });
+
+    const rows = await purchaseService.getReturnNoteAgeing();
+    const row = rows.find((r) => r.returnNoteId === (note._id as Types.ObjectId).toString());
+    expect(row).toBeDefined();
+    expect(new Date(row!.dueDate).getTime()).toBe(dueBy.getTime());
+
+    const file = await purchaseService.getSellerFile(sellerId);
+    const fileRow = file.openReturnNotes.find(
+      (r) => r.returnNoteId === (note._id as Types.ObjectId).toString(),
+    );
+    expect(fileRow).toBeDefined();
+    expect(new Date(fileRow!.dueDate).getTime()).toBe(dueBy.getTime());
+  });
+});
+
+describe('Purchase-desk v2 — per-seller performance metrics (BR-275)', () => {
+  it("does not leak another seller's debits into this seller's performance panel", async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const sellerA = await makeSeller(purchase.token);
+    const sellerB = await makeSeller(purchase.token);
+    const { SellerDebit } = await import('../src/models/SellerDebit.js');
+    await SellerDebit.create({
+      counterpartyId: sellerA,
+      reason: 'Freight paid',
+      amountPaise: 5000,
+    });
+    await SellerDebit.create({
+      counterpartyId: sellerB,
+      reason: 'Freight paid',
+      amountPaise: 7000,
+    });
+    await SellerDebit.create({
+      counterpartyId: sellerB,
+      reason: 'Freight paid',
+      amountPaise: 8000,
+    });
+
+    const fileA = await purchaseService.getSellerFile(sellerA);
+    const fileB = await purchaseService.getSellerFile(sellerB);
+    expect(fileA.performance.debitsRaisedCount).toBe(1);
+    expect(fileB.performance.debitsRaisedCount).toBe(2);
+    // Counted, never valued — the same BR-067/BR-069 wall the desk-wide
+    // funnel keeps, re-verified at the per-seller granularity.
+    expect(JSON.stringify(fileA.performance)).not.toContain('5000');
+  });
 });
 
 describe('Purchase-desk v2 — B-03, exact-duplicate listing', () => {
