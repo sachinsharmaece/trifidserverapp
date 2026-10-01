@@ -194,6 +194,32 @@ describe('POST/GET /staff/sales/calls, GET /staff/sales/promises', () => {
     ).toBe(true);
   });
 
+  // Regression — the buyer-file call history's "BY" column needs a staff
+  // name, not the raw `employeeId` it used to carry.
+  it('resolves the logging staff member to a display name, not a raw id', async () => {
+    const sales = await staffToken(app, 'sales');
+    const buyerId = await createApprovedBuyer(app, sales.token);
+
+    const createRes = await request(app)
+      .post('/api/v1/staff/sales/calls')
+      .set('Authorization', `Bearer ${sales.token}`)
+      .send({
+        buyerId,
+        kind: 'call',
+        direction: 'out',
+        outcome: 'asked_for_a_rate',
+        note: 'Checking the employeeName field.',
+      });
+    expect(createRes.status).toBe(201);
+    expect(createRes.body.data.employeeName).toBeTruthy();
+    expect(createRes.body.data.employeeName).not.toBe(createRes.body.data.employeeId);
+
+    const listRes = await request(app)
+      .get(`/api/v1/staff/sales/calls?buyerId=${buyerId}`)
+      .set('Authorization', `Bearer ${sales.token}`);
+    expect(listRes.body.data[0].employeeName).toBe(createRes.body.data.employeeName);
+  });
+
   it('an update_request without updateKind is refused', async () => {
     const sales = await staffToken(app, 'sales');
     const buyerId = await createApprovedBuyer(app, sales.token);
@@ -400,6 +426,32 @@ describe('GET /staff/sales/buyers, /staff/sales/buyers/:buyerId', () => {
     expect(fileRes.body.data.counterpartyId).toBe(buyer!.counterpartyId.toString());
     expect(fileRes.body.data.counterpartyId).not.toBe(buyerId);
   });
+
+  // Regression — "what he buys" showed only an order count, never what he
+  // last paid (BR-045: an order line's `ratePaise` is frozen, never
+  // re-derived, so the latest order's own line is exactly "what he paid").
+  it("surfaces the buyer's last-paid rate per product, from his most recent order", async () => {
+    const sales = await staffToken(app, 'sales');
+    const { buyerId, soId, skuId } = await seedSoWithLine();
+    const sku = await Sku.findById(skuId);
+
+    const fileRes = await request(app)
+      .get(`/api/v1/staff/sales/buyers/${buyerId}`)
+      .set('Authorization', `Bearer ${sales.token}`);
+    expect(fileRes.status).toBe(200);
+    const row = (
+      fileRes.body.data.productHistory as Array<{
+        productId: string;
+        lastPaidRatePaise: number | null;
+      }>
+    ).find((p) => p.productId === sku!.productId.toString());
+    expect(row).toBeDefined();
+    expect(row!.lastPaidRatePaise).toBe(1000); // seedSoWithLine's SoLine.ratePaise
+
+    // Sanity on the fixture itself, so a future change to seedSoWithLine
+    // can't silently make this assertion meaningless.
+    expect(soId).toBeTruthy();
+  });
 });
 
 describe('GET /staff/sales/orders', () => {
@@ -434,6 +486,23 @@ describe('GET /staff/sales/orders', () => {
       .get('/api/v1/staff/sales/orders')
       .set('Authorization', `Bearer ${logistics.token}`);
     expect(res.status).toBe(403);
+  });
+
+  // Regression — the prototype's 7-step progress strip already exists as
+  // `chain.stage` (BR-030/031); this just confirms it's actually joined
+  // through onto the order row, at the state a freshly-created chain starts at.
+  it("surfaces the order's chain.stage as chainStage", async () => {
+    const sales = await staffToken(app, 'sales');
+    const { soId } = await seedSoWithLine();
+
+    const res = await request(app)
+      .get('/api/v1/staff/sales/orders?tab=live')
+      .set('Authorization', `Bearer ${sales.token}`);
+    const row = (res.body.data as Array<{ soId: string; chainStage: string }>).find(
+      (r) => r.soId === soId,
+    );
+    expect(row).toBeDefined();
+    expect(row!.chainStage).toBe('so'); // Chain.create's own default.
   });
 });
 

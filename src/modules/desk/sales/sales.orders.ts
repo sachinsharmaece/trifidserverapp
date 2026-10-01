@@ -6,6 +6,13 @@ import { Product } from '../../../models/Product.js';
 import { Buyer } from '../../../models/Buyer.js';
 import { Counterparty } from '../../../models/Counterparty.js';
 import { UpcomingReceipt } from '../../../models/UpcomingReceipt.js';
+import { Chain } from '../../../models/Chain.js';
+
+// BR-030/031 — `chain.stage` is the coarse, seven-step strip position
+// (`so → payment → po → leg1 → marg → dispatch → done`); `so.state` above
+// carries the finer ST-01 state. Re-declared here rather than imported from
+// `models/Chain.ts` only because that file exports no named type for it.
+export type ChainStage = 'so' | 'payment' | 'po' | 'leg1' | 'marg' | 'dispatch' | 'done';
 
 // BR-060 — this list carries no `sellerId` and nothing seller-derived,
 // matching `SalesWorkItem` (sales.service.ts) and every other Sales-facing
@@ -19,6 +26,7 @@ export interface SalesOrderRow {
   productDisplay: string;
   totalPaise: number;
   state: SoState;
+  chainStage: ChainStage;
   payDeadline: string;
   // BR-012 — Sales, not Accounts, picks which SO an `UpcomingReceipt` covers.
   // True when a buyer of this order has a claim still `waiting` that has not
@@ -69,6 +77,9 @@ export async function listOrders(filters: {
 
   const receipts = await UpcomingReceipt.find({ buyerId: { $in: buyerIds } });
 
+  const chains = await Chain.find({ _id: { $in: sos.map((so) => so.chainId) } });
+  const chainById = new Map(chains.map((c) => [(c._id as Types.ObjectId).toString(), c]));
+
   return sos.map((so) => {
     const soIdStr = (so._id as Types.ObjectId).toString();
     const buyerIdStr = (so.buyerId as Types.ObjectId).toString();
@@ -94,6 +105,8 @@ export async function listOrders(filters: {
         !r.soIds.some((id) => (id as Types.ObjectId).toString() === soIdStr),
     );
 
+    const chain = chainById.get((so.chainId as Types.ObjectId).toString());
+
     return {
       soId: soIdStr,
       soNo: so.soNo,
@@ -103,6 +116,7 @@ export async function listOrders(filters: {
       productDisplay,
       totalPaise: so.totalPaise,
       state: so.state as SoState,
+      chainStage: (chain?.stage ?? 'so') as ChainStage,
       payDeadline: so.payDeadline.toISOString(),
       claimNeedsApplying: Boolean(waitingClaim),
       upcomingReceiptId: waitingClaim ? (waitingClaim._id as Types.ObjectId).toString() : null,

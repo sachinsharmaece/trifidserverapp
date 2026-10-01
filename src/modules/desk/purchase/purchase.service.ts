@@ -32,7 +32,11 @@ import {
 import { AppError } from '../../../shared/errors.js';
 import { writeAuditLog } from '../../../shared/audit.js';
 import { addDays } from '../../../shared/clock.js';
-import { FUNNEL_WINDOW_DAYS } from './purchase.funnel.js';
+import {
+  FUNNEL_WINDOW_DAYS,
+  getSellerFunnelMetrics,
+  type SellerFunnelMetrics,
+} from './purchase.funnel.js';
 import { getSellerScorecard, type SellerScorecardDto } from '../../conduct/conduct.service.js';
 
 const RETURN_NOTE_WINDOW_DAYS = 30; // BR-189.
@@ -523,6 +527,7 @@ export interface ReturnNoteAgeingItem {
   poId: string;
   cases: number;
   daysOld: number;
+  dueDate: string; // `ReturnNote.dueBy`, already stored at creation (`dock.service.ts`) — not re-derived.
   overdue: boolean; // Past the 30-day window — QR-021, not resolved here.
 }
 
@@ -536,9 +541,66 @@ export async function getReturnNoteAgeing(): Promise<ReturnNoteAgeingItem[]> {
       poId: n.poId.toString(),
       cases: n.cases,
       daysOld,
+      dueDate: n.dueBy.toISOString(),
       overdue: daysOld > RETURN_NOTE_WINDOW_DAYS,
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Today — "on-board-not-quoted": a seller who already has a live listing
+// reaching an open ask (`getAskSellerStates`'s `listed` state) but hasn't
+// quoted it. Not a new signal — `getAskSellerStates` already computes this
+// per ask; this rolls it up desk-wide instead of per-seller
+// (`getOpenDemandForSeller` is the per-seller equivalent, used on the
+// seller file).
+// ---------------------------------------------------------------------------
+
+export interface OnBoardNotQuotedItem {
+  askId: string;
+  productId: string | null;
+  brand: string;
+  qty: number;
+  sellersListedNotQuoted: number;
+}
+
+export async function getOnBoardNotQuotedQueue(): Promise<OnBoardNotQuotedItem[]> {
+  const asks = await Ask.find({ state: { $in: ['open', 'quoted'] } }).sort({ createdAt: 1 });
+  const rows: Array<{
+    askId: string;
+    productId: string | null;
+    qty: number;
+    sellersListedNotQuoted: number;
+  }> = [];
+
+  for (const ask of asks) {
+    const states = await getAskSellerStates((ask._id as Types.ObjectId).toString());
+    const sellersListedNotQuoted = states.filter((s) => s.state === 'listed').length;
+    if (sellersListedNotQuoted === 0) continue;
+
+    const skuIds = await skuIdsForAsk(ask);
+    let productId = ask.productId ? (ask.productId as Types.ObjectId).toString() : null;
+    if (!productId && skuIds.length) {
+      const sku = await Sku.findById(skuIds[0]);
+      productId = sku ? (sku.productId as Types.ObjectId).toString() : null;
+    }
+
+    rows.push({
+      askId: (ask._id as Types.ObjectId).toString(),
+      productId,
+      qty: ask.qty,
+      sellersListedNotQuoted,
+    });
+  }
+
+  const productIds = [...new Set(rows.map((r) => r.productId).filter((id): id is string => !!id))];
+  const products = productIds.length ? await Product.find({ _id: { $in: productIds } }) : [];
+  const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+
+  return rows.map((r) => ({
+    ...r,
+    brand: r.productId ? (productById.get(r.productId)?.brand ?? '—') : '—',
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -670,6 +732,12 @@ export interface SupplyMatrixProductRow {
   technical: string;
   manufacturerName: string;
   productState: string;
+  // BR-040 — "how well does the market know this price", set by Purchase at
+  // first listing, changed afterwards only from the product master by
+  // Admin. Shown here as the product's own class (what a SKU defaults
+  // from) — the margin % it drives is a separate, still-open matter
+  // (QR-007) this row does not touch.
+  class: 'A' | 'B' | 'C';
   carryCount: number;
   listedCount: number;
 }
@@ -745,10 +813,51 @@ export async function getSupplyMatrixByProduct(): Promise<SupplyMatrixProductRow
       technical: p.technical,
       manufacturerName: manufacturer?.name ?? '—',
       productState: p.state,
+      class: p.class as 'A' | 'B' | 'C',
       carryCount: carrySellersByProduct.get(key)?.size ?? 0,
       listedCount: listedSellersByProduct.get(key)?.size ?? 0,
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Supply Matrix call list — per product, every seller who carries or has
+// listed it but hasn't quoted any of its open asks. Not a new signal:
+// `getAskSellerStates` already computes exactly this per ask; this unions it
+// across every open ask on the product, for the Supply Matrix row's
+// "expand for a call list" affordance.
+// ---------------------------------------------------------------------------
+
+export interface SupplyMatrixCallListItem {
+  sellerId: string;
+  firm: string;
+  state: 'listed' | 'carries';
+  ratePaise: number | null;
+}
+
+export async function getSupplyMatrixCallList(
+  productId: string,
+): Promise<SupplyMatrixCallListItem[]> {
+  const skus = await Sku.find({ productId });
+  const asks = await Ask.find({
+    state: { $in: ['open', 'quoted'] },
+    $or: [{ productId }, { skuId: { $in: skus.map((s) => s._id) } }],
+  });
+
+  const bySeller = new Map<string, SupplyMatrixCallListItem>();
+  for (const ask of asks) {
+    const states = await getAskSellerStates((ask._id as Types.ObjectId).toString());
+    for (const s of states) {
+      if (s.state === 'quoted' || bySeller.has(s.sellerId)) continue;
+      bySeller.set(s.sellerId, {
+        sellerId: s.sellerId,
+        firm: s.firm,
+        state: s.state,
+        ratePaise: s.ratePaise,
+      });
+    }
+  }
+  return [...bySeller.values()];
 }
 
 export interface SupplyMatrixSellerRow {
@@ -1186,12 +1295,14 @@ export interface SellerFileDto {
   area: Array<{ tehsilId: string; name: string; district: string }>;
   references: Array<{ firm: string; phone: string; whatTheySaid: string }>;
   scorecard: SellerScorecardDto;
+  performance: SellerFunnelMetrics;
   openDebits: Array<{ debitId: string; reason: string; amountPaise: number; netted: boolean }>;
   openReturnNotes: Array<{
     returnNoteId: string;
     poId: string;
     cases: number;
     daysOld: number;
+    dueDate: string;
     overdue: boolean;
   }>;
   catalogue: SellerCatalogueItem[];
@@ -1206,17 +1317,27 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
   if (!counterparty)
     throw new AppError({ code: 'NOT_FOUND', messageEn: 'Counterparty not found.' });
 
-  const [areas, references, debits, returnNotes, catalogue, listings, scorecard, openDemand] =
-    await Promise.all([
-      SellerArea.find({ sellerId: seller._id }),
-      SellerReference.find({ sellerId: seller._id }),
-      SellerDebit.find({ counterpartyId: seller._id, nettedAgainst: null }),
-      ReturnNote.find({ sellerId: seller._id, returnedAt: null }),
-      getSellerCatalogue(sellerId),
-      Listing.find({ sellerId: seller._id, state: 'live' }),
-      getSellerScorecard((seller.counterpartyId as Types.ObjectId).toString()),
-      getOpenDemandForSeller(sellerId),
-    ]);
+  const [
+    areas,
+    references,
+    debits,
+    returnNotes,
+    catalogue,
+    listings,
+    scorecard,
+    openDemand,
+    performance,
+  ] = await Promise.all([
+    SellerArea.find({ sellerId: seller._id }),
+    SellerReference.find({ sellerId: seller._id }),
+    SellerDebit.find({ counterpartyId: seller._id, nettedAgainst: null }),
+    ReturnNote.find({ sellerId: seller._id, returnedAt: null }),
+    getSellerCatalogue(sellerId),
+    Listing.find({ sellerId: seller._id, state: 'live' }),
+    getSellerScorecard((seller.counterpartyId as Types.ObjectId).toString()),
+    getOpenDemandForSeller(sellerId),
+    getSellerFunnelMetrics(sellerId),
+  ]);
 
   const tehsils = await Tehsil.find({ _id: { $in: areas.map((a) => a.tehsilId) } });
   const tehsilById = new Map(tehsils.map((t) => [(t._id as Types.ObjectId).toString(), t]));
@@ -1271,6 +1392,7 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
       whatTheySaid: r.whatTheySaid,
     })),
     scorecard,
+    performance,
     openDebits: debits.map((d) => ({
       debitId: (d._id as Types.ObjectId).toString(),
       reason: d.reason,
@@ -1284,6 +1406,7 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
         poId: r.poId.toString(),
         cases: r.cases,
         daysOld,
+        dueDate: r.dueBy.toISOString(),
         overdue: daysOld > RETURN_NOTE_WINDOW_DAYS,
       };
     }),

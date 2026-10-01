@@ -131,6 +131,19 @@ purchaseRouter.get(
   requirePermission(PERMISSIONS.DEMAND_READ),
   controller.getSupplyMatrixBySeller,
 );
+purchaseRouter.get(
+  '/staff/purchase/matrix/by-product/:productId/call-list',
+  authenticate,
+  requirePermission(PERMISSIONS.DEMAND_READ),
+  controller.getSupplyMatrixCallList,
+);
+// Today — the desk-wide roll-up of `seller-states`' "listed, not quoted" (BR-275).
+purchaseRouter.get(
+  '/staff/purchase/demand/on-board-not-quoted',
+  authenticate,
+  requirePermission(PERMISSIONS.DEMAND_READ),
+  controller.getOnBoardNotQuotedQueue,
+);
 
 // Confirmations — piles waiting on a seller's decision.
 purchaseRouter.get(
