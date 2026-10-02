@@ -815,7 +815,7 @@ export async function createPileRequest(
   buyerCounterpartyId: string,
   listingLineId: string,
   input: InquireInput,
-): Promise<{ pileId: string; enquiryId: string }> {
+): Promise<{ pileId: string; enquiryId: string | null }> {
   const { buyer, counterparty } = await requireActiveBuyer(buyerCounterpartyId);
   await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new inquiries.
   const line = await ListingLine.findById(listingLineId);
@@ -907,7 +907,10 @@ export async function createPileRequest(
     return enquiryId;
   });
 
-  return { pileId: (pile._id as Types.ObjectId).toString(), enquiryId: enquiryId.toString() };
+  return {
+    pileId: (pile._id as Types.ObjectId).toString(),
+    enquiryId: enquiryId ? enquiryId.toString() : null,
+  };
 }
 
 /** Read-only for buyers (BR-094 — staff add locations, never self-serve). */

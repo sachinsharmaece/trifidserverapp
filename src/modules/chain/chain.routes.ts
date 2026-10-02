@@ -3,6 +3,7 @@ import { authenticate } from '../../middleware/auth.js';
 import { requirePermission } from '../../middleware/requirePermission.js';
 import { requireIdempotencyKey } from '../../middleware/idempotency.js';
 import { PERMISSIONS } from '../../config/permissions.js';
+import { env } from '../../config/env.js';
 import * as controller from './chain.controller.js';
 
 export const chainRouter = Router();
@@ -41,10 +42,15 @@ chainRouter.post(
   controller.postReduceSoQuantity,
 );
 
-// API-090.
-chainRouter.get(
-  '/staff/chains/:id',
-  authenticate,
-  requirePermission(PERMISSIONS.CHAIN_READ),
-  controller.getChain,
-);
+// API-090. 2026-10-02 — pivoting away from the Chain Desk/stage tracking for
+// now (CHAIN_STAGE_TRACKING_ENABLED, config/env.ts). Gated per-route, not at
+// the router: this file also hosts the real SO/PO lifecycle actions above,
+// which stay on regardless.
+if (env.chainStageTrackingEnabled) {
+  chainRouter.get(
+    '/staff/chains/:id',
+    authenticate,
+    requirePermission(PERMISSIONS.CHAIN_READ),
+    controller.getChain,
+  );
+}

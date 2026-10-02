@@ -8,6 +8,7 @@ import { Listing } from '../../models/Listing.js';
 import { So } from '../../models/So.js';
 import { createTradeEnquiryInSession } from './enquiry.sync.js';
 import { deriveAskStatus, derivePileRequestStatus } from './enquiry.status.js';
+import { env } from '../../config/env.js';
 
 /**
  * DEC-051 — one-off, idempotent: gives every ask and pile request raised
@@ -15,8 +16,16 @@ import { deriveAskStatus, derivePileRequestStatus } from './enquiry.status.js';
  * year it was raised, and links the orders it already became. Safe to run
  * again: it only touches asks/requests whose `enquiryId` is still null, each
  * in its own transaction. `npm run backfill:enquiries`.
+ *
+ * 2026-10-02 — refuses outright while ENQUIRY_FLOW_ENABLED is off, rather
+ * than silently "succeeding" at zero rows (createTradeEnquiryInSession's own
+ * guard would otherwise make every iteration a no-op) and letting an
+ * operator believe it actually ran.
  */
 export async function backfillEnquiries(): Promise<{ asks: number; pileRequests: number }> {
+  if (!env.enquiryFlowEnabled) {
+    throw new Error('ENQUIRY_FLOW_ENABLED is off — set it to run the backfill; see config/env.ts.');
+  }
   let asks = 0;
   for (const ask of await Ask.find({ enquiryId: null }).sort({ createdAt: 1 })) {
     const staffRaise = (ask.proxyLog ?? []).find((entry) => entry.action === 'raise_ask');

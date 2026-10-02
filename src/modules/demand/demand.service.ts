@@ -99,7 +99,7 @@ export async function raiseAsk(
   buyerCounterpartyId: string,
   input: RaiseAskInput,
   options: RaiseAskOptions = {},
-): Promise<{ askId: string; enquiryId: string }> {
+): Promise<{ askId: string; enquiryId: string | null }> {
   const buyer = await requireActiveBuyer(buyerCounterpartyId);
   await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new asks.
   if (!input.skuId && !input.productId) {
@@ -185,7 +185,10 @@ export async function raiseAsk(
     });
   }
 
-  return { askId: (ask._id as Types.ObjectId).toString(), enquiryId: enquiryId.toString() };
+  return {
+    askId: (ask._id as Types.ObjectId).toString(),
+    enquiryId: enquiryId ? enquiryId.toString() : null,
+  };
 }
 
 interface MyAskItem {

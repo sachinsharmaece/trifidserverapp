@@ -26,6 +26,7 @@ import { recordFailure } from '../conduct/conduct.service.js';
 import { ensureBookAssignment, recordPulseEvent } from '../desk/sales/sales.service.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
+import { env } from '../../config/env.js';
 import type { Paise } from '../../shared/money.js';
 import {
   computeBuyerInclusiveRatePaise,
@@ -422,7 +423,13 @@ export async function createPo(
 
       so.state = 'po_released' satisfies SoState;
       await so.save({ session });
-      await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'po' } }, { session });
+      // 2026-10-02 — pivoting away from chain-stage tracking for now
+      // (CHAIN_STAGE_TRACKING_ENABLED, config/env.ts); so.state above is the
+      // real gate (chain.guards.ts never reads chain.stage), so skipping this
+      // is safe either way.
+      if (env.chainStageTrackingEnabled) {
+        await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'po' } }, { session });
+      }
 
       // CH §21.8 #14 — "Dispatch due today" (BR-174): the seller's obligation starts now.
       await enqueueNotification(
@@ -699,7 +706,11 @@ async function setSoAndPoState(
     if (!so) throw new AppError({ code: 'NOT_FOUND', messageEn: 'SO not found.' });
     so.state = soState;
     await so.save({ session });
-    await Chain.updateOne({ _id: so.chainId }, { $set: { stage } }, { session });
+    // 2026-10-02 — pivoting away from chain-stage tracking for now, see the
+    // note on the other Chain.updateOne call sites in this file.
+    if (env.chainStageTrackingEnabled) {
+      await Chain.updateOne({ _id: so.chainId }, { $set: { stage } }, { session });
+    }
     if (poId && poState) {
       await Po.updateOne({ _id: poId }, { $set: { state: poState } }, { session });
     }
@@ -828,7 +839,11 @@ async function refundSoInFullInSession(
   {
     so.state = 'supply_failed';
     await so.save({ session });
-    await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'leg1' } }, { session });
+    // 2026-10-02 — pivoting away from chain-stage tracking for now, see the
+    // note on the other Chain.updateOne call sites in this file.
+    if (env.chainStageTrackingEnabled) {
+      await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'leg1' } }, { session });
+    }
 
     if (so.askId) {
       // WF-11 — restored to standing demand, not dead-ended. Only traceable
@@ -1030,7 +1045,11 @@ export async function acceptPromotionOffer(
     so.sellerId = offer.promotedSellerId;
     so.state = 'po_released';
     await so.save({ session });
-    await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'po' } }, { session });
+    // 2026-10-02 — pivoting away from chain-stage tracking for now, see the
+    // note on the other Chain.updateOne call sites in this file.
+    if (env.chainStageTrackingEnabled) {
+      await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'po' } }, { session });
+    }
 
     // CH §21.8 #14 — the PO re-releases to the promoted seller (WORKFLOWS ST-01), and
     // his 48h dispatch clock starts now: the same "Dispatch due today" event as a first release.
