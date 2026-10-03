@@ -9,6 +9,7 @@ import {
   recordReceiptConfirmationSchema,
   releasePaymentRunSchema,
   repostBankEntrySchema,
+  sendBackPaymentRunSchema,
 } from './payment.validation.js';
 
 function ok(res: Response, req: Request, data: unknown, status = 200): void {
@@ -92,6 +93,13 @@ export async function postReleasePaymentRun(req: Request, res: Response): Promis
   const input = releasePaymentRunSchema.parse(req.body);
   await paymentService.releasePaymentRun(req.params.id as string, input, staffActor(req));
   ok(res, req, { released: true });
+}
+
+// New — 🎛 payout:release. The checker declines a built batch; nothing moves.
+export async function postSendBackPaymentRun(req: Request, res: Response): Promise<void> {
+  const { reason } = sendBackPaymentRunSchema.parse(req.body);
+  await paymentService.sendBackPaymentRun(req.params.id as string, reason, staffActor(req));
+  ok(res, req, { sentBack: true });
 }
 
 // New — BR-308 day close. 🏢 day_close:run (Accounts).

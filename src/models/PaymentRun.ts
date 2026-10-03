@@ -24,12 +24,17 @@ const paymentRunSchema = new Schema(
     releasedBy: { type: Schema.Types.ObjectId, default: null },
     releasedAt: { type: Date, default: null },
     utrs: [{ type: String }],
+    // `sent_back`: the checker declined to release it. Nothing moved; every item in it is
+    // free to go into a new batch (an item counts as "in a batch" only while a run is `built`).
     state: {
       type: String,
-      enum: ['built', 'released'],
+      enum: ['built', 'released', 'sent_back'],
       required: true,
       default: 'built',
     },
+    sentBackBy: { type: Schema.Types.ObjectId, default: null },
+    sentBackAt: { type: Date, default: null },
+    sentBackReason: { type: String, default: null },
   },
   { timestamps: true },
 );

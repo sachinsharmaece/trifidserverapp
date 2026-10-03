@@ -737,6 +737,28 @@ export async function releasePaymentRun(
   assertBuilderIsNotReleaser(run.builtBy.toString(), actor.employeeId);
 
   await withTransaction(async (session) => {
+    // Claim the run first, conditionally. A send-back or a second release landing between
+    // the read above and here matches nothing, so money can never move on a run that was
+    // declined, or move twice on one that was released.
+    const claimed = await PaymentRun.updateOne(
+      { _id: run._id, state: 'built' },
+      {
+        $set: {
+          state: 'released',
+          releasedBy: actor.employeeId,
+          releasedAt: new Date(),
+          ...(input.utrs ? { utrs: input.utrs } : {}),
+        },
+      },
+      { session },
+    );
+    if (claimed.matchedCount === 0) {
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: 'This run is no longer awaiting release — it was released or sent back.',
+      });
+    }
+
     for (let i = 0; i < run.items.length; i += 1) {
       const item = run.items[i]!;
       const utr = input.utrs?.[i];
@@ -805,12 +827,6 @@ export async function releasePaymentRun(
       }
     }
 
-    run.releasedBy = actor.employeeId as unknown as Types.ObjectId;
-    run.releasedAt = new Date();
-    run.state = 'released';
-    if (input.utrs) run.utrs = input.utrs;
-    await run.save({ session });
-
     await writeAuditLog(
       {
         actorId: actor.employeeId,
@@ -824,6 +840,56 @@ export async function releasePaymentRun(
       },
       session,
     );
+  });
+}
+
+/**
+ * The checker's "no". A built batch the releaser declines goes back, with a reason, and
+ * every item in it is free again. No money moves and no book line is written, so there is
+ * nothing to reverse — the run is simply closed as `sent_back` and stays on record.
+ * The route needs `payout:release`: it is the checker's decision, not the maker's.
+ */
+export async function sendBackPaymentRun(
+  paymentRunId: string,
+  reason: string,
+  actor: StaffActor,
+): Promise<void> {
+  assertValidObjectId(paymentRunId, 'paymentRunId');
+  const sentBackAt = new Date();
+  // One conditional write: only a run still awaiting release can be sent back, and a
+  // release racing this either wins (and this matches nothing) or loses (and is refused).
+  const result = await PaymentRun.updateOne(
+    { _id: paymentRunId, state: 'built' },
+    {
+      $set: {
+        state: 'sent_back',
+        sentBackBy: actor.employeeId,
+        sentBackAt,
+        sentBackReason: reason,
+      },
+    },
+  );
+  if (result.matchedCount === 0) {
+    const run = await PaymentRun.findById(paymentRunId);
+    if (!run) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Payment run not found.' });
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn:
+        run.state === 'released'
+          ? 'This run has already been released and cannot be sent back.'
+          : 'This run is not awaiting release.',
+    });
+  }
+  await writeAuditLog({
+    actorId: actor.employeeId,
+    actorType: 'staff',
+    entity: 'payment_run',
+    entityId: paymentRunId as unknown as Types.ObjectId,
+    field: 'state',
+    oldValue: 'built',
+    newValue: 'sent_back',
+    reason,
+    correlationId: actor.correlationId,
   });
 }
 

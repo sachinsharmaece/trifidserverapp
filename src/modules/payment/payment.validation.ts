@@ -72,6 +72,12 @@ export const releasePaymentRunSchema = z
   })
   .strict();
 
+export const sendBackPaymentRunSchema = z
+  .object({
+    reason: z.string().trim().min(1),
+  })
+  .strict();
+
 export const dayCloseSchema = z
   .object({
     statementClosingPaise: z.number().int(),
