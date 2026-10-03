@@ -77,6 +77,15 @@ paymentRouter.post(
   controller.postReleasePaymentRun,
 );
 
+// The checker's "no" — only a holder of `payout:release` (Controller). No reauth: nothing moves.
+paymentRouter.post(
+  '/staff/payment-runs/:id/send-back',
+  authenticate,
+  requirePermission(PERMISSIONS.PAYOUT_RELEASE),
+  requireIdempotencyKey(),
+  controller.postSendBackPaymentRun,
+);
+
 // New — BR-308. 🏢 Accounts.
 paymentRouter.post(
   '/staff/day-close',

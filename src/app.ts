@@ -16,6 +16,7 @@ import { pricingRouter } from './modules/pricing/pricing.routes.js';
 import { chainRouter } from './modules/chain/chain.routes.js';
 import { paymentRouter } from './modules/payment/payment.routes.js';
 import { margRouter } from './modules/marg/marg.routes.js';
+import { accountsRouter } from './modules/accounts/accounts.routes.js';
 import { dockRouter } from './modules/dock/dock.routes.js';
 import { movementRouter } from './modules/movement/movement.routes.js';
 import { listingRouter } from './modules/listing/listing.routes.js';
@@ -70,6 +71,7 @@ export function createApp(): Express {
   app.use(API_PREFIX, chainRouter);
   app.use(API_PREFIX, paymentRouter);
   app.use(API_PREFIX, margRouter);
+  app.use(API_PREFIX, accountsRouter);
   app.use(API_PREFIX, dockRouter);
   app.use(API_PREFIX, movementRouter);
   app.use(API_PREFIX, listingRouter);
