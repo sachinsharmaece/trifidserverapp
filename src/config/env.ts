@@ -20,6 +20,14 @@ function optionalNumber(name: string, fallback: number): number {
   return parsed;
 }
 
+function parseSameSite(raw: string | undefined): 'lax' | 'strict' | 'none' {
+  const value = (raw ?? 'lax').trim().toLowerCase();
+  if (value !== 'lax' && value !== 'strict' && value !== 'none') {
+    throw new Error(`Environment variable COOKIE_SAMESITE must be lax, strict or none, got "${raw}"`);
+  }
+  return value;
+}
+
 export const env = {
   nodeEnv: required('NODE_ENV', 'development'),
   port: optionalNumber('PORT', 4000),
@@ -34,6 +42,10 @@ export const env = {
   jwtAccessTtl: required('JWT_ACCESS_TTL', '15m'),
   refreshTokenTtlDays: optionalNumber('REFRESH_TOKEN_TTL_DAYS', 30),
   cookieDomain: required('COOKIE_DOMAIN', 'localhost'),
+  // 'none' is for an admin/web app on a different site than the API (e.g. a
+  // *.vercel.app front end calling an onrender.com API) — a Lax cookie is
+  // never sent on that cross-site fetch, so the refresh on page reload fails.
+  cookieSameSite: parseSameSite(process.env.COOKIE_SAMESITE),
 
   otpTtlSeconds: optionalNumber('OTP_TTL_SECONDS', 300),
   otpMaxAttempts: optionalNumber('OTP_MAX_ATTEMPTS', 5),
