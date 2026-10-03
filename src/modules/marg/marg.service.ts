@@ -36,6 +36,15 @@ export async function keyMargInvoice(
 ): Promise<{ margBillId: string; state: 'matched' | 'query' }> {
   const so = await So.findById(soId);
   if (!so) throw new AppError({ code: 'NOT_FOUND', messageEn: 'SO not found.' });
+  // B-63 — a re-submission (e.g. a duplicate invoice) was falling into the
+  // same "not yet inspected" message as a genuinely too-early attempt,
+  // which reads as a failed inspection rather than what actually happened.
+  if (so.state === 'billed_in_marg') {
+    throw new AppError({
+      code: 'DOCUMENT_ALREADY_BILLED',
+      messageEn: 'A Marg invoice has already been keyed for this SO.',
+    });
+  }
   if (so.state !== 'inspected') {
     throw new AppError({
       code: 'CHAIN_STAGE_GUARD_FAILED',

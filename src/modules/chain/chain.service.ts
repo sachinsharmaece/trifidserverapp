@@ -25,6 +25,7 @@ import { SellerDebit } from '../../models/SellerDebit.js';
 import { recordFailure } from '../conduct/conduct.service.js';
 import { ensureBookAssignment, recordPulseEvent } from '../desk/sales/sales.service.js';
 import { AppError } from '../../shared/errors.js';
+import { assertValidObjectId } from '../../shared/objectId.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { env } from '../../config/env.js';
 import type { Paise } from '../../shared/money.js';
@@ -164,6 +165,12 @@ export async function createSoInSession(
       messageEn: 'Minimum order is one box (BR-051).',
     });
   }
+
+  // B-56/57/58's CastError-to-500 class of bug — a malformed buyerId/sellerId
+  // (e.g. a human-readable SO/PO number instead of a Mongo id) must fail
+  // cleanly here, not inside Buyer.findById/Seller.findById below.
+  assertValidObjectId(input.buyerId, 'buyerId');
+  assertValidObjectId(input.sellerId, 'sellerId');
 
   const buyer = await Buyer.findById(input.buyerId).session(session);
   if (!buyer) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Buyer not found.' });
