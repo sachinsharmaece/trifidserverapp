@@ -132,7 +132,7 @@ describe('the resolver and the buyer feed, at a realistic scale', () => {
 
     const admin = await staffToken(app, 'admin');
     const sales = await staffToken(app, 'sales');
-    await seedMarginCell('B', 'Dealer', 0.05, admin.employeeId);
+    await seedMarginCell('Medium', 'Dealer', 0.05, admin.employeeId);
 
     const tag = `perf-${Date.now()}`;
     const tehsils = await Tehsil.insertMany(
@@ -146,7 +146,7 @@ describe('the resolver and the buyer feed, at a realistic scale', () => {
     const buyerTehsil = String(allIds[1234]);
 
     const sellers = await Promise.all([1, 2, 3, 4, 5, 6].map(() => newSeller(app)));
-    const skuIds = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8].map(() => createTestSku('B')));
+    const skuIds = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8].map(() => createTestSku('Medium')));
     const skus = await (await import('../src/models/Sku.js')).Sku.find({ _id: { $in: skuIds } });
     const productOf = new Map(skus.map((s) => [String(s._id), s.productId as Types.ObjectId]));
 

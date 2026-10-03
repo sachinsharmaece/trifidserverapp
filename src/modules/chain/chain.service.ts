@@ -87,7 +87,7 @@ export async function resolveSkuClass(skuId: Types.ObjectId | string): Promise<{
   if (!skuClass) {
     // BR-041 — class is defaulted down from the product when unset on the SKU.
     const product = await Product.findById(sku.productId);
-    skuClass = (product?.class as SkuClass) ?? 'B';
+    skuClass = (product?.class as SkuClass) ?? 'Medium';
   }
   return {
     skuClass,

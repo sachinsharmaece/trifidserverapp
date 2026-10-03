@@ -42,7 +42,7 @@ async function seedSoWithLine(): Promise<{
   const purchase = await staffToken(app, 'purchase');
   const buyerId = await createApprovedBuyer(app, sales.token);
   const sellerId = await createApprovedSeller(app, purchase.token);
-  const skuId = await createTestSku('B');
+  const skuId = await createTestSku('Medium');
 
   const chain = await Chain.create({
     chainNo: `C-TEST-${Date.now()}-${Math.random()}`,
@@ -64,7 +64,7 @@ async function seedSoWithLine(): Promise<{
     skuId,
     boxes: 10,
     ratePaise: 1000,
-    classAtOrder: 'B',
+    classAtOrder: 'Medium',
     marginPctAtOrder: 0.05,
     sellerNetPaise: 800,
     baseUnitsPerBoxAtOrder: 20,
@@ -85,9 +85,9 @@ async function seedLiveListingLine(): Promise<{
   const purchase = await staffToken(app, 'purchase');
   const admin = await staffToken(app, 'admin');
   const sellerId = await createApprovedSeller(app, purchase.token);
-  const skuId = await createTestSku('B');
+  const skuId = await createTestSku('Medium');
   const sku = await Sku.findById(skuId);
-  await seedMarginCell('B', 'Retailer', 0.05, admin.employeeId);
+  await seedMarginCell('Medium', 'Retailer', 0.05, admin.employeeId);
 
   const listing = await Listing.create({
     productId: sku!.productId,
@@ -115,7 +115,7 @@ async function seedLiveListingLine(): Promise<{
 async function seedPoolWithCommitment(): Promise<{ poolId: string; buyerId: string }> {
   const sales = await staffToken(app, 'sales');
   const buyerId = await createApprovedBuyer(app, sales.token);
-  const skuId = await createTestSku('B');
+  const skuId = await createTestSku('Medium');
   const buyer = await Buyer.findById(buyerId);
   const location = await BuyerLocation.create({
     buyerId,

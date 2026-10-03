@@ -42,7 +42,7 @@ async function seedFixture() {
   const otherBuyerId = await createApprovedBuyer(app, sales.token);
   const sellerId = await createApprovedSeller(app, purchase.token);
   const skuId = await createTestSku();
-  await seedMarginCell('B', 'Dealer', 0.05, admin.employeeId);
+  await seedMarginCell('Medium', 'Dealer', 0.05, admin.employeeId);
   return {
     sales,
     purchase,

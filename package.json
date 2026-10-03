@@ -17,6 +17,7 @@
     "check:dead-list": "tsx src/scripts/checkDeadNames.ts",
     "drill:restore": "tsx src/scripts/backupRestoreDrill.ts",
     "backfill:enquiries": "tsx src/scripts/backfillEnquiries.ts",
+    "migrate:productClassLabels": "tsx src/scripts/migrateProductClassLabels.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

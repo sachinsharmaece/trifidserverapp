@@ -148,11 +148,11 @@ export async function seedTradeFixture(app: Express) {
     await createApprovedBuyerAtTehsil(app, sales.token, tehsilA, 'distributor'),
   );
 
-  const skuId = await createTestSku('B');
-  await seedMarginCell('B', 'Distributor', 0.02, admin.employeeId);
-  await seedMarginCell('B', 'Dealer', 0.035, admin.employeeId);
-  await seedMarginCell('B', 'Retailer', 0.05, admin.employeeId);
-  await seedMarginCell('B', 'Trader', 0.015, admin.employeeId);
+  const skuId = await createTestSku('Medium');
+  await seedMarginCell('Medium', 'Distributor', 0.02, admin.employeeId);
+  await seedMarginCell('Medium', 'Dealer', 0.035, admin.employeeId);
+  await seedMarginCell('Medium', 'Retailer', 0.05, admin.employeeId);
+  await seedMarginCell('Medium', 'Trader', 0.015, admin.employeeId);
 
   return { admin, sales, purchase, seller, buyerDealer, buyerRetailer, buyerDistributor, skuId };
 }

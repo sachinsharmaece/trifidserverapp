@@ -19,7 +19,7 @@ import { Schema, model, type InferSchemaType } from 'mongoose';
  */
 const marginMatrixSchema = new Schema(
   {
-    class: { type: String, enum: ['A', 'B', 'C'], required: true },
+    class: { type: String, enum: ['High', 'Medium', 'Low'], required: true },
     tier: { type: String, enum: ['Distributor', 'Dealer', 'Retailer', 'Trader'], required: true },
     pct: { type: Number, required: true, min: 0 },
     creditPct: { type: Number, required: true, default: 0, min: 0 },

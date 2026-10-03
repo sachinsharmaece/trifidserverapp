@@ -309,8 +309,8 @@ describe('TD-004 — the outbox row is written INSIDE the business transaction',
     const purchase = await staffToken(app, 'purchase');
     const buyerDocId = await createApprovedBuyer(app, sales.token);
     const sellerDocId = await createApprovedSeller(app, purchase.token);
-    const skuId = await createTestSku('B');
-    await seedMarginCell('B', 'Dealer', 0.05, admin.employeeId);
+    const skuId = await createTestSku('Medium');
+    await seedMarginCell('Medium', 'Dealer', 0.05, admin.employeeId);
     const buyer = (await Buyer.findById(buyerDocId))!;
     const cpId = String(buyer.counterpartyId);
     await resetOutbox(cpId);
@@ -349,8 +349,8 @@ describe('TD-004 — the outbox row is written INSIDE the business transaction',
     const purchase = await staffToken(app, 'purchase');
     const buyerDocId = await createApprovedBuyer(app, sales.token);
     const sellerDocId = await createApprovedSeller(app, purchase.token);
-    const skuId = await createTestSku('B');
-    await seedMarginCell('B', 'Dealer', 0.05, admin.employeeId);
+    const skuId = await createTestSku('Medium');
+    await seedMarginCell('Medium', 'Dealer', 0.05, admin.employeeId);
     const cpId = String((await Buyer.findById(buyerDocId))!.counterpartyId);
     await resetOutbox(cpId);
 
@@ -752,8 +752,8 @@ describe('rate_ready — the FIRST quote landing on an ask, once', () => {
     const buyer = await newBuyer(app);
     const sellerOne = await newSeller(app);
     const sellerTwo = await newSeller(app);
-    const skuId = await createTestSku('B');
-    await seedMarginCell('B', 'Dealer', 0.035, admin.employeeId);
+    const skuId = await createTestSku('Medium');
+    await seedMarginCell('Medium', 'Dealer', 0.035, admin.employeeId);
 
     const { askId } = await demandService.raiseAsk(buyer.counterpartyId, {
       skuId,
@@ -850,7 +850,7 @@ describe('order_confirmed / payment_due / seller_requoted — the WF-05 pile pat
 describe('pool_75 / pool_triggered — inside the commit handler, at the threshold crossing', () => {
   it('75% queues pool_75 for the soft committers; the trigger queues pool_triggered (not payment_due) for the binding ones', async () => {
     const f = await seedTradeFixture(app);
-    const poolSku = await createTestSku('B');
+    const poolSku = await createTestSku('Medium');
     const productId = await productIdForSku(poolSku);
     const sellerToken = await tokenFor(f.seller);
     await createListingViaApi(app, sellerToken, {
@@ -910,8 +910,8 @@ describe('the trade chain — po_released, lifeline_granted, inspection_outcome,
     const sellerDocId = await createApprovedSeller(app, purchase.token);
     const buyerCp = String((await Buyer.findById(buyerDocId))!.counterpartyId);
     const sellerCp = String((await Seller.findById(sellerDocId))!.counterpartyId);
-    const skuId = await createTestSku('B');
-    await seedMarginCell('B', 'Dealer', 0.05, admin.employeeId);
+    const skuId = await createTestSku('Medium');
+    await seedMarginCell('Medium', 'Dealer', 0.05, admin.employeeId);
     const post = (path: string, token: string, body: object) =>
       request(app)
         .post(`/api/v1${path}`)

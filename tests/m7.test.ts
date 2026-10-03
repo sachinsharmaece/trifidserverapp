@@ -53,8 +53,8 @@ async function runToDispatchedLeg2(boxes = 10, sellerNetPaise = 40000) {
 
   const buyerId = await createApprovedBuyer(app, sales.token);
   const sellerId = await createApprovedSeller(app, purchase.token);
-  const skuId = await createTestSku('B');
-  await seedMarginCell('B', 'Dealer', 0.05, admin.employeeId);
+  const skuId = await createTestSku('Medium');
+  await seedMarginCell('Medium', 'Dealer', 0.05, admin.employeeId);
 
   const soRes = await request(app)
     .post('/api/v1/staff/so')
@@ -309,8 +309,8 @@ describe('M7 — the bulk lifeline (BR-234)', () => {
 
     const buyerId = await createApprovedBuyer(app, sales.token);
     const sellerId = await createApprovedSeller(app, purchase.token);
-    const skuId = await createTestSku('B');
-    await seedMarginCell('B', 'Dealer', 0.05, admin.employeeId);
+    const skuId = await createTestSku('Medium');
+    await seedMarginCell('Medium', 'Dealer', 0.05, admin.employeeId);
     const soRes = await request(app)
       .post('/api/v1/staff/so')
       .set('Authorization', `Bearer ${sales.token}`)
@@ -431,8 +431,8 @@ describe("M7 — return-note collection, ST-12's missing middle state", () => {
       const logistics = await staffToken(app, 'transport_logistics');
       const buyerId = await createApprovedBuyer(app, sales.token);
       const sellerId = await createApprovedSeller(app, purchase.token);
-      const skuId = await createTestSku('B');
-      await seedMarginCell('B', 'Dealer', 0.05, admin.employeeId);
+      const skuId = await createTestSku('Medium');
+      await seedMarginCell('Medium', 'Dealer', 0.05, admin.employeeId);
       const soRes = await request(app)
         .post('/api/v1/staff/so')
         .set('Authorization', `Bearer ${sales.token}`)

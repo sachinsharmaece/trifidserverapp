@@ -19,7 +19,7 @@ const skuSchema = new Schema(
     baseUnit: { type: String, enum: ['LTR', 'KG', 'PC'], required: true, immutable: true },
     unitsPerBox: { type: Number, required: true },
     baseUnitsPerBox: { type: Number, required: true },
-    class: { type: String, enum: ['A', 'B', 'C'] },
+    class: { type: String, enum: ['High', 'Medium', 'Low'] },
     active: { type: Boolean, required: true, default: true },
     deletedAt: { type: Date, default: null },
     state: { type: String, enum: ['draft', 'live'], required: true, default: 'live' },

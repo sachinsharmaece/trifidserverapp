@@ -22,7 +22,7 @@ const productSchema = new Schema(
     technical: { type: String, required: true },
     manufacturerId: { type: Schema.Types.ObjectId, ref: 'Manufacturer', required: true },
     hsn: { type: String, required: true },
-    class: { type: String, enum: ['A', 'B', 'C'], required: true, default: 'B' },
+    class: { type: String, enum: ['High', 'Medium', 'Low'], required: true, default: 'Medium' },
     active: { type: Boolean, required: true, default: true },
     deletedAt: { type: Date, default: null },
     state: { type: String, enum: ['draft', 'live'], required: true, default: 'live' },

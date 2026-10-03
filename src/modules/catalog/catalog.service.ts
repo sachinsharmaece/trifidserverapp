@@ -235,7 +235,7 @@ interface CreateProductInput {
   technical: string;
   manufacturerId: string;
   hsn: string;
-  class?: 'A' | 'B' | 'C';
+  class?: 'High' | 'Medium' | 'Low';
 }
 
 // API-024 POST.

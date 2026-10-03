@@ -214,7 +214,7 @@ describe('QA fixes — parity audit, 2026-09-27', () => {
   it('the demand and dispatch/confirmations/recovery reads carry readable names, not bare seller-id hashes', async () => {
     const purchase = await staffToken(app, 'purchase');
     const sellerId = await makeSeller(purchase.token);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const sku = await Sku.findById(skuId);
     const productId = sku!.productId.toString();
 
@@ -259,7 +259,7 @@ describe('Purchase-desk v2 — the seller catalogue', () => {
   it('adds a catalogue entry, then reads it back with pack detail and listed state', async () => {
     const purchase = await staffToken(app, 'purchase');
     const sellerId = await makeSeller(purchase.token);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const sku = await Sku.findById(skuId);
 
     const addRes = await request(app)
@@ -286,7 +286,7 @@ describe('Purchase-desk v2 — the seller catalogue', () => {
   it('upserts in place rather than duplicating a second row for the same seller/product', async () => {
     const purchase = await staffToken(app, 'purchase');
     const sellerId = await makeSeller(purchase.token);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const sku = await Sku.findById(skuId);
     const productId = sku!.productId.toString();
 
@@ -463,7 +463,7 @@ describe('Purchase-desk v2 — supply matrix', () => {
     const purchase = await staffToken(app, 'purchase');
     const sellerA = await makeSeller(purchase.token);
     const sellerB = await makeSeller(purchase.token);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const sku = await Sku.findById(skuId);
     const productId = sku!.productId.toString();
 
@@ -518,7 +518,7 @@ describe('Purchase-desk v2 — supply matrix', () => {
     const purchase = await staffToken(app, 'purchase');
     const sellerA = await makeSeller(purchase.token);
     const sellerB = await makeSeller(purchase.token);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const sku = await Sku.findById(skuId);
     const productId = sku!.productId.toString();
 
@@ -542,7 +542,7 @@ describe('Purchase-desk v2 — supply matrix', () => {
   // Class A/B/C column; `Product.class` (BR-040) already exists, this just
   // confirms it's actually joined through onto the matrix row.
   it("surfaces the product's class (BR-040) on the Product×Seller row", async () => {
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const sku = await Sku.findById(skuId);
     const productId = sku!.productId.toString();
     const { Product } = await import('../src/models/Product.js');
@@ -561,7 +561,7 @@ describe('Purchase-desk v2 — supply matrix call list', () => {
     const sellerId = await makeSeller(purchase.token);
     const seller = await Seller.findById(sellerId);
     const sellerCounterpartyId = seller!.counterpartyId.toString();
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const sku = await Sku.findById(skuId);
     const productId = sku!.productId.toString();
 
@@ -622,7 +622,7 @@ describe("Purchase-desk v2 — Today's on-board-not-quoted queue", () => {
     const sellerId = await makeSeller(purchase.token);
     const seller = await Seller.findById(sellerId);
     const sellerCounterpartyId = seller!.counterpartyId.toString();
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const sku = await Sku.findById(skuId);
     const productId = sku!.productId.toString();
 
@@ -759,7 +759,7 @@ describe('Purchase-desk v2 — B-03, exact-duplicate listing', () => {
     const sellerId = await makeSeller(purchase.token);
     const seller = await Seller.findById(sellerId);
     const sellerCounterpartyId = seller!.counterpartyId.toString();
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const sku = await Sku.findById(skuId);
     const productId = sku!.productId.toString();
 
@@ -782,7 +782,7 @@ describe('Purchase-desk v2 — B-03, exact-duplicate listing', () => {
     const sellerId = await makeSeller(purchase.token);
     const seller = await Seller.findById(sellerId);
     const sellerCounterpartyId = seller!.counterpartyId.toString();
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const sku = await Sku.findById(skuId);
     const productId = sku!.productId.toString();
 
@@ -845,7 +845,7 @@ describe('Purchase-desk v2 — the seller file', () => {
   it('combines area, scorecard, catalogue and listings into one read, no buyer field anywhere', async () => {
     const purchase = await staffToken(app, 'purchase');
     const sellerId = await makeSeller(purchase.token);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const sku = await Sku.findById(skuId);
     const productId = sku!.productId.toString();
 
@@ -869,7 +869,7 @@ describe('Purchase-desk v2 — per-ask seller states and the product funnel', ()
     const sellerId = await makeSeller(purchase.token);
     const seller = await Seller.findById(sellerId);
     const sellerCounterpartyId = seller!.counterpartyId.toString();
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const sku = await Sku.findById(skuId);
     const productId = sku!.productId.toString();
 
@@ -948,7 +948,7 @@ describe('Purchase-desk v2 — per-ask seller states and the product funnel', ()
 describe('Purchase-desk v2 — active demand list shows product, not a hash', () => {
   it('resolves brand/technical/manufacturerName for an ask, not just its raw ids', async () => {
     const sales = await staffToken(app, 'sales');
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const sku = await Sku.findById(skuId);
     const productId = sku!.productId.toString();
     const { Product } = await import('../src/models/Product.js');
@@ -978,7 +978,7 @@ describe('Purchase-desk v2 — confirmations: the gap signal and the chase log',
   it('computes the gap from what buyers piled against what the listing line said, and logs a chase against the pile', async () => {
     const purchase = await staffToken(app, 'purchase');
     const sellerId = await makeSeller(purchase.token);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const sku = await Sku.findById(skuId);
     const productId = sku!.productId.toString();
 

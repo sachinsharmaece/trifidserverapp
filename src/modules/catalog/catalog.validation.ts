@@ -42,7 +42,7 @@ export const createProductSchema = z
       .string()
       .min(1)
       .refine(isValidHsn, { message: 'HSN must be 6 or 8 digits starting with 3808.' }),
-    class: z.enum(['A', 'B', 'C']).optional(),
+    class: z.enum(['High', 'Medium', 'Low']).optional(),
   })
   .strict();
 
@@ -66,7 +66,7 @@ export const updateProductSchema = z
       .min(1)
       .refine(isValidHsn, { message: 'HSN must be 6 or 8 digits starting with 3808.' })
       .optional(),
-    class: z.enum(['A', 'B', 'C']).optional(),
+    class: z.enum(['High', 'Medium', 'Low']).optional(),
     active: z.boolean().optional(),
     // Purchase-desk v2 — Admin's confirm action, same one-direction shape.
     state: z.literal('live').optional(),

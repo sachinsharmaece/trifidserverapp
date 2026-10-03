@@ -44,7 +44,7 @@ async function seedFixture() {
   const buyerId = await createApprovedBuyer(app, sales.token);
   const sellerId = await createApprovedSeller(app, purchase.token);
   const skuId = await createTestSku();
-  await seedMarginCell('B', 'Dealer', MARGIN_PCT, admin.employeeId);
+  await seedMarginCell('Medium', 'Dealer', MARGIN_PCT, admin.employeeId);
 
   return { admin, sales, purchase, accounts, controller, logistics, buyerId, sellerId, skuId };
 }
@@ -311,12 +311,12 @@ describe('QR-007 — the pricing engine refuses to price when a matrix cell is m
   it('MARGIN_CELL_MISSING when no cell exists for the class/tier', async () => {
     const sales = await staffToken(app, 'sales');
     const purchase = await staffToken(app, 'purchase');
-    // Distributor / class C — a combination no other test in this file seeds
-    // a margin cell for, so this genuinely exercises the missing-cell path
-    // even though tests share one database.
+    // Distributor / class Low — a combination no other test in this file
+    // seeds a margin cell for, so this genuinely exercises the missing-cell
+    // path even though tests share one database.
     const buyerId = await createApprovedBuyer(app, sales.token, 'distributor');
     const sellerId = await createApprovedSeller(app, purchase.token);
-    const skuId = await createTestSku('C');
+    const skuId = await createTestSku('Low');
 
     const res = await request(app)
       .post('/api/v1/staff/so')
@@ -344,7 +344,7 @@ describe('BR-045 — five (+2) frozen values: a placed order never re-derives it
     const lineBefore = await SoLine.findOne({ soId });
 
     // Raise the matrix cell's margin sharply, forward-dated to "now".
-    await seedMarginCell('B', 'Dealer', 0.5, fixture.admin.employeeId);
+    await seedMarginCell('Medium', 'Dealer', 0.5, fixture.admin.employeeId);
 
     const soAfter = await So.findById(soId);
     const lineAfter = await SoLine.findOne({ soId });

@@ -206,7 +206,7 @@ describe('Buyer-side proxy actions (Sales desk)', () => {
     const sales = await staffToken(app, 'sales');
     const buyerId = await createApprovedBuyer(app, sales.token);
     const buyerCounterpartyId = await counterpartyIdOfBuyer(buyerId);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
 
     const res = await request(app)
       .post('/api/v1/staff/proxy/buyer/asks')
@@ -248,7 +248,7 @@ describe('Buyer-side proxy actions (Sales desk)', () => {
     const sales = await staffToken(app, 'sales');
     const buyerId = await createApprovedBuyer(app, sales.token);
     const buyerCounterpartyId = await counterpartyIdOfBuyer(buyerId);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
 
     const res = await request(app)
       .post('/api/v1/staff/proxy/buyer/asks')
@@ -269,7 +269,7 @@ describe('Seller-side proxy actions (Purchase desk)', () => {
     const purchase = await staffToken(app, 'purchase');
     const sellerId = await createApprovedSeller(app, purchase.token);
     const sellerCounterpartyId = await counterpartyIdOfSeller(sellerId);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const { Sku } = await import('../src/models/Sku.js');
     const sku = await Sku.findById(skuId);
     const productId = (sku!.productId as unknown as string).toString();
@@ -334,7 +334,7 @@ describe('Seller-side proxy actions (Purchase desk)', () => {
     const sales = await staffToken(app, 'sales');
     const sellerId = await createApprovedSeller(app, purchase.token);
     const sellerCounterpartyId = await counterpartyIdOfSeller(sellerId);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const { Sku } = await import('../src/models/Sku.js');
     const sku = await Sku.findById(skuId);
     const productId = (sku!.productId as unknown as string).toString();
@@ -369,7 +369,7 @@ describe('Wall sweep, extended — a proxy response matches its counterparty-ini
     const buyerId = await createApprovedBuyer(app, sales.token);
     const sellerId = await createApprovedSeller(app, purchase.token);
     const buyerCounterpartyId = await counterpartyIdOfBuyer(buyerId);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
 
     const world = {
       identities: {
@@ -401,7 +401,7 @@ describe('Wall sweep, extended — a proxy response matches its counterparty-ini
     const buyerId = await createApprovedBuyer(app, sales.token);
     const sellerId = await createApprovedSeller(app, purchase.token);
     const sellerCounterpartyId = await counterpartyIdOfSeller(sellerId);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const { Sku } = await import('../src/models/Sku.js');
     const sku = await Sku.findById(skuId);
     const productId = (sku!.productId as unknown as string).toString();
@@ -450,8 +450,8 @@ describe("Accounts' fourth gate genuinely blocks payment (client decision B)", (
 
     const buyerId = await createApprovedBuyer(app, sales.token);
     const sellerId = await createApprovedSeller(app, purchase.token);
-    const skuId = await createTestSku('B');
-    await seedMarginCell('B', 'Dealer', 0.05, admin.employeeId);
+    const skuId = await createTestSku('Medium');
+    await seedMarginCell('Medium', 'Dealer', 0.05, admin.employeeId);
 
     const soRes = await request(app)
       .post('/api/v1/staff/so')
@@ -567,8 +567,8 @@ describe("Accounts' fourth gate genuinely blocks payment (client decision B)", (
 
     const buyerId = await createApprovedBuyer(app, sales.token);
     const sellerId = await createApprovedSeller(app, purchase.token);
-    const skuId = await createTestSku('B');
-    await seedMarginCell('B', 'Dealer', 0.05, admin.employeeId);
+    const skuId = await createTestSku('Medium');
+    await seedMarginCell('Medium', 'Dealer', 0.05, admin.employeeId);
 
     const soRes = await request(app)
       .post('/api/v1/staff/so')

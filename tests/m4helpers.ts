@@ -151,8 +151,10 @@ export async function createApprovedSeller(app: Express, purchaseToken: string):
   return (seller!._id as unknown as string).toString();
 }
 
-/** A single SKU under a fresh product/manufacturer, class B by default, 20 base units per box. */
-export async function createTestSku(skuClass: 'A' | 'B' | 'C' = 'B'): Promise<string> {
+/** A single SKU under a fresh product/manufacturer, class Medium by default, 20 base units per box. */
+export async function createTestSku(
+  skuClass: 'High' | 'Medium' | 'Low' = 'Medium',
+): Promise<string> {
   const manufacturer = await Manufacturer.create({ name: `Mfr ${Date.now()}-${Math.random()}` });
   const product = await Product.create({
     brand: `Brand ${Date.now()}`,
@@ -173,7 +175,7 @@ export async function createTestSku(skuClass: 'A' | 'B' | 'C' = 'B'): Promise<st
 
 /** Seeds a margin matrix cell effective immediately, for the given class/tier. */
 export async function seedMarginCell(
-  skuClass: 'A' | 'B' | 'C',
+  skuClass: 'High' | 'Medium' | 'Low',
   tier: 'Distributor' | 'Dealer' | 'Retailer' | 'Trader',
   pct: number,
   createdBy: string,

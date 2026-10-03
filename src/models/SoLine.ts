@@ -30,7 +30,7 @@ const soLineSchema = new Schema(
     // permitted value kept as an explicit, self-documenting column rather
     // than silently dropping the guard the open question required.
     rateBasis: { type: String, enum: ['per_base_unit'], required: true, default: 'per_base_unit' },
-    classAtOrder: { type: String, enum: ['A', 'B', 'C'], required: true },
+    classAtOrder: { type: String, enum: ['High', 'Medium', 'Low'], required: true },
     marginPctAtOrder: { type: Number, required: true, min: 0 },
     sellerNetPaise: { type: Number, required: true },
     staffPriceId: { type: Schema.Types.ObjectId, ref: 'RateOverride', default: null },

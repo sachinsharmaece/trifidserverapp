@@ -39,8 +39,8 @@ async function seedPaidSo() {
 
   const buyerId = await createApprovedBuyer(app, sales.token);
   const sellerId = await createApprovedSeller(app, purchase.token);
-  const skuId = await createTestSku('B');
-  await seedMarginCell('B', 'Dealer', 0.05, admin.employeeId);
+  const skuId = await createTestSku('Medium');
+  await seedMarginCell('Medium', 'Dealer', 0.05, admin.employeeId);
 
   const soRes = await request(app)
     .post('/api/v1/staff/so')

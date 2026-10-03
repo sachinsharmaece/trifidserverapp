@@ -131,8 +131,8 @@ describe('Enquiry journey — a Sales call, through quotes, to a linked chain', 
     const sellerId = await createApprovedSeller(app, purchase.token);
     const buyerCounterpartyId = await counterpartyOf('buyer', buyerId);
     const sellerCounterpartyId = await counterpartyOf('seller', sellerId);
-    const skuId = await createTestSku('B');
-    await seedMarginCell('B', 'Dealer', 0.035, admin.employeeId);
+    const skuId = await createTestSku('Medium');
+    await seedMarginCell('Medium', 'Dealer', 0.035, admin.employeeId);
 
     const world: WallWorld = {
       identities: {
@@ -268,8 +268,8 @@ describe('Enquiry journey — a listed rate taken, confirmed on a Purchase call,
     const buyerId = await createApprovedBuyerAtTehsil(app, sales.token, tehsil, 'dealer');
     const sellerCounterpartyId = await counterpartyOf('seller', sellerId);
     const buyerCounterpartyId = await counterpartyOf('buyer', buyerId);
-    const skuId = await createTestSku('B');
-    await seedMarginCell('B', 'Dealer', 0.035, admin.employeeId);
+    const skuId = await createTestSku('Medium');
+    await seedMarginCell('Medium', 'Dealer', 0.035, admin.employeeId);
     const productId = (await Sku.findById(skuId))!.productId!.toString();
 
     const world: WallWorld = {
@@ -430,7 +430,7 @@ describe('Pre-trade enquiries (DEC-052)', () => {
     // He registers; the product is added — Sales converts the SAME enquiry to an ask.
     const buyerId = await createApprovedBuyer(app, sales.token);
     const buyerCounterpartyId = await counterpartyOf('buyer', buyerId);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const convertRes = await post(sales.token, `/staff/enquiries/${enquiryId}/convert`, {
       buyerCounterpartyId,
       skuId,
@@ -516,8 +516,8 @@ describe('Pre-trade enquiries (DEC-052)', () => {
 
     const buyerId = await createApprovedBuyer(app, sales.token);
     const buyerCounterpartyId = await counterpartyOf('buyer', buyerId);
-    const skuId = await createTestSku('B');
-    await seedMarginCell('B', 'Dealer', 0.035, admin.employeeId);
+    const skuId = await createTestSku('Medium');
+    await seedMarginCell('Medium', 'Dealer', 0.035, admin.employeeId);
     const catalogueEnquiry = (
       await post(sales.token, '/staff/enquiries', {
         buyerCounterpartyId,
@@ -591,7 +591,7 @@ describe('Seller enquiries (DEC-052) — the Purchase-side mirror of pre-trade',
     const sales = await staffToken(app, 'sales');
     const sellerId = await createApprovedSeller(app, purchase.token);
     const sellerCounterpartyId = await counterpartyOf('seller', sellerId);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
 
     const createRes = await post(purchase.token, '/staff/enquiries', {
       party: 'seller',
@@ -808,7 +808,7 @@ describe('Backfill — enquiries for asks raised before the record existed', () 
   it('creates one enquiry per legacy ask, links its orders, and is idempotent', async () => {
     const sales = await staffToken(app, 'sales');
     const buyerId = await createApprovedBuyer(app, sales.token);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
     const legacy = await Ask.create({
       buyerId,
       skuId,

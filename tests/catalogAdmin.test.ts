@@ -37,7 +37,7 @@ describe('Admin catalog management — products', () => {
         technical: 'Test Technical',
         manufacturerId,
         hsn: '38089199',
-        class: 'B',
+        class: 'Medium',
       });
     expect(createRes.status).toBe(201);
     const { productId } = createRes.body.data as { productId: string };
@@ -61,7 +61,7 @@ describe('Admin catalog management — products', () => {
       brand: 'Test Brand',
       technical: 'Test Technical',
       hsn: '38089199',
-      class: 'B',
+      class: 'Medium',
       active: true,
     });
   });
