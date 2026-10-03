@@ -11,6 +11,7 @@ import {
   proxyDeclineAskSchema,
   proxyPromotionDecisionSchema,
   proxyCreateListingSchema,
+  proxyPostQuoteSchema,
   proxyConfirmPileSchema,
   proxyPileDecisionSchema,
   proxyListBuyerAsksQuerySchema,
@@ -82,6 +83,13 @@ proxyRouter.post(
   ...sellerCall,
   validateBody(proxyCreateListingSchema),
   controller.postSellerCallListing,
+);
+// Maps to API-045.
+proxyRouter.post(
+  '/staff/proxy/seller/asks/:id/quotes',
+  ...sellerCall,
+  validateBody(proxyPostQuoteSchema),
+  controller.postSellerCallQuote,
 );
 // Maps to API-049.
 proxyRouter.post(

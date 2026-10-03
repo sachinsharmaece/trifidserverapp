@@ -329,6 +329,80 @@ describe('Seller-side proxy actions (Purchase desk)', () => {
     expect(floorRes.body.error.code).toBe('SHELF_LIFE_FLOOR');
   });
 
+  it('"raise quote" on an ask produces the same quote a seller would post — gap codes, hold, call note on the Quote', async () => {
+    const purchase = await staffToken(app, 'purchase');
+    const sales = await staffToken(app, 'sales');
+    const buyerId = await createApprovedBuyer(app, sales.token);
+    const buyerCounterpartyId = await counterpartyIdOfBuyer(buyerId);
+    const sellerId = await createApprovedSeller(app, purchase.token);
+    const sellerCounterpartyId = await counterpartyIdOfSeller(sellerId);
+    const skuId = await createTestSku('Medium');
+
+    const askRes = await request(app)
+      .post('/api/v1/staff/proxy/buyer/asks')
+      .set('Authorization', `Bearer ${sales.token}`)
+      .send({
+        buyerCounterpartyId,
+        skuId,
+        qty: 10,
+        conditionRequirement: { expiryBand: 'over12' },
+        callNote: 'Buyer wants 10 boxes.',
+      });
+    const { askId } = askRes.body.data as { askId: string };
+
+    const quoteBody = {
+      sellerCounterpartyId,
+      ratePaiseForIndore: 40000,
+      qtyAvailable: 4,
+      expiryBand: 'over12',
+      expiryExact: '12/2099',
+      deliveryBand: '48h',
+      provenance: 'company',
+      daysToIndore: 2,
+    };
+
+    // The call note is mandatory.
+    const noNote = await request(app)
+      .post(`/api/v1/staff/proxy/seller/asks/${askId}/quotes`)
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send(quoteBody);
+    expect(noNote.status).toBe(400);
+
+    const res = await request(app)
+      .post(`/api/v1/staff/proxy/seller/asks/${askId}/quotes`)
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({ ...quoteBody, callNote: 'Seller called, can send 4 boxes at 400.' });
+    expect(res.status).toBe(201);
+    const { quoteId } = res.body.data as { quoteId: string };
+
+    const { Quote } = await import('../src/models/Quote.js');
+    const quote = await Quote.findById(quoteId);
+    expect(quote!.sellerId!.toString()).toBe(sellerId);
+    expect(quote!.gapCodes).toContain('short_on_quantity'); // BR-273 — 4 < 10.
+    expect(quote!.proxyLog).toHaveLength(1);
+    expect(quote!.proxyLog![0]!.action).toBe('post_quote');
+    expect(quote!.proxyLog![0]!.actingStaffId!.toString()).toBe(purchase.employeeId);
+
+    const ask = await Ask.findById(askId);
+    expect(ask!.state).toBe('quoted');
+    expect(ask!.holdExpiresAt).toBeTruthy(); // BR-126
+
+    // BR-105 — "My stock" without a batch is refused exactly as on the seller's own screen.
+    const noBatch = await request(app)
+      .post(`/api/v1/staff/proxy/seller/asks/${askId}/quotes`)
+      .set('Authorization', `Bearer ${purchase.token}`)
+      .send({ ...quoteBody, provenance: 'auth', callNote: 'note' });
+    expect(noBatch.status).toBe(422);
+    expect(noBatch.body.error.code).toBe('BATCH_REQUIRED');
+
+    // Sales cannot raise it.
+    const salesRes = await request(app)
+      .post(`/api/v1/staff/proxy/seller/asks/${askId}/quotes`)
+      .set('Authorization', `Bearer ${sales.token}`)
+      .send({ ...quoteBody, callNote: 'note' });
+    expect(salesRes.status).toBe(403);
+  });
+
   it('desk boundary — Sales cannot log a seller call', async () => {
     const purchase = await staffToken(app, 'purchase');
     const sales = await staffToken(app, 'sales');

@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { Ask } from '../../models/Ask.js';
 import { So } from '../../models/So.js';
 import { Pile } from '../../models/Pile.js';
+import { Quote } from '../../models/Quote.js';
 import { ListingLine } from '../../models/ListingLine.js';
 import { appendProxyLog } from '../../shared/proxyLog.js';
 import * as demandService from '../demand/demand.service.js';
@@ -13,6 +14,7 @@ import type {
   proxyDeclineAskSchema,
   proxyPromotionDecisionSchema,
   proxyCreateListingSchema,
+  proxyPostQuoteSchema,
   proxyConfirmPileSchema,
   proxyPileDecisionSchema,
   proxyListBuyerAsksQuerySchema,
@@ -146,6 +148,26 @@ export async function postSellerCallListing(req: Request, res: Response): Promis
       }),
     ),
   );
+  ok(res, req, result, 201);
+}
+
+// Maps to API-045 — Purchase raises a quote on the seller's behalf from the
+// Demand screen. Same postQuote as the seller's own POST /asks/:id/quotes, so
+// BR-105 (batch), BR-124, BR-126 (hold) and BR-273 (gap codes) all still apply.
+export async function postSellerCallQuote(req: Request, res: Response): Promise<void> {
+  const { sellerCounterpartyId, callNote, ...input } = req.body as z.infer<
+    typeof proxyPostQuoteSchema
+  >;
+  const result = await demandService.postQuote(
+    sellerCounterpartyId,
+    req.params.id as string,
+    input,
+  );
+  await appendProxyLog(Quote, result.quoteId, {
+    actingStaffId: actingStaffId(req),
+    callNote,
+    action: 'post_quote',
+  });
   ok(res, req, result, 201);
 }
 

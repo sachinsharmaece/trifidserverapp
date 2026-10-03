@@ -39,6 +39,10 @@ export async function getProductAnalysis(req: Request, res: Response): Promise<v
   ok(res, req, await purchaseService.getProductAnalysis(req.params.productId as string));
 }
 
+export async function getProductSellers(req: Request, res: Response): Promise<void> {
+  ok(res, req, await purchaseService.getProductSellers(req.params.productId as string));
+}
+
 export async function getAbsorptionQueue(req: Request, res: Response): Promise<void> {
   ok(res, req, await purchaseService.getAbsorptionQueue());
 }
