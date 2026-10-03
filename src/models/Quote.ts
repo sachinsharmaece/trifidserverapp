@@ -1,5 +1,6 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { DELIVERY_BANDS, EXPIRY_BANDS, PROVENANCE_VALUES } from './ListingLine.js';
+import { proxyLogField } from '../shared/proxyLog.js';
 
 /**
  * ENT-20 `quote`. BR-124 — net rate FOR Indore, no inbound freight field.
@@ -37,6 +38,8 @@ const quoteSchema = new Schema(
     rank: { type: Number, default: null },
     ofCount: { type: Number, default: null },
     gapCodes: [{ type: String, enum: QUOTE_GAP_CODES }],
+    // Staff-assisted enquiries — present only when Purchase raised this quote on a phone call.
+    proxyLog: proxyLogField,
   },
   { timestamps: true },
 );

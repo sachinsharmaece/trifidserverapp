@@ -3,6 +3,7 @@ import {
   raiseAskSchema,
   acceptAskFillSchema,
   confirmPileSchema,
+  postQuoteSchema,
 } from '../demand/demand.validation.js';
 import { createListingSchema } from '../listing/listing.validation.js';
 
@@ -40,7 +41,12 @@ export const proxyCreateListingSchema = createListingSchema.extend({
   callNote: callNoteSchema,
 });
 
-export const proxyConfirmPileSchema = confirmPileSchema.extend({
+export const proxyPostQuoteSchema = postQuoteSchema.extend({
+  sellerCounterpartyId: z.string().min(1),
+  callNote: callNoteSchema,
+});
+
+export const proxyConfirmPileSchema =confirmPileSchema.extend({
   sellerCounterpartyId: z.string().min(1),
   callNote: callNoteSchema,
 });

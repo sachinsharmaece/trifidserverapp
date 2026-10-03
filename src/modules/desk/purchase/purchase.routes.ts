@@ -54,6 +54,12 @@ purchaseRouter.get(
   requirePermission(PERMISSIONS.DEMAND_READ),
   controller.getProductAnalysis,
 );
+purchaseRouter.get(
+  '/staff/purchase/products/:productId/sellers',
+  authenticate,
+  requirePermission(PERMISSIONS.DEMAND_READ),
+  controller.getProductSellers,
+);
 // IC-06 — the response never carries the cap or the two source rates.
 purchaseRouter.get(
   '/staff/purchase/absorption',

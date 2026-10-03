@@ -221,6 +221,7 @@ export async function getQuoteGapsForAsk(askId: string): Promise<AskQuoteGap[]> 
 
 export interface AskSellerStateItem {
   sellerId: string;
+  sellerCounterpartyId: string;
   firm: string;
   state: 'quoted' | 'listed' | 'carries';
   ratePaise: number | null;
@@ -286,6 +287,7 @@ export async function getAskSellerStates(askId: string): Promise<AskSellerStateI
           : 'carries';
       return {
         sellerId,
+        sellerCounterpartyId: (s.counterpartyId as Types.ObjectId).toString(),
         firm: firmByCounterpartyId.get((s.counterpartyId as Types.ObjectId).toString()) ?? '—',
         state,
         ratePaise: quote ? quote.ratePaiseForIndore : (rateBySellerId.get(sellerId) ?? null),
@@ -426,6 +428,87 @@ export async function getProductAnalysis(productId: string): Promise<ProductAnal
     rejectionSplit: { accepted, rejected },
     rejectionSplitSumsCorrectly: accepted + rejected === inspectedBoxesOrdered,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Product sellers — every seller who carries a product or has a live listing
+// on one of its packs, for the Products → detail page. A seller's own rate is
+// routine Purchase business (BR-066); open interest stays boxes-only (BR-069).
+// ---------------------------------------------------------------------------
+
+export interface ProductSellerListedPack {
+  packLabel: string;
+  ratePaise: number;
+  qty: number;
+  expiryBand: string;
+  deliveryBand: string;
+  moqExact: number;
+}
+
+export interface ProductSellerItem {
+  sellerId: string;
+  firm: string;
+  state: 'listed' | 'carries';
+  listings: ProductSellerListedPack[];
+}
+
+export async function getProductSellers(productId: string): Promise<ProductSellerItem[]> {
+  const skus = await Sku.find({ productId });
+  const packLabelBySkuId = new Map(
+    skus.map((s) => [(s._id as Types.ObjectId).toString(), s.packLabel as string]),
+  );
+  const lines = skus.length ? await ListingLine.find({ skuId: { $in: skus.map((s) => s._id) } }) : [];
+  const liveListings = lines.length
+    ? await Listing.find({ _id: { $in: lines.map((l) => l.listingId) }, state: 'live' })
+    : [];
+  const listingById = new Map(liveListings.map((l) => [(l._id as Types.ObjectId).toString(), l]));
+
+  const listingsBySeller = new Map<string, ProductSellerListedPack[]>();
+  for (const line of lines) {
+    const listing = listingById.get((line.listingId as Types.ObjectId).toString());
+    if (!listing) continue;
+    const key = (listing.sellerId as Types.ObjectId).toString();
+    const packs = listingsBySeller.get(key) ?? [];
+    packs.push({
+      packLabel: packLabelBySkuId.get((line.skuId as Types.ObjectId).toString()) ?? '—',
+      ratePaise: line.ratePaise,
+      qty: line.qty,
+      expiryBand: line.expiryBand,
+      deliveryBand: line.deliveryBand,
+      moqExact: line.moqExact,
+    });
+    listingsBySeller.set(key, packs);
+  }
+
+  const entries = await SellerCatalogueEntry.find({ productId });
+  const sellerIds = new Set([
+    ...listingsBySeller.keys(),
+    ...entries.map((e) => (e.sellerId as Types.ObjectId).toString()),
+  ]);
+  if (sellerIds.size === 0) return [];
+
+  const sellers = await Seller.find({ _id: { $in: [...sellerIds] } });
+  const counterparties = await Counterparty.find({
+    _id: { $in: sellers.map((s) => s.counterpartyId) },
+  });
+  const firmByCounterpartyId = new Map(
+    counterparties.map((c) => [(c._id as Types.ObjectId).toString(), c.firm ?? '—']),
+  );
+
+  return sellers
+    .map((s) => {
+      const sellerId = (s._id as Types.ObjectId).toString();
+      const listings = (listingsBySeller.get(sellerId) ?? []).sort(
+        (a, b) => a.ratePaise - b.ratePaise,
+      );
+      return {
+        sellerId,
+        firm: firmByCounterpartyId.get((s.counterpartyId as Types.ObjectId).toString()) ?? '—',
+        state: listings.length > 0 ? ('listed' as const) : ('carries' as const),
+        listings,
+      };
+    })
+    .sort((a, b) => (a.state === b.state ? a.firm.localeCompare(b.firm) : a.state === 'listed' ? -1 : 1));
 }
 
 // ---------------------------------------------------------------------------
