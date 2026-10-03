@@ -124,6 +124,15 @@ export async function createEnquiry(
       },
       { channel: 'sales_call', raisedBy: ctx.employeeId },
     );
+    // This whole module is unreachable while ENQUIRY_FLOW_ENABLED is off (the
+    // router that calls it is unmounted) — this guard is defensive, not the
+    // primary one, same as enquiry.sync.ts's own early returns.
+    if (!enquiryId) {
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: 'The enquiry flow is currently disabled.',
+      });
+    }
     await appendProxyLog(Ask, askId, {
       actingStaffId: ctx.employeeId,
       callNote: input.callNote,

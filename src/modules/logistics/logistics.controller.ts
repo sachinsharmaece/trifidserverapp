@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import * as logisticsService from './logistics.service.js';
 import { createTransporterSchema, createConsolidationSchema } from './logistics.validation.js';
+import { assertValidObjectId } from '../../shared/objectId.js';
 
 function ok(res: Response, req: Request, data: unknown, status = 200): void {
   res.status(status).json({ data, meta: { correlationId: req.correlationId } });
@@ -21,7 +22,9 @@ export async function getTransporters(req: Request, res: Response): Promise<void
 }
 
 export async function postGoodsIn(req: Request, res: Response): Promise<void> {
-  ok(res, req, await logisticsService.recordGoodsIn(req.params.poId as string, actorOf(req)), 201);
+  const poId = req.params.poId as string;
+  assertValidObjectId(poId, 'poId'); // B-57 — was an uncaught CastError (bare 500).
+  ok(res, req, await logisticsService.recordGoodsIn(poId, actorOf(req)), 201);
 }
 
 export async function getHubPosition(req: Request, res: Response): Promise<void> {

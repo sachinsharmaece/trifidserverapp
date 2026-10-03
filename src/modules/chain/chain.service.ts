@@ -25,7 +25,9 @@ import { SellerDebit } from '../../models/SellerDebit.js';
 import { recordFailure } from '../conduct/conduct.service.js';
 import { ensureBookAssignment, recordPulseEvent } from '../desk/sales/sales.service.js';
 import { AppError } from '../../shared/errors.js';
+import { assertValidObjectId } from '../../shared/objectId.js';
 import { writeAuditLog } from '../../shared/audit.js';
+import { env } from '../../config/env.js';
 import type { Paise } from '../../shared/money.js';
 import {
   computeBuyerInclusiveRatePaise,
@@ -85,7 +87,7 @@ export async function resolveSkuClass(skuId: Types.ObjectId | string): Promise<{
   if (!skuClass) {
     // BR-041 — class is defaulted down from the product when unset on the SKU.
     const product = await Product.findById(sku.productId);
-    skuClass = (product?.class as SkuClass) ?? 'B';
+    skuClass = (product?.class as SkuClass) ?? 'Medium';
   }
   return {
     skuClass,
@@ -163,6 +165,12 @@ export async function createSoInSession(
       messageEn: 'Minimum order is one box (BR-051).',
     });
   }
+
+  // B-56/57/58's CastError-to-500 class of bug — a malformed buyerId/sellerId
+  // (e.g. a human-readable SO/PO number instead of a Mongo id) must fail
+  // cleanly here, not inside Buyer.findById/Seller.findById below.
+  assertValidObjectId(input.buyerId, 'buyerId');
+  assertValidObjectId(input.sellerId, 'sellerId');
 
   const buyer = await Buyer.findById(input.buyerId).session(session);
   if (!buyer) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Buyer not found.' });
@@ -422,7 +430,13 @@ export async function createPo(
 
       so.state = 'po_released' satisfies SoState;
       await so.save({ session });
-      await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'po' } }, { session });
+      // 2026-10-02 — pivoting away from chain-stage tracking for now
+      // (CHAIN_STAGE_TRACKING_ENABLED, config/env.ts); so.state above is the
+      // real gate (chain.guards.ts never reads chain.stage), so skipping this
+      // is safe either way.
+      if (env.chainStageTrackingEnabled) {
+        await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'po' } }, { session });
+      }
 
       // CH §21.8 #14 — "Dispatch due today" (BR-174): the seller's obligation starts now.
       await enqueueNotification(
@@ -699,7 +713,11 @@ async function setSoAndPoState(
     if (!so) throw new AppError({ code: 'NOT_FOUND', messageEn: 'SO not found.' });
     so.state = soState;
     await so.save({ session });
-    await Chain.updateOne({ _id: so.chainId }, { $set: { stage } }, { session });
+    // 2026-10-02 — pivoting away from chain-stage tracking for now, see the
+    // note on the other Chain.updateOne call sites in this file.
+    if (env.chainStageTrackingEnabled) {
+      await Chain.updateOne({ _id: so.chainId }, { $set: { stage } }, { session });
+    }
     if (poId && poState) {
       await Po.updateOne({ _id: poId }, { $set: { state: poState } }, { session });
     }
@@ -828,7 +846,11 @@ async function refundSoInFullInSession(
   {
     so.state = 'supply_failed';
     await so.save({ session });
-    await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'leg1' } }, { session });
+    // 2026-10-02 — pivoting away from chain-stage tracking for now, see the
+    // note on the other Chain.updateOne call sites in this file.
+    if (env.chainStageTrackingEnabled) {
+      await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'leg1' } }, { session });
+    }
 
     if (so.askId) {
       // WF-11 — restored to standing demand, not dead-ended. Only traceable
@@ -1030,7 +1052,11 @@ export async function acceptPromotionOffer(
     so.sellerId = offer.promotedSellerId;
     so.state = 'po_released';
     await so.save({ session });
-    await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'po' } }, { session });
+    // 2026-10-02 — pivoting away from chain-stage tracking for now, see the
+    // note on the other Chain.updateOne call sites in this file.
+    if (env.chainStageTrackingEnabled) {
+      await Chain.updateOne({ _id: so.chainId }, { $set: { stage: 'po' } }, { session });
+    }
 
     // CH §21.8 #14 — the PO re-releases to the promoted seller (WORKFLOWS ST-01), and
     // his 48h dispatch clock starts now: the same "Dispatch due today" event as a first release.

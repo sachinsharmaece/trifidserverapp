@@ -62,10 +62,11 @@ export async function postRepostBankEntry(req: Request, res: Response): Promise<
   ok(res, req, result, 201);
 }
 
-// API-086 — 🏢 payout:read.
+// API-086 — 🏢 payout:read. B-59 — now carries which gate is blocking, not
+// just a bare boolean.
 export async function getPoPayable(req: Request, res: Response): Promise<void> {
-  const payable = await paymentService.isPoPayable(req.params.id as string);
-  ok(res, req, { payable });
+  const result = await paymentService.getPoPayabilityDetail(req.params.id as string);
+  ok(res, req, result);
 }
 
 // Staff-assisted enquiries, decision (B) — 🏢 accounts:confirm_receipt.

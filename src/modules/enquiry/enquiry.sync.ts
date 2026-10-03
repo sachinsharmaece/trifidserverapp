@@ -5,6 +5,7 @@ import { Pile, type PileDecision } from '../../models/Pile.js';
 import { PileRequest } from '../../models/PileRequest.js';
 import { nextEnquiryNo } from '../chain/chain.numbering.js';
 import { AppError } from '../../shared/errors.js';
+import { env } from '../../config/env.js';
 import {
   deriveAskStatus,
   derivePileRequestStatus,
@@ -39,12 +40,18 @@ interface NewTradeEnquiry {
   pileRequestId?: Id;
 }
 
-/** Creates the enquiry for a just-created ask or pile request, with its first status. */
+/**
+ * Creates the enquiry for a just-created ask or pile request, with its first
+ * status. 2026-10-02 — pivoting away from Enquiry for now (ENQUIRY_FLOW_ENABLED,
+ * see config/env.ts); `null` when off, which every caller already treats as
+ * "no enquiry" since `Ask.enquiryId`/`PileRequest.enquiryId` are nullable.
+ */
 export async function createTradeEnquiryInSession(
   input: NewTradeEnquiry,
   status: EnquiryStatusFields,
   session: ClientSession,
-): Promise<Types.ObjectId> {
+): Promise<Types.ObjectId | null> {
+  if (!env.enquiryFlowEnabled) return null;
   const [enquiry] = await Enquiry.create(
     [
       {
@@ -83,7 +90,12 @@ export async function convertPreTradeEnquiryInSession(
   status: EnquiryStatusFields,
   now: Date,
   session: ClientSession,
-): Promise<Types.ObjectId> {
+): Promise<Types.ObjectId | null> {
+  // 2026-10-02 — same pivot-away flag as createTradeEnquiryInSession. A
+  // pre-trade enquiryId can only exist if the (now-unmounted) enquiry router
+  // created one while the feature was on, so this is defensive, not the
+  // primary guard.
+  if (!env.enquiryFlowEnabled) return null;
   const enquiry = await Enquiry.findById(enquiryId).session(session);
   if (!enquiry) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Enquiry not found.' });
   if (enquiry.kind !== 'pre_trade' || enquiry.status !== 'pre_trade') {
@@ -152,6 +164,7 @@ export async function syncEnquiryForAsk(
   session: ClientSession,
   now: Date = new Date(),
 ): Promise<void> {
+  if (!env.enquiryFlowEnabled) return;
   const enquiry = await Enquiry.findOne({ askId }).session(session);
   if (!enquiry) return;
   const ask = await Ask.findById(askId).session(session);
@@ -170,6 +183,7 @@ export async function syncEnquiriesForPile(
   session: ClientSession,
   now: Date = new Date(),
 ): Promise<void> {
+  if (!env.enquiryFlowEnabled) return;
   const pile = await Pile.findById(pileId).session(session);
   if (!pile) return;
   const requestIds = (await PileRequest.find({ pileId }, { _id: 1 }).session(session)).map(

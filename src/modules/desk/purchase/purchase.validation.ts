@@ -47,7 +47,7 @@ export const draftProductSchema = z
       .string()
       .min(1)
       .refine(isValidHsn, { message: 'HSN must be 6 or 8 digits starting with 3808.' }),
-    class: z.enum(['A', 'B', 'C']).optional(),
+    class: z.enum(['High', 'Medium', 'Low']).optional(),
   })
   .strict();
 

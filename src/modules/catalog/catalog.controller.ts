@@ -65,7 +65,7 @@ export async function postProduct(req: Request, res: Response): Promise<void> {
       technical: string;
       manufacturerId: string;
       hsn: string;
-      class?: 'A' | 'B' | 'C';
+      class?: 'High' | 'Medium' | 'Low';
     },
   );
   ok(res, req, result, 201);
@@ -79,7 +79,7 @@ export async function patchProduct(req: Request, res: Response): Promise<void> {
       technical?: string;
       manufacturerId?: string;
       hsn?: string;
-      class?: 'A' | 'B' | 'C';
+      class?: 'High' | 'Medium' | 'Low';
       active?: boolean;
       state?: 'live';
     },

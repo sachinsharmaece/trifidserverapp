@@ -26,6 +26,7 @@ import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { addHours, addWorkingHours } from '../../shared/clock.js';
 import { assertCounterpartyActive } from '../../shared/guards.js';
+import { assertValidObjectId } from '../../shared/objectId.js';
 import type { Paise } from '../../shared/money.js';
 import { createSo } from '../chain/chain.service.js';
 import { computeBuyerFacingRatePaise } from '../listing/listing.service.js';
@@ -43,15 +44,25 @@ const HEAD_START_HOURS = 4; // BR-122, working hours only (BR-231).
 const BUYER_HOLD_HOURS = 24; // BR-126.
 const UNDO_WINDOW_MS = 5000; // BR-137.
 
+// B-58 — "Buyers only." read as a permission error even when the real cause
+// was a wrong/mistyped id (vs. a genuine non-buyer calling this). Distinct
+// NOT_FOUND message for that case; malformed ids are now caught before they
+// ever reach Mongoose.
 async function requireActiveBuyer(buyerCounterpartyId: string) {
+  assertValidObjectId(buyerCounterpartyId, 'buyerCounterpartyId');
   const buyer = await Buyer.findOne({ counterpartyId: buyerCounterpartyId });
-  if (!buyer) throw new AppError({ code: 'PERMISSION_DENIED', messageEn: 'Buyers only.' });
+  if (!buyer) {
+    throw new AppError({ code: 'NOT_FOUND', messageEn: 'No buyer found for that id.' });
+  }
   return buyer;
 }
 
 async function requireActiveSeller(sellerCounterpartyId: string) {
+  assertValidObjectId(sellerCounterpartyId, 'sellerCounterpartyId');
   const seller = await Seller.findOne({ counterpartyId: sellerCounterpartyId });
-  if (!seller) throw new AppError({ code: 'PERMISSION_DENIED', messageEn: 'Sellers only.' });
+  if (!seller) {
+    throw new AppError({ code: 'NOT_FOUND', messageEn: 'No seller found for that id.' });
+  }
   return seller;
 }
 
@@ -99,7 +110,7 @@ export async function raiseAsk(
   buyerCounterpartyId: string,
   input: RaiseAskInput,
   options: RaiseAskOptions = {},
-): Promise<{ askId: string; enquiryId: string }> {
+): Promise<{ askId: string; enquiryId: string | null }> {
   const buyer = await requireActiveBuyer(buyerCounterpartyId);
   await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new asks.
   if (!input.skuId && !input.productId) {
@@ -185,7 +196,10 @@ export async function raiseAsk(
     });
   }
 
-  return { askId: (ask._id as Types.ObjectId).toString(), enquiryId: enquiryId.toString() };
+  return {
+    askId: (ask._id as Types.ObjectId).toString(),
+    enquiryId: enquiryId ? enquiryId.toString() : null,
+  };
 }
 
 interface MyAskItem {

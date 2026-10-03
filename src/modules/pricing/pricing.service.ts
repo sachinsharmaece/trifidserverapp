@@ -3,7 +3,7 @@ import { MarginMatrix, type MarginMatrixDocument } from '../../models/MarginMatr
 import { AppError } from '../../shared/errors.js';
 import type { HydratedDocument } from 'mongoose';
 
-export type SkuClass = 'A' | 'B' | 'C';
+export type SkuClass = 'High' | 'Medium' | 'Low';
 export type RateTier = 'Distributor' | 'Dealer' | 'Retailer' | 'Trader';
 
 /**
@@ -58,7 +58,7 @@ function toDto(doc: HydratedDocument<MarginMatrixDocument>): MarginMatrixCellDto
 export async function getCurrentMarginMatrix(
   asOf: Date = new Date(),
 ): Promise<MarginMatrixCellDto[]> {
-  const classes: SkuClass[] = ['A', 'B', 'C'];
+  const classes: SkuClass[] = ['High', 'Medium', 'Low'];
   const tiers: RateTier[] = ['Distributor', 'Dealer', 'Retailer', 'Trader'];
   const results: MarginMatrixCellDto[] = [];
   for (const skuClass of classes) {

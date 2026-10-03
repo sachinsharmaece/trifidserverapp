@@ -106,11 +106,11 @@ async function seed(): Promise<void> {
       technical: 'Glyphosate 41% SL',
       manufacturerId: (manufacturer!._id as { toString(): string }).toString(),
       hsn: '38089910',
-      class: 'B',
+      class: 'Medium',
     });
     product = await Product.findOne({ brand: 'CropShield', manufacturerId: manufacturer!._id });
   }
-  console.log(`Product: CropShield / Glyphosate 41% SL, class B (${product!._id})`);
+  console.log(`Product: CropShield / Glyphosate 41% SL, class Medium (${product!._id})`);
 
   const existingSkus = await Sku.find({ productId: product!._id });
   let sku1 = existingSkus.find((s) => s.packLabel === '1 Litre');
@@ -126,9 +126,9 @@ async function seed(): Promise<void> {
   }
   console.log(`SKUs: 1 Litre (${sku1!._id}), 5 Litre (${sku5!._id})`);
 
-  // --- Margin matrix, class B, all four tiers --------------------------
-  const classBCells = await MarginMatrix.find({ class: 'B' });
-  if (classBCells.length === 0) {
+  // --- Margin matrix, class Medium, all four tiers ----------------------
+  const classMediumCells = await MarginMatrix.find({ class: 'Medium' });
+  if (classMediumCells.length === 0) {
     const effectiveFrom = new Date('2026-01-01T00:00:00.000Z');
     for (const [tier, pct] of [
       ['Distributor', 0.02],
@@ -136,13 +136,16 @@ async function seed(): Promise<void> {
       ['Retailer', 0.05],
       ['Trader', 0.015],
     ] as const) {
-      await pricingService.setMarginMatrixCell({ class: 'B', tier, pct, effectiveFrom }, actor);
+      await pricingService.setMarginMatrixCell(
+        { class: 'Medium', tier, pct, effectiveFrom },
+        actor,
+      );
     }
     console.log(
-      'Margin matrix: class B seeded (Distributor 2%, Dealer 3.5%, Retailer 5%, Trader 1.5%)',
+      'Margin matrix: class Medium seeded (Distributor 2%, Dealer 3.5%, Retailer 5%, Trader 1.5%)',
     );
   } else {
-    console.log('Margin matrix: class B already has cells, left as-is');
+    console.log('Margin matrix: class Medium already has cells, left as-is');
   }
 
   // --- Buyer ------------------------------------------------------------
@@ -389,7 +392,7 @@ async function seed(): Promise<void> {
   }
   const seller2 = await Seller.findOne({ counterpartyId: seller2Counterparty!._id });
 
-  // --- Second product, class A ----------------------------------------------
+  // --- Second product, class High ---------------------------------------
   let manufacturer2 = await Manufacturer.findOne({ name: 'Malwa Bio Sciences' });
   if (!manufacturer2) {
     await catalogService.createManufacturer('Malwa Bio Sciences');
@@ -403,11 +406,11 @@ async function seed(): Promise<void> {
       technical: 'Azadirachtin 1% EC',
       manufacturerId: (manufacturer2!._id as { toString(): string }).toString(),
       hsn: '38089940',
-      class: 'A',
+      class: 'High',
     });
     product2 = await Product.findOne({ brand: 'NeemGuard', manufacturerId: manufacturer2!._id });
   }
-  console.log(`Product: NeemGuard / Azadirachtin 1% EC, class A (${product2!._id})`);
+  console.log(`Product: NeemGuard / Azadirachtin 1% EC, class High (${product2!._id})`);
 
   const existingSkus2 = await Sku.find({ productId: product2!._id });
   let sku2 = existingSkus2.find((s) => s.packLabel === '500ml');
@@ -420,9 +423,9 @@ async function seed(): Promise<void> {
   }
   console.log(`SKU: 500ml (${sku2!._id})`);
 
-  // --- Margin matrix, class A, all four tiers --------------------------------
-  const classACells = await MarginMatrix.find({ class: 'A' });
-  if (classACells.length === 0) {
+  // --- Margin matrix, class High, all four tiers ------------------------
+  const classHighCells = await MarginMatrix.find({ class: 'High' });
+  if (classHighCells.length === 0) {
     const effectiveFrom = new Date('2026-01-01T00:00:00.000Z');
     for (const [tier, pct] of [
       ['Distributor', 0.018],
@@ -430,13 +433,13 @@ async function seed(): Promise<void> {
       ['Retailer', 0.045],
       ['Trader', 0.012],
     ] as const) {
-      await pricingService.setMarginMatrixCell({ class: 'A', tier, pct, effectiveFrom }, actor);
+      await pricingService.setMarginMatrixCell({ class: 'High', tier, pct, effectiveFrom }, actor);
     }
     console.log(
-      'Margin matrix: class A seeded (Distributor 1.8%, Dealer 3%, Retailer 4.5%, Trader 1.2%)',
+      'Margin matrix: class High seeded (Distributor 1.8%, Dealer 3%, Retailer 4.5%, Trader 1.2%)',
     );
   } else {
-    console.log('Margin matrix: class A already has cells, left as-is');
+    console.log('Margin matrix: class High already has cells, left as-is');
   }
 
   // --- More listings, for feed variety ---------------------------------------

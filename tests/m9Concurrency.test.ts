@@ -172,7 +172,7 @@ describe('the bulk lifeline (BR-234) under concurrency', () => {
     const buyerId = await createApprovedBuyer(app, sales.token);
     const sellerId = await createApprovedSeller(app, purchase.token);
     const skuId = await createTestSku();
-    await seedMarginCell('B', 'Dealer', 0.05, admin.employeeId);
+    await seedMarginCell('Medium', 'Dealer', 0.05, admin.employeeId);
     const so = await request(app)
       .post('/api/v1/staff/so')
       .set('Authorization', `Bearer ${sales.token}`)

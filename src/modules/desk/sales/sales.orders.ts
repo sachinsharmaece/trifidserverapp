@@ -20,6 +20,12 @@ export type ChainStage = 'so' | 'payment' | 'po' | 'leg1' | 'marg' | 'dispatch' 
 export interface SalesOrderRow {
   soId: string;
   soNo: string;
+  // B-56 — the only screens that ever showed staff a chain id (Chain Desk,
+  // Enquiry detail, this row's own now-commented-out progress strip) are
+  // unrouted per the 2026-10-02 Enquiry/Chain pivot, leaving the "Record a
+  // dispatch" screen's required Chain ID field with no surviving source.
+  // Surfaced here since this is the one order-list screen still reachable.
+  chainId: string;
   buyerId: string;
   buyerCounterpartyId: string;
   buyerFirm: string;
@@ -110,6 +116,7 @@ export async function listOrders(filters: {
     return {
       soId: soIdStr,
       soNo: so.soNo,
+      chainId: (so.chainId as Types.ObjectId).toString(),
       buyerId: buyerIdStr,
       buyerCounterpartyId: buyer ? (buyer.counterpartyId as Types.ObjectId).toString() : '',
       buyerFirm: firm,

@@ -54,6 +54,12 @@ export const env = {
   // NODE_ENV === 'production' (see validate.ts) — unset/false by default.
   disableInputValidation: process.env.DISABLE_INPUT_VALIDATION === 'true',
 
+  // 2026-10-02 — pivoting away from both features for now, reversibly: flip
+  // either back to 'true' to restore it, no code changes needed. Unset/false
+  // by default (off). See CHANGELOG.md's 2026-10-02 entry.
+  enquiryFlowEnabled: process.env.ENQUIRY_FLOW_ENABLED === 'true',
+  chainStageTrackingEnabled: process.env.CHAIN_STAGE_TRACKING_ENABLED === 'true',
+
   staffPasswordMinLength: optionalNumber('STAFF_PASSWORD_MIN_LENGTH', 12),
   staffLockoutAttempts: optionalNumber('STAFF_LOCKOUT_ATTEMPTS', 5),
   staffIdleTimeoutMinutes: optionalNumber('STAFF_IDLE_TIMEOUT_MINUTES', 30),

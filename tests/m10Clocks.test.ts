@@ -45,8 +45,8 @@ async function fixture() {
   const sales = await staffToken(app, 'sales');
   const purchase = await staffToken(app, 'purchase');
   const tehsil = await createTehsil();
-  const skuId = await createTestSku('B');
-  await seedMarginCell('B', 'Dealer', 0.02, admin.employeeId);
+  const skuId = await createTestSku('Medium');
+  await seedMarginCell('Medium', 'Dealer', 0.02, admin.employeeId);
   const actor = { employeeId: admin.employeeId, correlationId: corr() };
   const buyerId = await createApprovedBuyerAtTehsil(app, sales.token, tehsil, 'dealer');
   const sellerId = await createApprovedSellerAtTehsils(app, purchase.token, [tehsil]);

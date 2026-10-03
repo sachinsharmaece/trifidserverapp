@@ -65,8 +65,8 @@ describe('M6 — WF-11 the fallback/absorption workflow', () => {
     const actor = { employeeId: admin.employeeId, correlationId: idemKey() };
 
     const tehsil = await createTehsil();
-    const skuId = await createTestSku('B');
-    await seedMarginCell('B', 'Dealer', 0.02, admin.employeeId);
+    const skuId = await createTestSku('Medium');
+    await seedMarginCell('Medium', 'Dealer', 0.02, admin.employeeId);
 
     const buyerId = await createApprovedBuyerAtTehsil(app, sales.token, tehsil, 'dealer');
     const failedSellerId = await createApprovedSellerAtTehsils(app, purchase.token, [tehsil]);
@@ -173,8 +173,8 @@ describe('M6 — WF-11 the fallback/absorption workflow', () => {
     const actor = { employeeId: admin.employeeId, correlationId: idemKey() };
 
     const tehsil = await createTehsil();
-    const skuId = await createTestSku('B');
-    await seedMarginCell('B', 'Dealer', 0.02, admin.employeeId);
+    const skuId = await createTestSku('Medium');
+    await seedMarginCell('Medium', 'Dealer', 0.02, admin.employeeId);
 
     const buyerId = await createApprovedBuyerAtTehsil(app, sales.token, tehsil, 'dealer');
     const failedSellerId = await createApprovedSellerAtTehsils(app, purchase.token, [tehsil]);
@@ -213,8 +213,8 @@ describe('M6 — WF-11 the fallback/absorption workflow', () => {
     const actor = { employeeId: admin.employeeId, correlationId: idemKey() };
 
     const tehsil = await createTehsil();
-    const skuId = await createTestSku('B');
-    await seedMarginCell('B', 'Dealer', 0.02, admin.employeeId);
+    const skuId = await createTestSku('Medium');
+    await seedMarginCell('Medium', 'Dealer', 0.02, admin.employeeId);
 
     const buyerId = await createApprovedBuyerAtTehsil(app, sales.token, tehsil, 'dealer');
     const failedSellerId = await createApprovedSellerAtTehsils(app, purchase.token, [tehsil]);
@@ -416,7 +416,7 @@ describe('M6 — the wall, re-verified for Purchase and Sales', () => {
     const tehsil = await createTehsil();
     const buyerId = await createApprovedBuyerAtTehsil(app, buyerToken.token, tehsil, 'dealer');
     const buyer = await Buyer.findById(buyerId);
-    const skuId = await createTestSku('B');
+    const skuId = await createTestSku('Medium');
 
     await salesService.requestMsp((buyer!.counterpartyId as unknown as string).toString(), {
       skuId,

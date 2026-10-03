@@ -14,6 +14,7 @@ import { Seller } from '../../models/Seller.js';
 import { BankDetail } from '../../models/BankDetail.js';
 import { ReceiptConfirmation } from '../../models/ReceiptConfirmation.js';
 import { AppError } from '../../shared/errors.js';
+import { assertValidObjectId } from '../../shared/objectId.js';
 import type { Paise } from '../../shared/money.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { writeChainEvent } from '../chain/chain.events.js';
@@ -508,28 +509,56 @@ async function isReceiptConfirmed(poId: Types.ObjectId): Promise<boolean> {
   return Boolean(confirmation?.productMatches && confirmation?.qtyMatches);
 }
 
-/** API-086's `isPayable` — the three chain gates, and derived from bank_detail (IC-08/INV-17). */
-export async function isPoPayable(poId: string): Promise<boolean> {
+// B-59 — the five gates below used to collapse into one boolean with no way
+// to tell staff which one was blocking. Named here so a reader can match
+// each to the Accounts gate it stands for.
+export type PoPayabilityReason =
+  | 'PO_NOT_ACTIVE'
+  | 'INSPECTION_PENDING'
+  | 'SELLER_BILL_NOT_BOOKED'
+  | 'ACCOUNTS_CONFIRMATION_PENDING'
+  | 'BANK_DETAIL_NOT_PAYABLE';
+
+/**
+ * Same checks as `isPoPayable` below, but names the first gate that failed
+ * instead of discarding it. `isPoPayable` keeps its existing boolean
+ * contract (m7.test.ts/staffAssistedEnquiries.test.ts both assert on it
+ * directly) and is now a thin wrapper over this.
+ */
+export async function getPoPayabilityDetail(
+  poId: string,
+): Promise<{ payable: boolean; reason?: PoPayabilityReason }> {
+  assertValidObjectId(poId, 'poId'); // same CastError-to-500 class as B-56/57/58.
   const po = await Po.findById(poId);
-  if (!po) return false;
-  if (po.failed || po.paid || po.hold) return false;
+  if (!po || po.failed || po.paid || po.hold) return { payable: false, reason: 'PO_NOT_ACTIVE' };
 
   const inspection = await Inspection.findOne({ poId: po._id });
-  if (!inspection || !inspection.signedAt) return false;
+  if (!inspection || !inspection.signedAt) return { payable: false, reason: 'INSPECTION_PENDING' };
 
   const sellerBill = await SellerBill.findOne({ poId: po._id });
-  if (!sellerBill || !sellerBill.booked) return false;
+  if (!sellerBill || !sellerBill.booked) {
+    return { payable: false, reason: 'SELLER_BILL_NOT_BOOKED' };
+  }
 
-  if (!(await isReceiptConfirmed(po._id as Types.ObjectId))) return false;
+  if (!(await isReceiptConfirmed(po._id as Types.ObjectId))) {
+    return { payable: false, reason: 'ACCOUNTS_CONFIRMATION_PENDING' };
+  }
 
   const bankDetail = await getLatestBankDetail(
     (await Seller.findById(po.sellerId))?.counterpartyId ?? po.sellerId,
   );
-  if (!bankDetail) return false;
-  return isBankDetailPayable({
-    verifiedAt: bankDetail.verifiedAt ?? null,
-    effectiveFrom: bankDetail.effectiveFrom ?? null,
-  });
+  const bankOk =
+    !!bankDetail &&
+    isBankDetailPayable({
+      verifiedAt: bankDetail.verifiedAt ?? null,
+      effectiveFrom: bankDetail.effectiveFrom ?? null,
+    });
+  return bankOk ? { payable: true } : { payable: false, reason: 'BANK_DETAIL_NOT_PAYABLE' };
+}
+
+/** API-086's `isPayable` — the three chain gates, and derived from bank_detail (IC-08/INV-17). */
+export async function isPoPayable(poId: string): Promise<boolean> {
+  return (await getPoPayabilityDetail(poId)).payable;
 }
 
 /**
@@ -540,6 +569,7 @@ export async function isPoPayable(poId: string): Promise<boolean> {
  * same code path whether the caller is this module or a future one.
  */
 export async function assertPoPayableForRelease(poId: string): Promise<void> {
+  assertValidObjectId(poId, 'poId');
   const po = await Po.findById(poId);
   if (!po || po.failed || po.paid || po.hold) {
     throw new AppError({

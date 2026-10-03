@@ -737,7 +737,7 @@ export interface SupplyMatrixProductRow {
   // Admin. Shown here as the product's own class (what a SKU defaults
   // from) — the margin % it drives is a separate, still-open matter
   // (QR-007) this row does not touch.
-  class: 'A' | 'B' | 'C';
+  class: 'High' | 'Medium' | 'Low';
   carryCount: number;
   listedCount: number;
 }
@@ -813,7 +813,7 @@ export async function getSupplyMatrixByProduct(): Promise<SupplyMatrixProductRow
       technical: p.technical,
       manufacturerName: manufacturer?.name ?? '—',
       productState: p.state,
-      class: p.class as 'A' | 'B' | 'C',
+      class: p.class as 'High' | 'Medium' | 'Low',
       carryCount: carrySellersByProduct.get(key)?.size ?? 0,
       listedCount: listedSellersByProduct.get(key)?.size ?? 0,
     };
