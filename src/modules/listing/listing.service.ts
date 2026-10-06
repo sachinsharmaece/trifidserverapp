@@ -25,6 +25,7 @@ import { Pile } from '../../models/Pile.js';
 import { PileRequest } from '../../models/PileRequest.js';
 import { BuyerLocation } from '../../models/BuyerLocation.js';
 import { AppError } from '../../shared/errors.js';
+import { assertValidObjectId } from '../../shared/objectId.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { assertCounterpartyActive } from '../../shared/guards.js';
 import type { Paise } from '../../shared/money.js';
@@ -589,6 +590,33 @@ async function findVisibleLines(
       line,
       listing: listingById.get((line.listingId as Types.ObjectId).toString())!,
     }));
+}
+
+export type { PricedVisibleLine };
+
+/**
+ * Staff read for the Sales call workspace ("On the board for him", client item 16).
+ * Exactly the lines this buyer's own feed would show him, priced as he sees them
+ * (BR-060) — driven by what reaches his tehsil, never by what he has ordered.
+ *
+ * Keyed on `Buyer._id` because that is the id the Sales screens hold; it resolves the
+ * counterparty itself so the one resolver (`findVisibleLines`) is called here too and
+ * nowhere else. A buyer with no tehsil yet has nothing reaching him.
+ */
+export async function listPricedLinesVisibleToBuyerDoc(
+  buyerDocId: string,
+): Promise<PricedVisibleLine[]> {
+  assertValidObjectId(buyerDocId, 'buyerId');
+  const buyer = await Buyer.findById(buyerDocId);
+  if (!buyer) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Buyer not found.' });
+  if (!buyer.tehsilId) return [];
+  const counterparty = await Counterparty.findById(buyer.counterpartyId);
+  const visible = await findVisibleLines(
+    (buyer.tehsilId as Types.ObjectId).toString(),
+    (buyer.counterpartyId as Types.ObjectId).toString(),
+    counterparty?.gstin ?? '',
+  );
+  return priceForBuyer(buyer, visible);
 }
 
 interface BuyerConditionTagsDto {

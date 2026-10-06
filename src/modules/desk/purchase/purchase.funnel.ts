@@ -9,7 +9,9 @@ import { Movement } from '../../../models/Movement.js';
 import { Inspection } from '../../../models/Inspection.js';
 import { SellerDebit } from '../../../models/SellerDebit.js';
 import { SellerCatalogueEntry } from '../../../models/SellerCatalogueEntry.js';
+import { Sku } from '../../../models/Sku.js';
 import { addDays, istDateKey } from '../../../shared/clock.js';
+import { asksOnProductsFilter } from '../../demand/askScope.js';
 
 /**
  * BR-275 (CH §18.11) — "Purchase is measured on leaks closed, not orders
@@ -273,8 +275,16 @@ export async function getSellerFunnelMetrics(
 
   const catalogueEntries = await SellerCatalogueEntry.find({ sellerId });
   const productIds = catalogueEntries.map((e) => e.productId);
+  // A pack-specific ask has no productId of its own — match it through its SKU too.
+  const catalogueSkus = productIds.length ? await Sku.find({ productId: { $in: productIds } }) : [];
   const asks = productIds.length
-    ? await Ask.find({ productId: { $in: productIds }, createdAt: { $gte: from } })
+    ? await Ask.find({
+        ...asksOnProductsFilter(
+          productIds,
+          catalogueSkus.map((s) => s._id as Types.ObjectId),
+        ),
+        createdAt: { $gte: from },
+      })
     : [];
   const quotes = asks.length
     ? await Quote.find({ askId: { $in: asks.map((a) => a._id) }, sellerId })

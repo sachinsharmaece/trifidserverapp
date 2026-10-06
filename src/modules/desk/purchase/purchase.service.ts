@@ -457,7 +457,9 @@ export async function getProductSellers(productId: string): Promise<ProductSelle
   const packLabelBySkuId = new Map(
     skus.map((s) => [(s._id as Types.ObjectId).toString(), s.packLabel as string]),
   );
-  const lines = skus.length ? await ListingLine.find({ skuId: { $in: skus.map((s) => s._id) } }) : [];
+  const lines = skus.length
+    ? await ListingLine.find({ skuId: { $in: skus.map((s) => s._id) } })
+    : [];
   const liveListings = lines.length
     ? await Listing.find({ _id: { $in: lines.map((l) => l.listingId) }, state: 'live' })
     : [];
@@ -508,7 +510,9 @@ export async function getProductSellers(productId: string): Promise<ProductSelle
         listings,
       };
     })
-    .sort((a, b) => (a.state === b.state ? a.firm.localeCompare(b.firm) : a.state === 'listed' ? -1 : 1));
+    .sort((a, b) =>
+      a.state === b.state ? a.firm.localeCompare(b.firm) : a.state === 'listed' ? -1 : 1,
+    );
 }
 
 // ---------------------------------------------------------------------------

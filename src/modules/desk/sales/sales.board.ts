@@ -10,7 +10,11 @@ import { Ask } from '../../../models/Ask.js';
 import { Buyer } from '../../../models/Buyer.js';
 import { Counterparty } from '../../../models/Counterparty.js';
 import { AppError } from '../../../shared/errors.js';
-import { computeBuyerFacingRatePaise } from '../../listing/listing.service.js';
+import {
+  computeBuyerFacingRatePaise,
+  listPricedLinesVisibleToBuyerDoc,
+} from '../../listing/listing.service.js';
+import { asksOnProductFilter } from '../../demand/askScope.js';
 import type { RateTier } from '../../pricing/pricing.service.js';
 
 const DEFAULT_TIER: RateTier = 'Retailer';
@@ -146,6 +150,84 @@ export async function getBoardProducts(): Promise<BoardProductRow[]> {
   return rows;
 }
 
+/**
+ * One row of "On the board for him" — a product with every priced line that reaches the
+ * buyer's tehsil. Audience-typed for Sales: no seller identity (no sellerId, firm or area),
+ * and the rate is the buyer's own tier rate (BR-060), never a seller's net.
+ */
+export interface BoardForBuyerLine {
+  listingLineId: string;
+  skuId: string;
+  packLabel: string;
+  ratePaise: number;
+  qty: number;
+  expiryBand: string;
+  moqBand: string;
+  deliveryBand: string;
+  provenance: string;
+}
+
+export interface BoardForBuyerProduct {
+  productId: string;
+  brand: string;
+  technicalName: string;
+  manufacturerName: string;
+  ladder: BoardForBuyerLine[];
+}
+
+/**
+ * GET /staff/sales/buyers/:buyerId/board — client item 16: "On the board for him" is
+ * everything available for him to buy, which is what reaches his tehsil. It is never his
+ * order history, so a buyer with no orders sees the same board as one with a hundred.
+ */
+export async function getBoardForBuyer(buyerDocId: string): Promise<BoardForBuyerProduct[]> {
+  const priced = await listPricedLinesVisibleToBuyerDoc(buyerDocId);
+  if (priced.length === 0) return [];
+
+  const productIds = [
+    ...new Set(priced.map((p) => (p.listing.productId as Types.ObjectId).toString())),
+  ];
+  const products = await Product.find({ _id: { $in: productIds } });
+  const manufacturers = await Manufacturer.find({
+    _id: { $in: products.map((p) => p.manufacturerId) },
+  });
+  const manufacturerNameById = new Map(
+    manufacturers.map((m) => [(m._id as Types.ObjectId).toString(), m.name]),
+  );
+  const skus = await Sku.find({ _id: { $in: priced.map((p) => p.line.skuId) } });
+  const packLabelBySkuId = new Map(
+    skus.map((s) => [(s._id as Types.ObjectId).toString(), s.packLabel]),
+  );
+
+  const rows: BoardForBuyerProduct[] = [];
+  for (const product of products) {
+    const productId = (product._id as Types.ObjectId).toString();
+    const ladder: BoardForBuyerLine[] = priced
+      .filter((p) => (p.listing.productId as Types.ObjectId).toString() === productId)
+      .map((p) => ({
+        listingLineId: (p.line._id as Types.ObjectId).toString(),
+        skuId: (p.line.skuId as Types.ObjectId).toString(),
+        packLabel: packLabelBySkuId.get((p.line.skuId as Types.ObjectId).toString()) ?? '',
+        ratePaise: p.buyerRatePaise,
+        qty: p.line.qty,
+        expiryBand: p.line.expiryBand,
+        moqBand: p.line.moqBand,
+        deliveryBand: p.line.deliveryBand,
+        provenance: p.line.provenance,
+      }))
+      .sort((a, b) => a.ratePaise - b.ratePaise);
+    rows.push({
+      productId,
+      brand: product.brand,
+      technicalName: product.technical,
+      manufacturerName:
+        manufacturerNameById.get((product.manufacturerId as Types.ObjectId).toString()) ?? '',
+      ladder,
+    });
+  }
+  return rows.sort((a, b) => a.ladder[0]!.ratePaise - b.ladder[0]!.ratePaise);
+}
+
 export interface BoardLadderLine {
   listingLineId: string;
   skuId: string;
@@ -230,8 +312,9 @@ export async function getBoardProduct(
   }
   ladder.sort((a, b) => (a.ratePaise ?? Infinity) - (b.ratePaise ?? Infinity));
 
+  // A pack-specific ask has no productId of its own — match it through its SKU too.
   const openAsks = await Ask.find({
-    productId: product._id,
+    ...asksOnProductFilter(product._id as Types.ObjectId, skuIds as Types.ObjectId[]),
     state: { $nin: ['lapsed', 'withdrawn'] },
   }).sort({ createdAt: -1 });
 
