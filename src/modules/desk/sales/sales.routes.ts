@@ -101,6 +101,12 @@ salesRouter.get(
   controller.getBuyerFile,
 );
 salesRouter.get(
+  '/staff/sales/buyers/:buyerId/board',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getBuyerBoard,
+);
+salesRouter.get(
   '/staff/sales/orders',
   authenticate,
   requirePermission(PERMISSIONS.SALES_WORKLIST_READ),

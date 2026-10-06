@@ -80,6 +80,9 @@ export async function getBuyers(req: Request, res: Response): Promise<void> {
   const tab = req.query.tab as 'book' | 'queue' | undefined;
   ok(res, req, await salesBuyersService.listBuyers({ q, tab }));
 }
+export async function getBuyerBoard(req: Request, res: Response): Promise<void> {
+  ok(res, req, await salesBoardService.getBoardForBuyer(req.params.buyerId as string));
+}
 export async function getBuyerFile(req: Request, res: Response): Promise<void> {
   ok(res, req, await salesBuyersService.getBuyerFile(req.params.buyerId as string));
 }

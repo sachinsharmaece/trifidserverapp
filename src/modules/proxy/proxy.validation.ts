@@ -46,7 +46,7 @@ export const proxyPostQuoteSchema = postQuoteSchema.extend({
   callNote: callNoteSchema,
 });
 
-export const proxyConfirmPileSchema =confirmPileSchema.extend({
+export const proxyConfirmPileSchema = confirmPileSchema.extend({
   sellerCounterpartyId: z.string().min(1),
   callNote: callNoteSchema,
 });
