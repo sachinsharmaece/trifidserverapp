@@ -243,6 +243,64 @@ describe('Buyer-side proxy actions (Sales desk)', () => {
     expect(priceRes.status).toBe(400);
   });
 
+  it('one call naming several products raises one ask per product, each with the call note; a bad line fails alone', async () => {
+    const sales = await staffToken(app, 'sales');
+    const buyerId = await createApprovedBuyer(app, sales.token);
+    const buyerCounterpartyId = await counterpartyIdOfBuyer(buyerId);
+    const skuOne = await createTestSku('Medium');
+    const skuTwo = await createTestSku('Medium');
+    const post = (body: object) =>
+      request(app)
+        .post('/api/v1/staff/proxy/buyer/asks/batch')
+        .set('Authorization', `Bearer ${sales.token}`)
+        .send(body);
+    const line = (skuId: string, qty: number) => ({
+      skuId,
+      qty,
+      conditionRequirement: { expiryBand: 'over12' },
+    });
+
+    const res = await post({
+      buyerCounterpartyId,
+      callNote: 'Buyer called wanting two products in one go.',
+      lines: [line(skuOne, 3), line(skuTwo, 7)],
+    });
+    expect(res.status).toBe(201);
+    const results = res.body.data.results as Array<{ index: number; askId?: string }>;
+    expect(results.map((r) => r.index)).toEqual([0, 1]);
+    const asks = await Ask.find({ _id: { $in: results.map((r) => r.askId) } });
+    expect(asks).toHaveLength(2);
+    expect(asks.map((a) => a.qty).sort()).toEqual([3, 7]);
+    for (const ask of asks) {
+      expect(ask.buyerId!.toString()).toBe(buyerId);
+      expect(ask.proxyLog![0]!.callNote).toContain('two products');
+      expect(ask.proxyLog![0]!.actingStaffId!.toString()).toBe(sales.employeeId);
+    }
+
+    // A line with neither a SKU nor a product is refused on its own — the good line still saves.
+    const mixed = await post({
+      buyerCounterpartyId,
+      callNote: 'Second call, one line missing its product.',
+      lines: [line(skuOne, 2), { qty: 1, conditionRequirement: { expiryBand: 'over12' } }],
+    });
+    expect(mixed.status).toBe(201);
+    const mixedResults = mixed.body.data.results as Array<{ askId?: string; error?: string }>;
+    expect(mixedResults[0]!.askId).toBeTruthy();
+    expect(mixedResults[1]!.error).toMatch(/SKU or a product/);
+
+    // A price field is refused outright (BR-121), and the batch needs at least one line.
+    expect(
+      (
+        await post({
+          buyerCounterpartyId,
+          callNote: 'note',
+          lines: [{ ...line(skuOne, 1), ratePaise: 100 }],
+        })
+      ).status,
+    ).toBe(400);
+    expect((await post({ buyerCounterpartyId, callNote: 'note', lines: [] })).status).toBe(400);
+  });
+
   it('desk boundary — Purchase cannot log a buyer call', async () => {
     const purchase = await staffToken(app, 'purchase');
     const sales = await staffToken(app, 'sales');
