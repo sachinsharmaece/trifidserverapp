@@ -156,6 +156,9 @@ export interface BuyerFileOpenAsk {
   skuId: string | null;
   qty: number;
   state: string;
+  brand: string;
+  technical: string;
+  packLabel: string | null; // Only when the ask names a specific pack.
 }
 
 export interface BuyerFileDto {
@@ -225,6 +228,26 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     createdAt: -1,
   });
 
+  // An ask names a product, or only a pack (SKU) — resolve either to the product so
+  // "He asked" can show a name, never a bare id.
+  const askSkus = await Sku.find({
+    _id: { $in: openAsks.filter((a) => a.skuId).map((a) => a.skuId) },
+  });
+  const askSkuById = new Map(askSkus.map((s) => [(s._id as Types.ObjectId).toString(), s]));
+  const askProductIdOf = (a: (typeof openAsks)[number]): string | null =>
+    a.productId
+      ? (a.productId as Types.ObjectId).toString()
+      : a.skuId
+        ? ((
+            askSkuById.get((a.skuId as Types.ObjectId).toString())?.productId as
+              Types.ObjectId | undefined
+          )?.toString() ?? null)
+        : null;
+  const askProducts = await Product.find({
+    _id: { $in: [...new Set(openAsks.map(askProductIdOf).filter((id): id is string => !!id))] },
+  });
+  const askProductById = new Map(askProducts.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+
   const [callLogs, orders] = await Promise.all([
     listCallLogsForBuyer(buyerId),
     listOrders({ buyerId }),
@@ -252,13 +275,21 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     rateViews: buyer.rateViews,
     ownerName: owner?.person ?? null,
     productHistory,
-    openAsks: openAsks.map((a) => ({
-      askId: (a._id as Types.ObjectId).toString(),
-      productId: a.productId ? (a.productId as Types.ObjectId).toString() : null,
-      skuId: a.skuId ? (a.skuId as Types.ObjectId).toString() : null,
-      qty: a.qty,
-      state: a.state,
-    })),
+    openAsks: openAsks.map((a) => {
+      const productId = askProductIdOf(a);
+      const product = productId ? askProductById.get(productId) : undefined;
+      const sku = a.skuId ? askSkuById.get((a.skuId as Types.ObjectId).toString()) : undefined;
+      return {
+        askId: (a._id as Types.ObjectId).toString(),
+        productId,
+        skuId: a.skuId ? (a.skuId as Types.ObjectId).toString() : null,
+        qty: a.qty,
+        state: a.state,
+        brand: product?.brand ?? '—',
+        technical: product?.technical ?? '—',
+        packLabel: sku?.packLabel ?? null,
+      };
+    }),
     callLogs,
     orders,
   };
