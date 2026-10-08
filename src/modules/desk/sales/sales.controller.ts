@@ -7,6 +7,7 @@ import * as salesPoolsService from './sales.pools.js';
 import * as salesBuyersService from './sales.buyers.js';
 import * as salesOrdersService from './sales.orders.js';
 import * as salesFunnelService from './sales.funnel.js';
+import * as salesFunnelDrillService from './sales.funnelDrill.js';
 import { requestMspSchema, respondToMspSchema, createCallLogSchema } from './sales.validation.js';
 import type { RateTier } from '../../pricing/pricing.service.js';
 
@@ -96,6 +97,12 @@ export async function getOrders(req: Request, res: Response): Promise<void> {
 // Sales desk v2 — funnel.
 export async function getFunnel(req: Request, res: Response): Promise<void> {
   ok(res, req, await salesFunnelService.getSalesFunnelReport());
+}
+export async function getFunnelAsks(req: Request, res: Response): Promise<void> {
+  ok(res, req, await salesFunnelDrillService.listFunnelAsks());
+}
+export async function getFunnelHeldRates(req: Request, res: Response): Promise<void> {
+  ok(res, req, await salesFunnelDrillService.listFunnelHeldRates());
 }
 
 // 👤B.

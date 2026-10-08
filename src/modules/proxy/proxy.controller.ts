@@ -8,8 +8,10 @@ import { appendProxyLog } from '../../shared/proxyLog.js';
 import * as demandService from '../demand/demand.service.js';
 import * as listingService from '../listing/listing.service.js';
 import * as ordersService from '../orders/orders.service.js';
+import { AppError } from '../../shared/errors.js';
 import type {
   proxyRaiseAskSchema,
+  proxyRaiseAsksSchema,
   proxyAcceptAskFillSchema,
   proxyDeclineAskSchema,
   proxyPromotionDecisionSchema,
@@ -49,6 +51,35 @@ export async function postBuyerCallAsk(req: Request, res: Response): Promise<voi
     action: 'raise_ask',
   });
   ok(res, req, result, 201);
+}
+
+// "Log a buyer call" for a call that names several products: one ask per line, each
+// created by the same raiseAsk the single route uses and carrying the same call note.
+// Not all-or-nothing — each ask stands on its own (own quotes, own enquiry) — so a line
+// that fails is reported by position and the rest stay saved; the rep retries only that one.
+export async function postBuyerCallAsks(req: Request, res: Response): Promise<void> {
+  const { buyerCounterpartyId, callNote, lines } = req.body as z.infer<typeof proxyRaiseAsksSchema>;
+  const results: Array<
+    { index: number; askId: string } | { index: number; error: string; code: string | null }
+  > = [];
+  for (const [index, line] of lines.entries()) {
+    try {
+      const result = await demandService.raiseAsk(buyerCounterpartyId, line, {
+        channel: 'sales_call',
+        raisedBy: actingStaffId(req),
+      });
+      await appendProxyLog(Ask, result.askId, {
+        actingStaffId: actingStaffId(req),
+        callNote,
+        action: 'raise_ask',
+      });
+      results.push({ index, askId: result.askId });
+    } catch (error) {
+      if (!(error instanceof AppError)) throw error; // A real fault, not a rejected line.
+      results.push({ index, error: error.messageEn, code: error.code });
+    }
+  }
+  ok(res, req, { results }, 201);
 }
 
 // Feeds the "Advance an ask on a call" pickers — same read a buyer's own

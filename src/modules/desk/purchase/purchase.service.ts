@@ -1316,6 +1316,8 @@ export interface SellerOpenDemandItem {
   qty: number;
   ageHours: number;
   hasQuoted: boolean;
+  brand: string;
+  technical: string;
 }
 
 export async function getOpenDemandForSeller(sellerId: string): Promise<SellerOpenDemandItem[]> {
@@ -1333,18 +1335,41 @@ export async function getOpenDemandForSeller(sellerId: string): Promise<SellerOp
   const quotes = await Quote.find({ askId: { $in: asks.map((a) => a._id) }, sellerId });
   const quotedAskIds = new Set(quotes.map((q) => q.askId.toString()));
 
+  // An ask carries a product or only a SKU — resolve either to the product so the
+  // seller file can show a name, never the raw ask id.
+  const productIdBySkuId = new Map(
+    skus.map((s) => [(s._id as Types.ObjectId).toString(), (s.productId as Types.ObjectId).toString()]),
+  );
+  const askProductId = (a: (typeof asks)[number]): string | null =>
+    a.productId
+      ? (a.productId as Types.ObjectId).toString()
+      : a.skuId
+        ? (productIdBySkuId.get((a.skuId as Types.ObjectId).toString()) ?? null)
+        : null;
+  const products = await Product.find({
+    _id: { $in: [...new Set(asks.map(askProductId).filter((id): id is string => id !== null))] },
+  });
+  const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+
   const now = Date.now();
-  return asks.map((a) => ({
-    askId: (a._id as Types.ObjectId).toString(),
-    skuId: a.skuId ? (a.skuId as Types.ObjectId).toString() : null,
-    productId: a.productId ? (a.productId as Types.ObjectId).toString() : null,
-    qty: a.qty,
-    ageHours:
-      Math.round(
-        ((now - (a as unknown as { createdAt: Date }).createdAt.getTime()) / (60 * 60 * 1000)) * 10,
-      ) / 10,
-    hasQuoted: quotedAskIds.has((a._id as Types.ObjectId).toString()),
-  }));
+  return asks.map((a) => {
+    const productId = askProductId(a);
+    const product = productId ? productById.get(productId) : undefined;
+    return {
+      askId: (a._id as Types.ObjectId).toString(),
+      skuId: a.skuId ? (a.skuId as Types.ObjectId).toString() : null,
+      productId: a.productId ? (a.productId as Types.ObjectId).toString() : null,
+      qty: a.qty,
+      ageHours:
+        Math.round(
+          ((now - (a as unknown as { createdAt: Date }).createdAt.getTime()) / (60 * 60 * 1000)) *
+            10,
+        ) / 10,
+      hasQuoted: quotedAskIds.has((a._id as Types.ObjectId).toString()),
+      brand: product?.brand ?? '—',
+      technical: product?.technical ?? '—',
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

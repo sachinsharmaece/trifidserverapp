@@ -17,6 +17,16 @@ export const proxyRaiseAskSchema = raiseAskSchema.extend({
   callNote: callNoteSchema,
 });
 
+// One call, several products: the same lines the single ask takes, one ask per line.
+export const MAX_ASKS_PER_CALL = 20;
+export const proxyRaiseAsksSchema = z
+  .object({
+    buyerCounterpartyId: z.string().min(1),
+    callNote: callNoteSchema,
+    lines: z.array(raiseAskSchema).min(1).max(MAX_ASKS_PER_CALL),
+  })
+  .strict();
+
 export const proxyAcceptAskFillSchema = acceptAskFillSchema.extend({
   buyerCounterpartyId: z.string().min(1),
   callNote: callNoteSchema,

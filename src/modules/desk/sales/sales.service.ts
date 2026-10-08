@@ -1,4 +1,10 @@
-import type { ClientSession, Types } from 'mongoose';
+import { Types, type ClientSession } from 'mongoose';
+import { Counterparty } from '../../../models/Counterparty.js';
+import { Product } from '../../../models/Product.js';
+import { PoLine } from '../../../models/PoLine.js';
+import { Sku } from '../../../models/Sku.js';
+import { SoLine } from '../../../models/SoLine.js';
+import { Tehsil } from '../../../models/Tehsil.js';
 import { BookAssignment } from '../../../models/BookAssignment.js';
 import { Employee } from '../../../models/Employee.js';
 import { Role } from '../../../models/Role.js';
@@ -72,70 +78,197 @@ export interface SalesWorkItem {
   refId: string;
   buyerId?: string;
   dueAt?: string;
+  // Readable names so a row never has to show a bare id. All optional/best-effort.
+  productId?: string; // Where the product name links to.
+  productName?: string; // "Brand · technical", plus "+N more" when an order has several products.
+  buyerFirm?: string;
+  tehsilName?: string; // Market rows only.
+  qty?: number;
 }
 
 export async function getSalesWorklist(): Promise<SalesWorkItem[]> {
   const items: SalesWorkItem[] = [];
+  // What each item is "about", resolved to names in one pass at the end.
+  const skuIdsByItem = new Map<SalesWorkItem, Types.ObjectId[]>();
+  const productIdByItem = new Map<SalesWorkItem, Types.ObjectId>();
 
   // Money — a payment window running out.
   const awaitingPayment = await So.find({ state: 'awaiting_payment' }).sort({ payDeadline: 1 });
+  const awaitingLines = awaitingPayment.length
+    ? await SoLine.find({ soId: { $in: awaitingPayment.map((s) => s._id) } })
+    : [];
   for (const so of awaitingPayment) {
-    items.push({
+    const item: SalesWorkItem = {
       bucket: 'money',
       refType: 'so',
       refId: (so._id as Types.ObjectId).toString(),
       buyerId: (so.buyerId as Types.ObjectId).toString(),
       dueAt: so.payDeadline.toISOString(),
-    });
+    };
+    skuIdsByItem.set(
+      item,
+      awaitingLines
+        .filter((l) => (l.soId as Types.ObjectId).equals(so._id as Types.ObjectId))
+        .map((l) => l.skuId as Types.ObjectId),
+    );
+    items.push(item);
   }
 
   // Promised — "you said you would": an open lifeline/extension request.
   const extensionRequested = await Po.find({ extensionRequestedAt: { $ne: null } }).sort({
     extensionRequestedAt: 1,
   });
+  const promisedLines = extensionRequested.length
+    ? await PoLine.find({ poId: { $in: extensionRequested.map((p) => p._id) } })
+    : [];
+  const promisedSos = extensionRequested.length
+    ? await So.find({ _id: { $in: extensionRequested.map((p) => p.soId) } })
+    : [];
+  const buyerIdBySoId = new Map(
+    promisedSos.map((s) => [(s._id as Types.ObjectId).toString(), s.buyerId as Types.ObjectId]),
+  );
   for (const po of extensionRequested) {
-    items.push({
+    const buyerId = buyerIdBySoId.get((po.soId as Types.ObjectId).toString());
+    const item: SalesWorkItem = {
       bucket: 'promised',
       refType: 'po',
       refId: (po._id as Types.ObjectId).toString(),
+      buyerId: buyerId?.toString(),
       dueAt: po.extensionRequestedAt?.toISOString(),
-    });
+    };
+    skuIdsByItem.set(
+      item,
+      promisedLines
+        .filter((l) => (l.poId as Types.ObjectId).equals(po._id as Types.ObjectId))
+        .map((l) => l.skuId as Types.ObjectId),
+    );
+    items.push(item);
   }
 
   // He asked — waiting on a rate (an open ask with no live quote yet), or a
   // held rate about to expire (a live quote nearing its 24h binding).
   const openAsks = await Ask.find({ state: 'open' }).sort({ createdAt: 1 });
   for (const ask of openAsks) {
-    items.push({
+    const item: SalesWorkItem = {
       bucket: 'he_asked',
       refType: 'ask',
       refId: (ask._id as Types.ObjectId).toString(),
       buyerId: (ask.buyerId as Types.ObjectId).toString(),
-    });
+      qty: ask.qty,
+    };
+    if (ask.productId) productIdByItem.set(item, ask.productId as Types.ObjectId);
+    else if (ask.skuId) skuIdsByItem.set(item, [ask.skuId as Types.ObjectId]);
+    items.push(item);
   }
   const expiringSoon = new Date(Date.now() + 4 * 60 * 60 * 1000); // Next 4 hours.
   const nearExpiryQuotes = await Quote.find({
     status: 'live',
     bindingUntil: { $lte: expiringSoon },
   }).sort({ bindingUntil: 1 });
+  const quotedAsks = nearExpiryQuotes.length
+    ? await Ask.find({ _id: { $in: nearExpiryQuotes.map((q) => q.askId) } })
+    : [];
+  const askById = new Map(quotedAsks.map((a) => [(a._id as Types.ObjectId).toString(), a]));
   for (const quote of nearExpiryQuotes) {
-    items.push({
+    const ask = askById.get((quote.askId as Types.ObjectId).toString());
+    const item: SalesWorkItem = {
       bucket: 'he_asked',
       refType: 'quote',
       refId: (quote._id as Types.ObjectId).toString(),
+      buyerId: ask ? (ask.buyerId as Types.ObjectId).toString() : undefined,
       dueAt: quote.bindingUntil.toISOString(),
-    });
+      qty: ask?.qty,
+    };
+    if (ask?.productId) productIdByItem.set(item, ask.productId as Types.ObjectId);
+    else if (ask?.skuId) skuIdsByItem.set(item, [ask.skuId as Types.ObjectId]);
+    items.push(item);
   }
 
   // Market — rising where a buyer is, and he buys it (BR-278). Surfaced at
   // the area/product level, not per buyer — matching the pulse's own
   // "call list, nothing else" scope (BR-280).
   const rising = await getRisingPulseAreas();
+  const tehsilNameByItem = new Map<SalesWorkItem, string>();
+  const tehsils = rising.length
+    ? await Tehsil.find({ _id: { $in: rising.map((r) => r.areaTehsilId) } })
+    : [];
+  const tehsilNameById = new Map(
+    tehsils.map((t) => [(t._id as Types.ObjectId).toString(), t.name]),
+  );
   for (const r of rising) {
-    items.push({ bucket: 'market', refType: 'ask', refId: `${r.areaTehsilId}:${r.productId}` });
+    const item: SalesWorkItem = {
+      bucket: 'market',
+      refType: 'ask',
+      refId: `${r.areaTehsilId}:${r.productId}`,
+    };
+    productIdByItem.set(item, new Types.ObjectId(r.productId));
+    const tehsilName = tehsilNameById.get(r.areaTehsilId);
+    if (tehsilName) tehsilNameByItem.set(item, tehsilName);
+    items.push(item);
   }
 
+  await attachNames(items, skuIdsByItem, productIdByItem, tehsilNameByItem);
   return items;
+}
+
+/** Fills in product, buyer-firm and tehsil names so no row on Today is a bare id. */
+async function attachNames(
+  items: SalesWorkItem[],
+  skuIdsByItem: Map<SalesWorkItem, Types.ObjectId[]>,
+  productIdByItem: Map<SalesWorkItem, Types.ObjectId>,
+  tehsilNameByItem: Map<SalesWorkItem, string>,
+): Promise<void> {
+  const allSkuIds = [...skuIdsByItem.values()].flat();
+  const skus = allSkuIds.length ? await Sku.find({ _id: { $in: allSkuIds } }) : [];
+  const productIdBySkuId = new Map(
+    skus.map((s) => [(s._id as Types.ObjectId).toString(), s.productId as Types.ObjectId]),
+  );
+  const allProductIds = [
+    ...productIdByItem.values(),
+    ...skus.map((s) => s.productId as Types.ObjectId),
+  ];
+  const products = allProductIds.length ? await Product.find({ _id: { $in: allProductIds } }) : [];
+  const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+
+  const buyerIds = [...new Set(items.map((i) => i.buyerId).filter((id): id is string => !!id))];
+  const buyers = buyerIds.length ? await Buyer.find({ _id: { $in: buyerIds } }) : [];
+  const counterparties = buyers.length
+    ? await Counterparty.find({ _id: { $in: buyers.map((b) => b.counterpartyId) } })
+    : [];
+  const firmByCounterpartyId = new Map(
+    counterparties.map((c) => [(c._id as Types.ObjectId).toString(), c.firm ?? '']),
+  );
+  const firmByBuyerId = new Map(
+    buyers.map((b) => [
+      (b._id as Types.ObjectId).toString(),
+      firmByCounterpartyId.get((b.counterpartyId as Types.ObjectId).toString()) ?? '',
+    ]),
+  );
+
+  for (const item of items) {
+    // An order can span products: name the first, say how many more.
+    const productIds = [
+      ...new Set(
+        [
+          productIdByItem.get(item),
+          ...(skuIdsByItem.get(item) ?? []).map((id) => productIdBySkuId.get(id.toString())),
+        ]
+          .filter((id): id is Types.ObjectId => !!id)
+          .map((id) => id.toString()),
+      ),
+    ];
+    const first = productIds[0] ? productById.get(productIds[0]) : undefined;
+    if (first) {
+      item.productId = productIds[0];
+      item.productName =
+        `${first.brand} · ${first.technical}` +
+        (productIds.length > 1 ? ` +${productIds.length - 1} more` : '');
+    }
+    const firm = item.buyerId ? firmByBuyerId.get(item.buyerId) : undefined;
+    if (firm) item.buyerFirm = firm;
+    const tehsilName = tehsilNameByItem.get(item);
+    if (tehsilName) item.tehsilName = tehsilName;
+  }
 }
 
 // ---------------------------------------------------------------------------

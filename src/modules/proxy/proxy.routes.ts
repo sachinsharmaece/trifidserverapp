@@ -7,6 +7,7 @@ import { PERMISSIONS } from '../../config/permissions.js';
 import * as controller from './proxy.controller.js';
 import {
   proxyRaiseAskSchema,
+  proxyRaiseAsksSchema,
   proxyAcceptAskFillSchema,
   proxyDeclineAskSchema,
   proxyPromotionDecisionSchema,
@@ -39,6 +40,12 @@ proxyRouter.post(
   ...buyerCall,
   validateBody(proxyRaiseAskSchema),
   controller.postBuyerCallAsk,
+);
+proxyRouter.post(
+  '/staff/proxy/buyer/asks/batch',
+  ...buyerCall,
+  validateBody(proxyRaiseAsksSchema),
+  controller.postBuyerCallAsks,
 );
 // Feeds the ask/quote pickers on "Advance an ask on a call".
 proxyRouter.get(
