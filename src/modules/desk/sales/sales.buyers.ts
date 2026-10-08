@@ -33,7 +33,9 @@ export interface BuyerListRow {
   orderCount: number;
   lastOrderAt: string | null;
   rateViews: number;
-  ownerName: string | null;
+  ownerName: string | null; // The Sales employee whose book he is in — not the firm's owner.
+  contactName: string | null; // The firm's own owner, from the counterparty.
+  mobile: string | null;
 }
 
 /** GET /staff/sales/buyers?q=&tab=book|queue */
@@ -75,6 +77,7 @@ export async function listBuyers(filters: {
       return Boolean(
         cp?.firm?.toLowerCase().includes(q) ||
         cp?.gstin?.toLowerCase().includes(q) ||
+        cp?.ownerName?.toLowerCase().includes(q) ||
         cp?.mobile?.toLowerCase().includes(q) ||
         inTehsil,
       );
@@ -117,6 +120,8 @@ export async function listBuyers(filters: {
       buyerId: idStr,
       firm: cp?.firm ?? '',
       gstin: cp?.gstin ?? null,
+      contactName: cp?.ownerName ?? null,
+      mobile: cp?.mobile ?? null,
       tehsil: b.tehsilId
         ? (tehsilNameById.get((b.tehsilId as Types.ObjectId).toString()) ?? null)
         : null,
