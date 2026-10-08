@@ -118,6 +118,18 @@ salesRouter.get(
   requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
   controller.getFunnel,
 );
+salesRouter.get(
+  '/staff/sales/funnel/asked',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getFunnelAsks,
+);
+salesRouter.get(
+  '/staff/sales/funnel/rate-held',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getFunnelHeldRates,
+);
 
 // 👤B — a buyer requesting a rate the board does not show him.
 salesRouter.post('/me/msp-requests', authenticate, controller.postMspRequest);

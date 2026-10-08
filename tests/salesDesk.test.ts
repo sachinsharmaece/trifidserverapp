@@ -534,4 +534,19 @@ describe('GET /staff/sales/funnel', () => {
       .set('Authorization', `Bearer ${logistics.token}`);
     expect(res.status).toBe(403);
   });
+
+  it('the Asked and Rate held lists hold exactly as many rows as the funnel counts', async () => {
+    const sales = await staffToken(app, 'sales');
+    const get = (path: string) =>
+      request(app)
+        .get(`/api/v1/staff/sales/funnel${path}`)
+        .set('Authorization', `Bearer ${sales.token}`);
+    const [funnel, asked, held] = await Promise.all([get(''), get('/asked'), get('/rate-held')]);
+    expect(asked.status).toBe(200);
+    expect(held.status).toBe(200);
+    const value = (key: string) =>
+      funnel.body.data.metrics.find((m: { key: string }) => m.key === key).value;
+    expect(asked.body.data).toHaveLength(value('asked'));
+    expect(held.body.data).toHaveLength(value('rate_held'));
+  });
 });
