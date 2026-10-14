@@ -1,0 +1,302 @@
+/**
+ * TD-007 — permissions are strings, `module:action`. This list grows with
+ * each milestone as API_CONTRACT.md grows; only the permissions behind an
+ * endpoint that exists today are listed here.
+ */
+export const PERMISSIONS = {
+    CONFIG_READ: 'config:read',
+    CONFIG_WRITE: 'config:write',
+    EMPLOYEE_READ: 'employee:read',
+    EMPLOYEE_WRITE: 'employee:write',
+    FILE_READ: 'file:read',
+    // M3 additions
+    CATALOG_WRITE: 'catalog:write',
+    TERRITORY_READ: 'territory:read',
+    TERRITORY_WRITE: 'territory:write',
+    ONBOARDING_READ: 'onboarding:read',
+    ONBOARDING_APPROVE: 'onboarding:approve',
+    BANK_DETAIL_READ: 'bank_detail:read',
+    BANK_DETAIL_WRITE: 'bank_detail:write',
+    BOOK_ASSIGN: 'book:assign',
+    // M4 additions — BUSINESS_RULES.md §2–§4, §17.
+    MARGIN_MATRIX_READ: 'margin_matrix:read',
+    MARGIN_MATRIX_WRITE: 'margin_matrix:write',
+    CHAIN_READ: 'chain:read',
+    // M9 — the un-projected chain view (both counterparties, all money). Accounts, Controller,
+    // Founder and Admin only; every other holder of `chain:read` gets their own desk's view.
+    CHAIN_READ_FULL: 'chain:read_full',
+    // M9 — the Sales desk's worklist names buyers; it was gated by `chain:read`, which Purchase
+    // and Logistics also hold. Sales and Controller only.
+    SALES_WORKLIST_READ: 'sales_worklist:read',
+    SO_CREATE: 'so:create',
+    SO_REDUCE_QUANTITY: 'so:reduce_quantity',
+    PO_CREATE: 'po:create',
+    PO_EDIT: 'po:edit',
+    RECEIPT_READ: 'receipt:read',
+    RECEIPT_ALLOCATE: 'receipt:allocate',
+    BANK_POST: 'bank:post',
+    BANK_REPOST: 'bank:repost',
+    PAYOUT_BUILD: 'payout:build',
+    PAYOUT_RELEASE: 'payout:release',
+    PAYOUT_READ: 'payout:read',
+    MARG_KEY: 'marg:key',
+    DAY_CLOSE_RUN: 'day_close:run',
+    DOCK_INSPECT: 'dock:inspect',
+    MOVEMENT_WRITE: 'movement:write',
+    // `register:read` is the Accounts-side reads (the ledgers): both counterparties on one row.
+    REGISTER_READ: 'register:read',
+    // M9 — CH §17.3: each desk sees only its own side of the trade. The one
+    // `register:read` used to open both registers to Purchase, Sales and Logistics.
+    REGISTER_SALES_READ: 'register_sales:read',
+    REGISTER_PURCHASE_READ: 'register_purchase:read',
+    // M5 additions — BUSINESS_RULES.md §7–§9.
+    POOL_RESOLVE_SHORTFALL: 'pool:resolve_shortfall',
+    // M6 additions — BUSINESS_RULES.md §12, §15.
+    CONDUCT_RECORD: 'conduct:record',
+    CONDUCT_ADVANCE: 'conduct:advance',
+    CONDUCT_DISPUTES_READ: 'conduct:disputes_read',
+    DEMAND_READ: 'demand:read',
+    NON_ORDER_REASON_RECORD: 'non_order_reason:record',
+    ABSORPTION_READ: 'absorption:read',
+    PULSE_READ: 'pulse:read',
+    RETENTION_READ: 'retention:read',
+    MSP_RESPOND: 'msp:respond',
+    COMPLAINT_READ: 'complaint:read',
+    // M7 additions — BUSINESS_RULES.md §10, §11, §14, §17.
+    LOGISTICS_READ: 'logistics:read',
+    TRANSPORTER_READ: 'transporter:read',
+    TRANSPORTER_WRITE: 'transporter:write',
+    CONSOLIDATION_WRITE: 'consolidation:write',
+    RETURN_NOTE_CLOSE: 'return_note:close',
+    GST_UNFILED_READ: 'gst_unfiled:read',
+    GST_MARK_FILED: 'gst_unfiled:mark_filed',
+    DISPUTE_READ: 'dispute:read',
+    DISPUTE_DECIDE: 'dispute:decide',
+    DISPUTE_RECOVERY_READ: 'dispute:recovery_read',
+    LIFELINE_GRANT: 'lifeline:grant',
+    EXCEPTION_READ: 'exception:read',
+    // M8 additions — BUSINESS_RULES.md §15, §16.
+    NOTIFICATION_LOG_READ: 'notification:log_read',
+    FUNNEL_READ: 'funnel:read',
+    FOUNDER_OVERVIEW_READ: 'founder:overview_read',
+    // Staff-assisted enquiries — a phone-call proxy layer over the existing
+    // ask/quote/listing/registration flows. Desk-boundary permissions only;
+    // no role name is ever checked, matching every other permission here.
+    ONBOARDING_STAFF_ASSIST_BUYER: 'onboarding:staff_assist_buyer',
+    ONBOARDING_STAFF_ASSIST_SELLER: 'onboarding:staff_assist_seller',
+    PROXY_BUYER_CALL: 'proxy:buyer_call',
+    PROXY_SELLER_CALL: 'proxy:seller_call',
+    ACCOUNTS_CONFIRM_RECEIPT: 'accounts:confirm_receipt',
+    // Enquiry journey (DEC-051) — owner, follow-up and notes on an enquiry.
+    // Sales and Purchase work their own desk's half; Controller (and Admin) either.
+    ENQUIRY_MANAGE: 'enquiry:manage',
+    // Purchase-desk v2 — Purchase may raise a draft company/product/pack mid-call
+    // (amending CH §17.2's "masters belong to Admin" for these three objects
+    // only); a draft is usable in a seller's catalogue at once but cannot back
+    // a live listing until Admin confirms it with the pre-existing CATALOG_WRITE.
+    CATALOG_DRAFT_CREATE: 'catalog:draft_create',
+};
+// BR-260 — seven roles. Admin and Controller are distinct: Admin configures
+// the system, Controller runs the trade. Purchase/Sales/Transport &
+// Logistics/Accounts had no M1/M2 endpoints; M3 gives Purchase, Sales and
+// Accounts their first real permissions.
+export const ROLE_SEED = [
+    {
+        key: 'purchase',
+        label: 'Purchase',
+        permissionKeys: [
+            PERMISSIONS.CATALOG_WRITE,
+            PERMISSIONS.TERRITORY_READ,
+            PERMISSIONS.TERRITORY_WRITE,
+            PERMISSIONS.ONBOARDING_READ,
+            PERMISSIONS.ONBOARDING_APPROVE,
+            // M9 — no MARGIN_MATRIX_READ: margin is "No" for Purchase (CH §17.3, ARCHITECTURE §6.3).
+            PERMISSIONS.CHAIN_READ,
+            PERMISSIONS.PO_CREATE,
+            PERMISSIONS.PO_EDIT,
+            PERMISSIONS.REGISTER_PURCHASE_READ,
+            PERMISSIONS.POOL_RESOLVE_SHORTFALL,
+            // M6 — BUSINESS_RULES.md §15 (Purchase's own funnel/desk surfaces).
+            PERMISSIONS.DEMAND_READ,
+            PERMISSIONS.NON_ORDER_REASON_RECORD,
+            PERMISSIONS.ABSORPTION_READ,
+            PERMISSIONS.CONDUCT_RECORD,
+            PERMISSIONS.CONDUCT_ADVANCE,
+            // M7 — the seller-recovery half of a Controller-decided dispute (BR-206).
+            PERMISSIONS.DISPUTE_RECOVERY_READ,
+            // M8 — BR-275, Purchase is measured on leaks closed.
+            PERMISSIONS.FUNNEL_READ,
+            // Staff-assisted enquiries — Purchase proxies for a seller only.
+            PERMISSIONS.ONBOARDING_STAFF_ASSIST_SELLER,
+            PERMISSIONS.PROXY_SELLER_CALL,
+            // Enquiry journey — the Purchase half of an enquiry.
+            PERMISSIONS.ENQUIRY_MANAGE,
+            // Purchase-desk v2 — draft company/product/pack from a call, and the
+            // seller-catalogue/supply-matrix surfaces built on top of it.
+            PERMISSIONS.CATALOG_DRAFT_CREATE,
+        ],
+    },
+    {
+        key: 'sales',
+        label: 'Sales',
+        permissionKeys: [
+            PERMISSIONS.ONBOARDING_READ,
+            PERMISSIONS.ONBOARDING_APPROVE,
+            PERMISSIONS.BOOK_ASSIGN,
+            // M9 — no MARGIN_MATRIX_READ: margin is "No" for Sales (CH §17.3, ARCHITECTURE §6.3).
+            PERMISSIONS.CHAIN_READ,
+            PERMISSIONS.SO_CREATE,
+            PERMISSIONS.SO_REDUCE_QUANTITY,
+            PERMISSIONS.RECEIPT_READ,
+            PERMISSIONS.RECEIPT_ALLOCATE,
+            PERMISSIONS.SALES_WORKLIST_READ,
+            PERMISSIONS.REGISTER_SALES_READ,
+            // M6 — BUSINESS_RULES.md §15/§19 (Sales's own desk surfaces).
+            PERMISSIONS.PULSE_READ,
+            PERMISSIONS.RETENTION_READ,
+            PERMISSIONS.MSP_RESPOND,
+            PERMISSIONS.COMPLAINT_READ,
+            PERMISSIONS.CONDUCT_RECORD,
+            PERMISSIONS.CONDUCT_ADVANCE,
+            // Staff-assisted enquiries — Sales proxies for a buyer only.
+            PERMISSIONS.ONBOARDING_STAFF_ASSIST_BUYER,
+            PERMISSIONS.PROXY_BUYER_CALL,
+            // Enquiry journey — the Sales half of an enquiry.
+            PERMISSIONS.ENQUIRY_MANAGE,
+        ],
+    },
+    {
+        key: 'transport_logistics',
+        label: 'Transport & Logistics',
+        // Q9a — the dock operator. This role was seeded empty in M1/M2; M4 gave
+        // it its first real permissions. M7 gives it the full Logistics desk.
+        permissionKeys: [
+            PERMISSIONS.CHAIN_READ,
+            PERMISSIONS.DOCK_INSPECT,
+            PERMISSIONS.MOVEMENT_WRITE,
+            PERMISSIONS.LOGISTICS_READ,
+            PERMISSIONS.TRANSPORTER_READ,
+            PERMISSIONS.TRANSPORTER_WRITE,
+            PERMISSIONS.CONSOLIDATION_WRITE,
+            PERMISSIONS.RETURN_NOTE_CLOSE,
+            // M9 — no register at all: Logistics sees no firm and no money (CH §17.3.1, BR-071).
+        ],
+    },
+    {
+        key: 'accounts',
+        label: 'Accounts',
+        permissionKeys: [
+            PERMISSIONS.BANK_DETAIL_READ,
+            PERMISSIONS.BANK_DETAIL_WRITE,
+            PERMISSIONS.CHAIN_READ,
+            PERMISSIONS.CHAIN_READ_FULL,
+            PERMISSIONS.RECEIPT_READ,
+            PERMISSIONS.BANK_POST,
+            PERMISSIONS.PAYOUT_BUILD,
+            PERMISSIONS.PAYOUT_READ,
+            PERMISSIONS.MARG_KEY,
+            PERMISSIONS.DAY_CLOSE_RUN,
+            PERMISSIONS.REGISTER_READ,
+            PERMISSIONS.REGISTER_SALES_READ,
+            PERMISSIONS.REGISTER_PURCHASE_READ,
+            // M7 — BR-023's standing unfiled-bills queue.
+            PERMISSIONS.GST_UNFILED_READ,
+            PERMISSIONS.GST_MARK_FILED,
+            // Staff-assisted enquiries — Accounts' own fourth payable gate,
+            // distinct from the dock's inspection record.
+            PERMISSIONS.ACCOUNTS_CONFIRM_RECEIPT,
+        ],
+    },
+    {
+        key: 'controller',
+        label: 'Controller',
+        permissionKeys: [
+            PERMISSIONS.CONFIG_READ,
+            PERMISSIONS.EMPLOYEE_READ,
+            PERMISSIONS.FILE_READ,
+            PERMISSIONS.TERRITORY_READ,
+            PERMISSIONS.ONBOARDING_READ,
+            PERMISSIONS.BANK_DETAIL_READ,
+            PERMISSIONS.MARGIN_MATRIX_READ,
+            PERMISSIONS.CHAIN_READ,
+            PERMISSIONS.CHAIN_READ_FULL,
+            PERMISSIONS.SALES_WORKLIST_READ,
+            PERMISSIONS.RECEIPT_READ,
+            PERMISSIONS.BANK_REPOST,
+            PERMISSIONS.PAYOUT_READ,
+            PERMISSIONS.PAYOUT_RELEASE,
+            PERMISSIONS.REGISTER_READ,
+            PERMISSIONS.REGISTER_SALES_READ,
+            PERMISSIONS.REGISTER_PURCHASE_READ,
+            // M6 — BR-218's disagree queue is Controller-visible (QR-025).
+            PERMISSIONS.CONDUCT_DISPUTES_READ,
+            // M7 — BR-206 dispute adjudication, BR-234's bulk lifeline, the
+            // cross-desk exception view.
+            PERMISSIONS.DISPUTE_READ,
+            PERMISSIONS.DISPUTE_DECIDE,
+            PERMISSIONS.LIFELINE_GRANT,
+            PERMISSIONS.EXCEPTION_READ,
+            PERMISSIONS.LOGISTICS_READ,
+            PERMISSIONS.GST_UNFILED_READ,
+            // M8 — the notification log/worklist is a debugging read; the funnel is Purchase's
+            // own measure, visible to Controller because Controller sees every desk.
+            PERMISSIONS.NOTIFICATION_LOG_READ,
+            PERMISSIONS.FUNNEL_READ,
+            // Enquiry journey — Controller runs the trade, so may reassign either desk's owner.
+            PERMISSIONS.ENQUIRY_MANAGE,
+        ],
+    },
+    {
+        key: 'admin',
+        label: 'Admin',
+        // Super admin — every permission that exists, always, including ones
+        // added by a later milestone. Admin is the one role the Charter treats
+        // as "configures the system" without a narrower desk boundary (CH
+        // §17.1), so an explicit per-permission list here would only ever be a
+        // maintenance trap: someone adds a new PERMISSIONS key for a new desk
+        // and forgets to also add it here, and Admin quietly loses access.
+        permissionKeys: Object.values(PERMISSIONS),
+    },
+    {
+        key: 'founder',
+        label: 'Founder',
+        permissionKeys: [
+            PERMISSIONS.CONFIG_READ,
+            PERMISSIONS.EMPLOYEE_READ,
+            PERMISSIONS.FILE_READ,
+            PERMISSIONS.TERRITORY_READ,
+            PERMISSIONS.ONBOARDING_READ,
+            PERMISSIONS.BANK_DETAIL_READ,
+            PERMISSIONS.MARGIN_MATRIX_READ,
+            PERMISSIONS.CHAIN_READ,
+            PERMISSIONS.CHAIN_READ_FULL,
+            PERMISSIONS.PAYOUT_READ,
+            PERMISSIONS.REGISTER_READ,
+            PERMISSIONS.REGISTER_SALES_READ,
+            PERMISSIONS.REGISTER_PURCHASE_READ,
+            // M8 — the read-only Founder overview.
+            PERMISSIONS.FOUNDER_OVERVIEW_READ,
+        ],
+    },
+];
+// CH §24.3 — MFA on Controller, Admin and Founder only.
+export const MFA_REQUIRED_ROLE_KEYS = new Set(['controller', 'admin', 'founder']);
+/**
+ * CH §18.2 — the Purchase desk's fixed lane board (Funnel B: the trade).
+ * "Every joint and every leak is a lane" (§17.11). Read directly from the
+ * Charter text present in this workspace — not a placeholder. Sales has no
+ * equivalent lane list (§19: books, not lanes; DEC-S08 rejected a more
+ * elaborate Sales funnel model as too complex), and no other desk defines
+ * one either, so this is the entire lane board for now.
+ */
+export const LANE_SEED = [
+    { key: 'B1', funnel: 'purchase_trade', label: 'Demand raised — Supply wanted' },
+    { key: 'B2', funnel: 'purchase_trade', label: 'Visible — Silent board' },
+    { key: 'B3', funnel: 'purchase_trade', label: 'Quoted — Unconverted quote' },
+    { key: 'B3a', funnel: 'purchase_trade', label: 'Quoted but short' },
+    { key: 'B4', funnel: 'purchase_trade', label: 'Taken — Stalled pile' },
+    { key: 'B5', funnel: 'purchase_trade', label: 'Confirmed — Missed cut-off' },
+    { key: 'B6', funnel: 'purchase_trade', label: 'Dispatched — Band miss' },
+    { key: 'B7', funnel: 'purchase_trade', label: 'Landed — Rejection' },
+    { key: 'B8', funnel: 'purchase_trade', label: 'Accepted — Uncollected debit' },
+];

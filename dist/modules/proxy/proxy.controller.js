@@ -1,0 +1,181 @@
+import { Ask } from '../../models/Ask.js';
+import { So } from '../../models/So.js';
+import { Pile } from '../../models/Pile.js';
+import { Quote } from '../../models/Quote.js';
+import { ListingLine } from '../../models/ListingLine.js';
+import { appendProxyLog } from '../../shared/proxyLog.js';
+import * as demandService from '../demand/demand.service.js';
+import * as listingService from '../listing/listing.service.js';
+import * as ordersService from '../orders/orders.service.js';
+import { AppError } from '../../shared/errors.js';
+function ok(res, req, data, status = 200) {
+    res.status(status).json({ data, meta: { correlationId: req.correlationId } });
+}
+function actingStaffId(req) {
+    return req.auth.employeeId;
+}
+// --- Buyer-side (Sales desk) --------------------------------------------
+// Maps to API-040 — "log a buyer call". Calls the exact same raiseAsk a
+// buyer's own POST /asks would call; the call note lands on the Ask this
+// creates.
+export async function postBuyerCallAsk(req, res) {
+    const { buyerCounterpartyId, callNote, ...input } = req.body;
+    // DEC-051 — the enquiry it opens is recorded as a Sales call, by this staff member.
+    const result = await demandService.raiseAsk(buyerCounterpartyId, input, {
+        channel: 'sales_call',
+        raisedBy: actingStaffId(req),
+    });
+    await appendProxyLog(Ask, result.askId, {
+        actingStaffId: actingStaffId(req),
+        callNote,
+        action: 'raise_ask',
+    });
+    ok(res, req, result, 201);
+}
+// "Log a buyer call" for a call that names several products: one ask per line, each
+// created by the same raiseAsk the single route uses and carrying the same call note.
+// Not all-or-nothing — each ask stands on its own (own quotes, own enquiry) — so a line
+// that fails is reported by position and the rest stay saved; the rep retries only that one.
+export async function postBuyerCallAsks(req, res) {
+    const { buyerCounterpartyId, callNote, lines } = req.body;
+    const results = [];
+    for (const [index, line] of lines.entries()) {
+        try {
+            const result = await demandService.raiseAsk(buyerCounterpartyId, line, {
+                channel: 'sales_call',
+                raisedBy: actingStaffId(req),
+            });
+            await appendProxyLog(Ask, result.askId, {
+                actingStaffId: actingStaffId(req),
+                callNote,
+                action: 'raise_ask',
+            });
+            results.push({ index, askId: result.askId });
+        }
+        catch (error) {
+            if (!(error instanceof AppError))
+                throw error; // A real fault, not a rejected line.
+            results.push({ index, error: error.messageEn, code: error.code });
+        }
+    }
+    ok(res, req, { results }, 201);
+}
+// Feeds the "Advance an ask on a call" pickers — same read a buyer's own
+// GET /asks calls, just addressed at the counterparty the staff member has
+// on the phone rather than the token's own identity.
+export async function getBuyerCallAsks(req, res) {
+    const { buyerCounterpartyId } = req.validatedQuery;
+    const result = await demandService.listMyAsks(buyerCounterpartyId);
+    ok(res, req, result);
+}
+// Maps to API-042 — advancing an ask, or confirming a rate over the phone;
+// this codebase has one accept endpoint for both.
+export async function postBuyerCallAcceptFill(req, res) {
+    const { buyerCounterpartyId, callNote, ...input } = req.body;
+    const askId = req.params.id;
+    const result = await demandService.acceptAskFill(buyerCounterpartyId, askId, input, req.correlationId);
+    const staffId = actingStaffId(req);
+    await appendProxyLog(Ask, askId, { actingStaffId: staffId, callNote, action: 'accept_fill' });
+    await Promise.all(result.soIds.map((soId) => appendProxyLog(So, soId, { actingStaffId: staffId, callNote, action: 'accept_fill' })));
+    ok(res, req, result, 201);
+}
+// Maps to API-043 — walking away, free, never a strike.
+export async function postBuyerCallDecline(req, res) {
+    const { buyerCounterpartyId, callNote } = req.body;
+    const askId = req.params.id;
+    await demandService.declineAsk(buyerCounterpartyId, askId);
+    await appendProxyLog(Ask, askId, {
+        actingStaffId: actingStaffId(req),
+        callNote,
+        action: 'decline_ask',
+    });
+    ok(res, req, { declined: true });
+}
+// Maps to API-071 — the WF-11 promoted-fallback accept/decline, a buyer
+// decision Sales may also log on a call.
+export async function postBuyerCallAcceptPromotion(req, res) {
+    const { buyerCounterpartyId, callNote } = req.body;
+    const soId = req.params.id;
+    await ordersService.acceptPromotion(buyerCounterpartyId, soId, req.correlationId);
+    await appendProxyLog(So, soId, {
+        actingStaffId: actingStaffId(req),
+        callNote,
+        action: 'accept_promotion',
+    });
+    ok(res, req, { accepted: true });
+}
+export async function postBuyerCallRejectPromotion(req, res) {
+    const { buyerCounterpartyId, callNote } = req.body;
+    const soId = req.params.id;
+    await ordersService.rejectPromotion(buyerCounterpartyId, soId);
+    await appendProxyLog(So, soId, {
+        actingStaffId: actingStaffId(req),
+        callNote,
+        action: 'reject_promotion',
+    });
+    ok(res, req, { rejected: true });
+}
+// --- Seller-side (Purchase desk) ----------------------------------------
+// Maps to API-033 — "log a seller call". Same fields, same validation
+// (shelf-life floor, MOQ, the two delivery bands) as the seller's own
+// POST /listings.
+export async function postSellerCallListing(req, res) {
+    const { sellerCounterpartyId, callNote, ...input } = req.body;
+    const result = await listingService.createListing(sellerCounterpartyId, input);
+    const staffId = actingStaffId(req);
+    await Promise.all(result.lineIds.map((lineId) => appendProxyLog(ListingLine, lineId, {
+        actingStaffId: staffId,
+        callNote,
+        action: 'create_listing',
+    })));
+    ok(res, req, result, 201);
+}
+// Maps to API-045 — Purchase raises a quote on the seller's behalf from the
+// Demand screen. Same postQuote as the seller's own POST /asks/:id/quotes, so
+// BR-105 (batch), BR-124, BR-126 (hold) and BR-273 (gap codes) all still apply.
+export async function postSellerCallQuote(req, res) {
+    const { sellerCounterpartyId, callNote, ...input } = req.body;
+    const result = await demandService.postQuote(sellerCounterpartyId, req.params.id, input);
+    await appendProxyLog(Quote, result.quoteId, {
+        actingStaffId: actingStaffId(req),
+        callNote,
+        action: 'post_quote',
+    });
+    ok(res, req, result, 201);
+}
+// Maps to API-049 — the fan-out. Same exact-expiry-and-batch gate as every
+// other confirm path (IC-21); a phone-based confirm does not bypass it.
+export async function postSellerCallConfirmPile(req, res) {
+    const { sellerCounterpartyId, callNote, ...input } = req.body;
+    const pileId = req.params.id;
+    const result = await demandService.confirmPile(sellerCounterpartyId, pileId, input, req.correlationId);
+    await appendProxyLog(Pile, pileId, {
+        actingStaffId: actingStaffId(req),
+        callNote,
+        action: 'confirm_pile',
+    });
+    ok(res, req, result, 201);
+}
+// Maps to API-050 — the other two exits.
+export async function postSellerCallRequotePile(req, res) {
+    const { sellerCounterpartyId, callNote } = req.body;
+    const pileId = req.params.id;
+    await demandService.requotePile(sellerCounterpartyId, pileId);
+    await appendProxyLog(Pile, pileId, {
+        actingStaffId: actingStaffId(req),
+        callNote,
+        action: 'requote_pile',
+    });
+    ok(res, req, { requoted: true });
+}
+export async function postSellerCallDeclinePile(req, res) {
+    const { sellerCounterpartyId, callNote } = req.body;
+    const pileId = req.params.id;
+    await demandService.declinePile(sellerCounterpartyId, pileId);
+    await appendProxyLog(Pile, pileId, {
+        actingStaffId: actingStaffId(req),
+        callNote,
+        action: 'decline_pile',
+    });
+    ok(res, req, { declined: true });
+}
