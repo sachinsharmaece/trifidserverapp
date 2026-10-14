@@ -390,6 +390,49 @@ describe('GET /staff/sales/buyers, /staff/sales/buyers/:buyerId', () => {
     expect(Array.isArray(fileRes.body.data.callLogs)).toBe(true);
   });
 
+  it("the buyer file carries his own nine-joint funnel, worded like the Funnel tab's", async () => {
+    const sales = await staffToken(app, 'sales');
+    const buyerId = await createApprovedBuyer(app, sales.token);
+
+    const fileRes = await request(app)
+      .get(`/api/v1/staff/sales/buyers/${buyerId}`)
+      .set('Authorization', `Bearer ${sales.token}`);
+    const funnelRes = await request(app)
+      .get('/api/v1/staff/sales/funnel')
+      .set('Authorization', `Bearer ${sales.token}`);
+    expect(fileRes.status).toBe(200);
+
+    const stages = fileRes.body.data.funnel as Array<{
+      key: string;
+      label: string;
+      reached: boolean;
+      count: number | null;
+    }>;
+    const metrics = funnelRes.body.data.metrics as Array<{ key: string; label: string }>;
+    expect(stages.map((s) => [s.key, s.label])).toEqual(metrics.map((m) => [m.key, m.label]));
+
+    // A brand-new approved buyer: registered, and nothing further yet.
+    expect(stages[0]).toMatchObject({ key: 'registered', reached: true });
+    for (const s of stages.slice(2)) expect(s.reached).toBe(false);
+    expect(stages.find((s) => s.key === 'viewing')?.count).toBe(0);
+    expect(stages.find((s) => s.key === 'asked')?.count).toBe(0);
+
+    // The sections under the funnel are sliced by the same state lists as the joints.
+    const data = fileRes.body.data as {
+      liveQuotes: unknown[];
+      orders: unknown[];
+      ordersByStage: Record<'paymentPending' | 'paid' | 'delivered' | 'other', unknown[]>;
+    };
+    expect(data.liveQuotes).toEqual([]);
+    const { paymentPending, paid, delivered, other } = data.ordersByStage;
+    expect(paymentPending.length + paid.length + delivered.length + other.length).toBe(
+      data.orders.length,
+    );
+    expect(stages.find((s) => s.key === 'took_it')?.count).toBe(paymentPending.length);
+    expect(stages.find((s) => s.key === 'paid')?.count).toBe(paid.length);
+    expect(stages.find((s) => s.key === 'delivered')?.count).toBe(delivered.length);
+  });
+
   it('404s for an unknown buyer', async () => {
     const sales = await staffToken(app, 'sales');
     const res = await request(app)

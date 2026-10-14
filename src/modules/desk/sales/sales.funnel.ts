@@ -19,21 +19,39 @@ export const SALES_FUNNEL_WINDOW_DAYS = 30;
 // BR-122's 4-working-hour head start plus one full working day — this
 // session's own plain-English choice for "an ask has gone stale", stated
 // here rather than left as an unexplained number.
-const ASK_LEAK_STALENESS_HOURS = 26;
+export const ASK_LEAK_STALENESS_HOURS = 26;
+
+export type FunnelKey =
+  | 'registered'
+  | 'classified'
+  | 'viewing'
+  | 'asked'
+  | 'rate_held'
+  | 'took_it'
+  | 'paid'
+  | 'delivered'
+  | 'ordered_again';
+
+/** One wording per stage — the global funnel and each buyer's own funnel both read it. */
+export const FUNNEL_LABELS: Record<FunnelKey, string> = {
+  registered: 'Registered',
+  classified: 'Classified',
+  viewing: 'Viewing',
+  asked: 'Asked',
+  rate_held: 'Rate given',
+  took_it: 'Payment pending',
+  paid: 'Paid',
+  delivered: 'Delivered',
+  ordered_again: 'Ordered again',
+};
+
+export const PAYMENT_PENDING_SO_STATES = ['awaiting_payment', 'payment_verifying'] as const;
+export const DELIVERED_SO_STATES = ['delivered', 'closed'] as const;
 
 export type FunnelUnit = 'count' | 'percent' | 'hours';
 
 export interface FunnelMetric {
-  key:
-    | 'registered'
-    | 'classified'
-    | 'viewing'
-    | 'asked'
-    | 'rate_held'
-    | 'took_it'
-    | 'paid'
-    | 'delivered'
-    | 'ordered_again';
+  key: FunnelKey;
   label: string;
   /** The calculation, in plain words, exactly as it is shown on screen. */
   formula: string;
@@ -63,7 +81,7 @@ async function registeredMetric(): Promise<FunnelMetric> {
   const count = items.filter((r) => r.kind === 'buyer' || r.kind === 'both').length;
   return {
     key: 'registered',
-    label: 'Registered',
+    label: FUNNEL_LABELS.registered,
     formula: 'Count of pending buyer (or buyer+seller) registrations awaiting approval, right now.',
     unit: 'count',
     value: count,
@@ -77,7 +95,7 @@ async function classifiedMetric(): Promise<FunnelMetric> {
   const count = await Buyer.countDocuments({ classified: true });
   return {
     key: 'classified',
-    label: 'Classified',
+    label: FUNNEL_LABELS.classified,
     formula:
       'Count of buyers a desk has classified (BR-044) — tier and trader status set — right now.',
     unit: 'count',
@@ -92,7 +110,7 @@ async function viewingMetric(): Promise<FunnelMetric> {
   const count = await Buyer.countDocuments({ rateViews: { $gt: 0 } });
   return {
     key: 'viewing',
-    label: 'Viewing',
+    label: FUNNEL_LABELS.viewing,
     formula: 'Count of buyers who have looked at a rate at least once, right now.',
     unit: 'count',
     value: count,
@@ -108,7 +126,7 @@ async function askedMetric(now: Date): Promise<FunnelMetric> {
   const leakCount = await Ask.countDocuments({ state: 'open', createdAt: { $lte: staleBefore } });
   return {
     key: 'asked',
-    label: 'Asked',
+    label: FUNNEL_LABELS.asked,
     formula:
       'Count of asks not yet lapsed or withdrawn, right now — still live in some sense. ' +
       `Leak: of those, how many are still "open" (no quote at all) after ${ASK_LEAK_STALENESS_HOURS} hours.`,
@@ -125,7 +143,7 @@ async function rateHeldMetric(): Promise<FunnelMetric> {
   const count = await Quote.countDocuments({ status: 'live' });
   return {
     key: 'rate_held',
-    label: 'Rate held',
+    label: FUNNEL_LABELS.rate_held,
     formula: 'Count of quotes currently live — a buyer holding a rate right now.',
     unit: 'count',
     value: count,
@@ -137,11 +155,11 @@ async function rateHeldMetric(): Promise<FunnelMetric> {
 
 async function tookItMetric(): Promise<FunnelMetric> {
   const count = await So.countDocuments({
-    state: { $in: ['awaiting_payment', 'payment_verifying'] },
+    state: { $in: [...PAYMENT_PENDING_SO_STATES] },
   });
   return {
     key: 'took_it',
-    label: 'Took it',
+    label: FUNNEL_LABELS.took_it,
     formula:
       'Count of sales orders currently awaiting payment or with payment being verified, right now.',
     unit: 'count',
@@ -152,7 +170,7 @@ async function tookItMetric(): Promise<FunnelMetric> {
   };
 }
 
-const PAID_SO_STATES = [
+export const PAID_SO_STATES = [
   'po_released',
   'dispatched_leg1',
   'at_indore',
@@ -165,7 +183,7 @@ async function paidMetric(): Promise<FunnelMetric> {
   const count = await So.countDocuments({ state: { $in: [...PAID_SO_STATES] } });
   return {
     key: 'paid',
-    label: 'Paid',
+    label: FUNNEL_LABELS.paid,
     formula:
       'Count of sales orders paid in full and somewhere in the chain between PO release and leg 2 dispatch, right now.',
     unit: 'count',
@@ -177,10 +195,10 @@ async function paidMetric(): Promise<FunnelMetric> {
 }
 
 async function deliveredMetric(): Promise<FunnelMetric> {
-  const count = await So.countDocuments({ state: { $in: ['delivered', 'closed'] } });
+  const count = await So.countDocuments({ state: { $in: [...DELIVERED_SO_STATES] } });
   return {
     key: 'delivered',
-    label: 'Delivered',
+    label: FUNNEL_LABELS.delivered,
     formula: 'Count of sales orders currently delivered or closed, right now.',
     unit: 'count',
     value: count,
@@ -197,7 +215,7 @@ async function orderedAgainMetric(): Promise<FunnelMetric> {
   ]);
   return {
     key: 'ordered_again',
-    label: 'Ordered again',
+    label: FUNNEL_LABELS.ordered_again,
     formula:
       'Count of distinct buyers who have placed more than one sales order, of any state, ever.',
     unit: 'count',
