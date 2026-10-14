@@ -1,0 +1,28 @@
+import { Schema, model } from 'mongoose';
+/**
+ * ENT-41 `return_note`. BR-189 — rejected cases stay at the dock under this
+ * document, 30 days, seller bears return freight. "Written off" is not
+ * available for this category. ⚠️ Day 31 is open — QR-021; this milestone
+ * only raises the note and starts the clock (`dueBy`), it does not
+ * implement what happens if `returnedAt` is still null past `dueBy`.
+ *
+ * `ST-12`'s middle state (`raised → collection_arranged → returned`) was
+ * missing entirely before M7 — `collectionArrangedAt` closes that gap. Both
+ * this field and `returnedAt` are set by ordinary Logistics action, never by
+ * a clock; `dueBy` passing does nothing to either on its own (still QR-021).
+ */
+const returnNoteSchema = new Schema({
+    poId: { type: Schema.Types.ObjectId, ref: 'Po', required: true },
+    sellerId: { type: Schema.Types.ObjectId, ref: 'Seller', required: true },
+    cases: { type: Number, required: true, min: 1 },
+    reason: { type: String, required: true },
+    photoRefs: [{ type: String }],
+    raisedAt: { type: Date, required: true, default: () => new Date() },
+    dueBy: { type: Date, required: true },
+    collectionArrangedAt: { type: Date, default: null },
+    returnedAt: { type: Date, default: null },
+    freightDebited: { type: Boolean, required: true, default: false },
+}, { timestamps: true });
+returnNoteSchema.index({ poId: 1 });
+returnNoteSchema.index({ returnedAt: 1, dueBy: 1 });
+export const ReturnNote = model('ReturnNote', returnNoteSchema, 'return_note');

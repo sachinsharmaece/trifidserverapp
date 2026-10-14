@@ -9,7 +9,17 @@ import { SoLine } from '../../../models/SoLine.js';
 import { Sku } from '../../../models/Sku.js';
 import { Product } from '../../../models/Product.js';
 import { Ask } from '../../../models/Ask.js';
+import { Quote } from '../../../models/Quote.js';
 import { AppError } from '../../../shared/errors.js';
+import { addDays } from '../../../shared/clock.js';
+import {
+  ASK_LEAK_STALENESS_HOURS,
+  DELIVERED_SO_STATES,
+  FUNNEL_LABELS,
+  PAID_SO_STATES,
+  PAYMENT_PENDING_SO_STATES,
+  type FunnelKey,
+} from './sales.funnel.js';
 import { listCallLogsForBuyer, type CallLogDto } from './sales.calls.js';
 import { listOrders, type SalesOrderRow } from './sales.orders.js';
 
@@ -161,6 +171,38 @@ export interface BuyerFileOpenAsk {
   packLabel: string | null; // Only when the ask names a specific pack.
 }
 
+/** A live quote on one of his asks — the rate he is holding right now. */
+export interface BuyerFileLiveQuote {
+  quoteId: string;
+  askId: string;
+  productId: string | null;
+  brand: string;
+  packLabel: string | null;
+  ratePaiseForIndore: number;
+  qtyAvailable: number;
+  daysToIndore: number;
+  bindingUntil: string;
+}
+
+/** His orders sliced by the funnel joint they sit at; `other` is every state outside the three. */
+export interface BuyerFileOrdersByStage {
+  paymentPending: SalesOrderRow[];
+  paid: SalesOrderRow[];
+  delivered: SalesOrderRow[];
+  other: SalesOrderRow[];
+}
+
+/** One joint of the Sales funnel, read for this one buyer. */
+export interface BuyerFunnelStage {
+  key: FunnelKey;
+  label: string;
+  reached: boolean;
+  /** His own count at this joint; `null` for the yes/no joints (registered, classified, ordered again). */
+  count: number | null;
+  /** Only on `asked` — his asks still "open" (no quote at all) past the funnel's staleness limit. */
+  leakCount?: number;
+}
+
 export interface BuyerFileDto {
   buyerId: string;
   counterpartyId: string;
@@ -172,10 +214,13 @@ export interface BuyerFileDto {
   classified: boolean;
   rateViews: number;
   ownerName: string | null;
+  funnel: BuyerFunnelStage[];
   productHistory: BuyerProductHistoryRow[];
   openAsks: BuyerFileOpenAsk[];
+  liveQuotes: BuyerFileLiveQuote[];
   callLogs: CallLogDto[];
   orders: SalesOrderRow[];
+  ordersByStage: BuyerFileOrdersByStage;
 }
 
 /** GET /staff/sales/buyers/:buyerId — the buyer-file drill-down. */
@@ -248,10 +293,74 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
   });
   const askProductById = new Map(askProducts.map((p) => [(p._id as Types.ObjectId).toString(), p]));
 
-  const [callLogs, orders] = await Promise.all([
+  const [callLogs, orders, liveQuotes] = await Promise.all([
     listCallLogsForBuyer(buyerId),
     listOrders({ buyerId }),
+    Quote.find({ askId: { $in: openAsks.map((a) => a._id) }, status: 'live' }).sort({
+      bindingUntil: 1,
+    }),
   ]);
+  const liveQuoteCount = liveQuotes.length;
+  const askById = new Map(openAsks.map((a) => [(a._id as Types.ObjectId).toString(), a]));
+  const liveQuoteRows: BuyerFileLiveQuote[] = liveQuotes.map((q) => {
+    const ask = askById.get((q.askId as Types.ObjectId).toString());
+    const productId = ask ? askProductIdOf(ask) : null;
+    const sku = ask?.skuId ? askSkuById.get((ask.skuId as Types.ObjectId).toString()) : undefined;
+    return {
+      quoteId: (q._id as Types.ObjectId).toString(),
+      askId: (q.askId as Types.ObjectId).toString(),
+      productId,
+      brand: (productId ? askProductById.get(productId)?.brand : undefined) ?? '—',
+      packLabel: sku?.packLabel ?? null,
+      ratePaiseForIndore: q.ratePaiseForIndore,
+      qtyAvailable: q.qtyAvailable,
+      daysToIndore: q.daysToIndore,
+      bindingUntil: q.bindingUntil.toISOString(),
+    };
+  });
+
+  // The same nine joints as the Funnel tab, with the same state lists and wording,
+  // counted over this buyer's own records only.
+  const staleBefore = addDays(new Date(), -(ASK_LEAK_STALENESS_HOURS / 24));
+  const askLeakCount = openAsks.filter(
+    (a) => a.state === 'open' && (a as unknown as { createdAt: Date }).createdAt <= staleBefore,
+  ).length;
+  const countOrders = (states: readonly string[]): number =>
+    orders.filter((o) => states.includes(o.state)).length;
+  const pendingCount = countOrders(PAYMENT_PENDING_SO_STATES);
+  const paidCount = countOrders(PAID_SO_STATES);
+  const deliveredCount = countOrders(DELIVERED_SO_STATES);
+  // Same state lists as the three counts above, so each section's size is its joint's count.
+  const inStates = (states: readonly string[]): SalesOrderRow[] =>
+    orders.filter((o) => states.includes(o.state));
+  const ordersByStage: BuyerFileOrdersByStage = {
+    paymentPending: inStates(PAYMENT_PENDING_SO_STATES),
+    paid: inStates(PAID_SO_STATES),
+    delivered: inStates(DELIVERED_SO_STATES),
+    other: orders.filter(
+      (o) =>
+        ![...PAYMENT_PENDING_SO_STATES, ...PAID_SO_STATES, ...DELIVERED_SO_STATES].includes(
+          o.state as never,
+        ),
+    ),
+  };
+  const stage = (
+    key: FunnelKey,
+    reached: boolean,
+    count: number | null,
+    extra: Partial<BuyerFunnelStage> = {},
+  ): BuyerFunnelStage => ({ key, label: FUNNEL_LABELS[key], reached, count, ...extra });
+  const funnel: BuyerFunnelStage[] = [
+    stage('registered', true, null), // This desk only lists buyers who are already approved.
+    stage('classified', buyer.classified, null),
+    stage('viewing', buyer.rateViews > 0, buyer.rateViews),
+    stage('asked', openAsks.length > 0, openAsks.length, { leakCount: askLeakCount }),
+    stage('rate_held', liveQuoteCount > 0, liveQuoteCount),
+    stage('took_it', pendingCount > 0, pendingCount),
+    stage('paid', paidCount > 0, paidCount),
+    stage('delivered', deliveredCount > 0, deliveredCount),
+    stage('ordered_again', sos.length > 1, null),
+  ];
 
   return {
     buyerId: (buyer._id as Types.ObjectId).toString(),
@@ -274,6 +383,7 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     classified: buyer.classified,
     rateViews: buyer.rateViews,
     ownerName: owner?.person ?? null,
+    funnel,
     productHistory,
     openAsks: openAsks.map((a) => {
       const productId = askProductIdOf(a);
@@ -290,7 +400,9 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
         packLabel: sku?.packLabel ?? null,
       };
     }),
+    liveQuotes: liveQuoteRows,
     callLogs,
     orders,
+    ordersByStage,
   };
 }

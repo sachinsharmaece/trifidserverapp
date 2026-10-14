@@ -1,0 +1,38 @@
+import * as chainService from './chain.service.js';
+import { chainViewAudienceFor, projectChainView } from './chain.view.js';
+import { createSoSchema, editPoSchema, reduceSoQuantitySchema } from './chain.validation.js';
+function staffActor(req) {
+    return { employeeId: req.auth.employeeId, correlationId: req.correlationId };
+}
+function ok(res, req, data, status = 200) {
+    res.status(status).json({ data, meta: { correlationId: req.correlationId } });
+}
+// New — 🏢 so:create (Sales). BR-048 — staff price with pre-fill and override.
+export async function postCreateSo(req, res) {
+    const input = createSoSchema.parse(req.body);
+    const result = await chainService.createSo(input, staffActor(req));
+    ok(res, req, result, 201);
+}
+// API-084 — 🏢 po:create (Purchase). 409 unless the SO is paid in full (INV-01).
+export async function postCreatePo(req, res) {
+    const result = await chainService.createPo(req.params.soId, staffActor(req));
+    ok(res, req, result, 201);
+}
+// New — 🏢 po:edit (Purchase). BR-036 — only rate or qty, never after billing.
+export async function postEditPo(req, res) {
+    const input = editPoSchema.parse(req.body);
+    await chainService.editPo(req.params.poId, input, staffActor(req));
+    ok(res, req, { edited: true });
+}
+// New — 🏢 so:reduce_quantity (Sales). Q6.
+export async function postReduceSoQuantity(req, res) {
+    const input = reduceSoQuantitySchema.parse(req.body);
+    const result = await chainService.reduceSoQuantity(req.params.soId, input, staffActor(req));
+    ok(res, req, result);
+}
+// API-090 — 🏢/🎛 chain:read. BR-031/BR-037 — the chain strip and full document view.
+export async function getChain(req, res) {
+    const view = await chainService.getChainView(req.params.id);
+    // M9 — each desk receives only its own side of the chain (CH §17.3, chain.view.ts).
+    ok(res, req, projectChainView(chainViewAudienceFor(req.auth.permissions), view));
+}

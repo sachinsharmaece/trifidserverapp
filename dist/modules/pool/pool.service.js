@@ -1,0 +1,451 @@
+import { withTransaction } from '../../db/transaction.js';
+import { Pool, buildConditionSetKey } from '../../models/Pool.js';
+import { PoolCommitment } from '../../models/PoolCommitment.js';
+import { ListingLine } from '../../models/ListingLine.js';
+import { Listing } from '../../models/Listing.js';
+import { Seller } from '../../models/Seller.js';
+import { Buyer } from '../../models/Buyer.js';
+import { SellerBlock } from '../../models/SellerBlock.js';
+import { Counterparty } from '../../models/Counterparty.js';
+import { Refund } from '../../models/Refund.js';
+import { So } from '../../models/So.js';
+import { AppError } from '../../shared/errors.js';
+import { writeAuditLog } from '../../shared/audit.js';
+import { addHours, formatForDisplay } from '../../shared/clock.js';
+import { enqueueNotification, counterpartyIdForBuyer, } from '../notification/notification.outbox.js';
+import { createSoInSession } from '../chain/chain.service.js';
+import { getPostedReceiptsPaiseForSo } from '../payment/payment.service.js';
+import { computeBuyerFacingRatePaise } from '../listing/listing.service.js';
+const PAY_WINDOW_HOURS = 16; // BR-156.
+const RECONFIRM_THRESHOLD = 0.75; // BR-154.
+// B-41 — "NaN of 200 boxes": one commitment with a missing/non-numeric
+// `qty` (stale data predating a schema change, going by the "Prototype v6"
+// pool name it showed up on) poisoned the whole running sum, since
+// `sum + undefined` is `NaN` and stays `NaN` for every addition after it.
+export function sumQty(commitments) {
+    return commitments.reduce((sum, c) => sum + (Number.isFinite(c.qty) ? c.qty : 0), 0);
+}
+async function requireActiveBuyer(buyerCounterpartyId) {
+    const buyer = await Buyer.findOne({ counterpartyId: buyerCounterpartyId });
+    if (!buyer)
+        throw new AppError({ code: 'PERMISSION_DENIED', messageEn: 'Buyers only.' });
+    return buyer;
+}
+async function isBuyerBlockedBySupplier(sellerId, buyerGstin) {
+    const block = await SellerBlock.findOne({ sellerId, gstin: buyerGstin, status: 'active' });
+    return !!block;
+}
+async function summarize(pool) {
+    const commitments = await PoolCommitment.find({ poolId: pool._id, withdrawnAt: null });
+    const bindingQty = sumQty(commitments.filter((c) => c.isBinding));
+    const totalQty = sumQty(commitments);
+    return {
+        poolId: pool._id.toString(),
+        skuId: pool.skuId.toString(),
+        moq: pool.moq,
+        status: pool.status,
+        bindingQty,
+        totalQty,
+        payDeadline: pool.payDeadline ?? null,
+    };
+}
+/** API-060 GET /pools. Pools open on any SKU belonging to this product. */
+export async function getPoolsForProduct(skuIds) {
+    const pools = await Pool.find({ skuId: { $in: skuIds }, isActive: true });
+    return Promise.all(pools.map(summarize));
+}
+/** API-060 GET /pools/:id. */
+export async function getPool(buyerCounterpartyId, poolId) {
+    const pool = await Pool.findById(poolId);
+    if (!pool)
+        throw new AppError({ code: 'NOT_FOUND', messageEn: 'Pool not found.' });
+    const summary = await summarize(pool);
+    if (!buyerCounterpartyId)
+        return summary;
+    const buyer = await Buyer.findOne({ counterpartyId: buyerCounterpartyId });
+    if (!buyer)
+        return summary;
+    const supplier = await findCurrentSupplier(pool);
+    const myRatePaise = supplier
+        ? ((await computeBuyerFacingRatePaise(buyer, pool.skuId, supplier.sellerNetPaise)) ?? undefined)
+        : undefined;
+    const mine = await PoolCommitment.findOne({
+        poolId: pool._id,
+        buyerId: buyer._id,
+        withdrawnAt: null,
+    });
+    if (!mine)
+        return { ...summary, myRatePaise };
+    return {
+        ...summary,
+        myRatePaise,
+        myCommitment: {
+            qty: mine.qty,
+            isBinding: mine.isBinding,
+            reconfirmedAt: mine.reconfirmedAt ?? null,
+            paidAt: mine.paidAt ?? null,
+        },
+    };
+}
+/**
+ * Finds the seller who supplies the pool right now (BR-152/BR-153):
+ * whoever holds the lowest rate on this exact condition-set key, excluding
+ * `New` tier sellers. No incumbent right, no last look — recomputed fresh
+ * every time this is called, including at trigger.
+ */
+async function findCurrentSupplier(pool) {
+    const liveListings = await Listing.find({ state: 'live' });
+    const lines = await ListingLine.find({
+        listingId: { $in: liveListings.map((l) => l._id) },
+        skuId: pool.skuId,
+        expiryBand: pool.expiryBand,
+        moqBand: pool.moqBand,
+        deliveryBand: pool.deliveryBand,
+        provenance: pool.provenance,
+    }).sort({ ratePaise: 1 });
+    const listingBySellerLine = new Map(liveListings.map((l) => [l._id.toString(), l]));
+    for (const line of lines) {
+        const listing = listingBySellerLine.get(line.listingId.toString());
+        if (!listing)
+            continue;
+        const seller = await Seller.findById(listing.sellerId);
+        if (!seller || seller.trustTier === 'New')
+            continue; // BR-153.
+        return { sellerId: seller._id, sellerNetPaise: line.ratePaise };
+    }
+    return null;
+}
+/**
+ * API-061. BR-154 — before 75%, soft/free/withdrawable; after 75%, binding
+ * on entry. Exclusion is enforced at join time, before composition is set
+ * (`CH §3.10.7`) — checked against whoever currently supplies the pool.
+ */
+export async function commitToPool(buyerCounterpartyId, poolId, input) {
+    const buyer = await requireActiveBuyer(buyerCounterpartyId);
+    const counterparty = await Counterparty.findById(buyer.counterpartyId);
+    if (counterparty?.status === 'blacklisted') {
+        // QR-015 — blacklist blocks new pool joins. `counterparty` is already in
+        // hand here, so this reads it directly rather than calling
+        // assertCounterpartyActive and re-fetching the same document.
+        throw new AppError({
+            code: 'ACCOUNT_NOT_ACTIVE',
+            messageEn: 'This account is blocked. Call the sales desk for help.',
+        });
+    }
+    const pool = await Pool.findById(poolId);
+    if (!pool || !pool.isActive)
+        throw new AppError({ code: 'POOL_CLOSED', messageEn: 'This pool is not open.' });
+    const supplier = await findCurrentSupplier(pool);
+    if (supplier && (await isBuyerBlockedBySupplier(supplier.sellerId, counterparty?.gstin ?? ''))) {
+        throw new AppError({ code: 'NOT_VISIBLE', messageEn: 'Not found.' });
+    }
+    const existing = await PoolCommitment.findOne({ poolId: pool._id, buyerId: buyer._id });
+    if (existing && !existing.withdrawnAt) {
+        throw new AppError({
+            code: 'VALIDATION_FAILED',
+            messageEn: 'You are already committed to this pool.',
+        });
+    }
+    const isBinding = pool.status === 'reconfirm' || pool.status === 'triggered';
+    if (existing) {
+        existing.withdrawnAt = null;
+        existing.qty = input.qty;
+        existing.isBinding = isBinding;
+        existing.deliveryLocationId = input.deliveryLocationId;
+        await existing.save();
+    }
+    else {
+        await PoolCommitment.create({
+            poolId: pool._id,
+            buyerId: buyer._id,
+            qty: input.qty,
+            deliveryLocationId: input.deliveryLocationId,
+            isBinding,
+        });
+    }
+    // A joiner after trigger pays on joining, at the already-triggered rate,
+    // within the same payment window as everyone else (BR-156).
+    if (pool.status === 'triggered' && supplier) {
+        await withTransaction(async (session) => {
+            const { soNo } = await createSoInSession({
+                buyerId: buyer._id.toString(),
+                sellerId: supplier.sellerId.toString(),
+                skuId: pool.skuId.toString(),
+                boxes: input.qty,
+                sellerNetPaise: supplier.sellerNetPaise,
+                placeOfSupply: 'intra_state',
+                payDeadlineHours: PAY_WINDOW_HOURS,
+                skipPaymentDueNotice: true, // `pool_triggered` below is this SO's payment notice.
+            }, { employeeId: buyer._id.toString(), correlationId: `pool-${poolId}` }, session);
+            // CH §21.8 #6 — "Pay within 16 hours": a joiner after trigger pays on joining.
+            await enqueueNotification({
+                counterpartyId: buyer.counterpartyId,
+                templateKey: 'pool_triggered',
+                params: { soNo, payBy: formatForDisplay(addHours(new Date(), PAY_WINDOW_HOURS)) },
+                correlationId: `pool-${poolId}`,
+            }, session);
+        });
+    }
+    else {
+        await checkPoolThresholds(poolId);
+    }
+    return { poolId, isBinding };
+}
+/**
+ * BR-154/BR-155 — recomputes the 75% re-confirmation and the trigger.
+ * Called after every commit/withdraw/reconfirm; safe to call repeatedly.
+ */
+export async function checkPoolThresholds(poolId) {
+    const pool = await Pool.findById(poolId);
+    if (!pool || pool.status === 'triggered' || pool.status === 'converted')
+        return;
+    const commitments = await PoolCommitment.find({ poolId: pool._id, withdrawnAt: null });
+    const totalQty = sumQty(commitments);
+    const crossedThreshold = totalQty >= pool.moq * RECONFIRM_THRESHOLD;
+    if (crossedThreshold && pool.status === 'open' && !pool.reconfirmRequestedAt) {
+        // BR-154 — one re-confirmation request to every existing (still
+        // non-binding) committer. New joiners from here on commit binding.
+        // TD-004 — the threshold crossing and every `pool_75` commit together.
+        await withTransaction(async (session) => {
+            // M9 — claim the transition atomically. Two commitments crossing 75% together both pass
+            // the check above; only the one whose update still finds the pool `open` may go on, or
+            // every soft committer would be asked to re-confirm twice.
+            const claimed = await Pool.findOneAndUpdate({ _id: pool._id, status: 'open', reconfirmRequestedAt: null }, { $set: { status: 'reconfirm', reconfirmRequestedAt: new Date() } }, { session, new: true });
+            if (!claimed)
+                return;
+            // CH §21.8 #5 — "Pool hits 75% — re-confirm or withdraw."
+            for (const commitment of commitments.filter((c) => !c.isBinding)) {
+                await enqueueNotification({
+                    counterpartyId: await counterpartyIdForBuyer(commitment.buyerId, session),
+                    templateKey: 'pool_75',
+                    params: { poolId },
+                    correlationId: `pool-${poolId}`,
+                }, session);
+            }
+        });
+        return;
+    }
+    const bindingQty = sumQty(commitments.filter((c) => c.isBinding));
+    if (bindingQty >= pool.moq) {
+        await triggerPool(poolId);
+    }
+}
+/**
+ * BR-155 — triggers on binding quantity, never committed. Any commitment
+ * still awaiting its one re-confirmation at the moment of trigger is
+ * dropped here, with no strike — "silence is information, bought early."
+ */
+async function triggerPool(poolId) {
+    const pool = await Pool.findById(poolId);
+    if (!pool || pool.status === 'triggered')
+        return;
+    const supplier = await findCurrentSupplier(pool);
+    if (!supplier)
+        return; // No eligible (non-`New`) seller currently holds this key — wait.
+    const commitments = await PoolCommitment.find({ poolId: pool._id, withdrawnAt: null });
+    await withTransaction(async (session) => {
+        // M9 — claim the trigger atomically, first. Two binding commitments that cross the MOQ
+        // together both reach this point; whichever loses finds the pool already `triggered` and
+        // stops, or every binding buyer would be given two SOs.
+        const triggeredAt = new Date();
+        const claimed = await Pool.findOneAndUpdate({ _id: pool._id, status: { $in: ['open', 'reconfirm'] } }, {
+            $set: {
+                status: 'triggered',
+                triggeredAt,
+                payDeadline: addHours(triggeredAt, PAY_WINDOW_HOURS),
+            },
+        }, { session, new: true });
+        if (!claimed)
+            return;
+        for (const commitment of commitments) {
+            if (!commitment.isBinding) {
+                // Never reconfirmed before trigger — dropped, no strike.
+                commitment.withdrawnAt = new Date();
+                await commitment.save({ session });
+                continue;
+            }
+            const { soId, soNo } = await createSoInSession({
+                buyerId: commitment.buyerId.toString(),
+                sellerId: supplier.sellerId.toString(),
+                skuId: pool.skuId.toString(),
+                boxes: commitment.qty,
+                sellerNetPaise: supplier.sellerNetPaise,
+                placeOfSupply: 'intra_state',
+                payDeadlineHours: PAY_WINDOW_HOURS,
+                skipPaymentDueNotice: true, // `pool_triggered` below is this SO's payment notice.
+            }, {
+                employeeId: commitment.buyerId.toString(),
+                correlationId: `pool-${poolId}`,
+            }, session);
+            commitment.soId = soId;
+            await commitment.save({ session });
+            // BR-155 — inside the commit handler, at the threshold crossing, in the same
+            // transaction. CH §21.8 #6 — "Pay within 16 hours."
+            await enqueueNotification({
+                counterpartyId: await counterpartyIdForBuyer(commitment.buyerId, session),
+                templateKey: 'pool_triggered',
+                params: { soNo, payBy: formatForDisplay(addHours(new Date(), PAY_WINDOW_HOURS)) },
+                correlationId: `pool-${poolId}`,
+            }, session);
+        }
+        await writeAuditLog({
+            actorId: supplier.sellerId,
+            actorType: 'counterparty',
+            entity: 'pool',
+            entityId: pool._id,
+            field: 'status',
+            newValue: 'triggered',
+            correlationId: `pool-${poolId}`,
+        }, session);
+    });
+}
+/** API-062 reconfirm. BR-155 — one re-confirmation per buyer per pool cycle. */
+export async function reconfirmPool(buyerCounterpartyId, poolId) {
+    const buyer = await requireActiveBuyer(buyerCounterpartyId);
+    const commitment = await PoolCommitment.findOne({
+        poolId,
+        buyerId: buyer._id,
+        withdrawnAt: null,
+    });
+    if (!commitment)
+        throw new AppError({ code: 'NOT_FOUND', messageEn: 'No commitment on this pool.' });
+    if (commitment.reconfirmedAt) {
+        throw new AppError({ code: 'VALIDATION_FAILED', messageEn: 'Already reconfirmed this cycle.' });
+    }
+    commitment.reconfirmedAt = new Date();
+    commitment.isBinding = true;
+    await commitment.save();
+    await checkPoolThresholds(poolId);
+}
+/** API-062 withdraw. Silence (never reconfirming) drops with no strike — same as an explicit withdraw pre-75%. */
+export async function withdrawFromPool(buyerCounterpartyId, poolId) {
+    const buyer = await requireActiveBuyer(buyerCounterpartyId);
+    const commitment = await PoolCommitment.findOne({
+        poolId,
+        buyerId: buyer._id,
+        withdrawnAt: null,
+    });
+    if (!commitment)
+        throw new AppError({ code: 'NOT_FOUND', messageEn: 'No commitment on this pool.' });
+    if (commitment.isBinding) {
+        throw new AppError({
+            code: 'VALIDATION_FAILED',
+            messageEn: 'This commitment is binding and can no longer be withdrawn free (BR-154).',
+        });
+    }
+    commitment.withdrawnAt = new Date();
+    await commitment.save();
+}
+/** API-063. BR-159 — the seller closes his own pool short, at the rate he published, unrevisable. */
+export async function triggerPoolEarly(sellerCounterpartyId, poolId) {
+    const seller = await Seller.findOne({ counterpartyId: sellerCounterpartyId });
+    if (!seller)
+        throw new AppError({ code: 'PERMISSION_DENIED', messageEn: 'Sellers only.' });
+    const pool = await Pool.findById(poolId);
+    if (!pool || pool.status === 'triggered') {
+        throw new AppError({ code: 'POOL_CLOSED', messageEn: 'This pool is not open.' });
+    }
+    const supplier = await findCurrentSupplier(pool);
+    if (!supplier || !supplier.sellerId.equals(seller._id)) {
+        throw new AppError({
+            code: 'PERMISSION_DENIED',
+            messageEn: 'Only the seller currently holding the lowest rate on this key may trigger it early.',
+        });
+    }
+    // Binding-on-entry for everyone still soft, since the seller is choosing
+    // to supply the pool as it stands right now.
+    await PoolCommitment.updateMany({ poolId: pool._id, withdrawnAt: null, isBinding: false }, { $set: { isBinding: true } });
+    await triggerPool(poolId);
+}
+/**
+ * BR-158 — resolution when the 16h payment window closes short. On-demand
+ * staff/desk action rather than a scheduled job, matching M4's own
+ * precedent (`CHANGELOG.md`, "the 13:00/16:00/19:00 runs are on-demand, not
+ * scheduled") — the underlying resolution is what matters and is fully
+ * built; wiring it to a clock is a small, separate follow-up.
+ */
+export async function resolvePoolShortfall(poolId, sellerWillShipLowerQty, actor) {
+    const pool = await Pool.findById(poolId);
+    if (!pool || pool.status !== 'triggered') {
+        throw new AppError({
+            code: 'VALIDATION_FAILED',
+            messageEn: 'This pool is not awaiting payment.',
+        });
+    }
+    const commitments = await PoolCommitment.find({
+        poolId: pool._id,
+        withdrawnAt: null,
+        isBinding: true,
+    });
+    const soIds = commitments.map((c) => c.soId).filter(Boolean);
+    const sos = await So.find({ _id: { $in: soIds } });
+    // "Paid" is what Accounts has posted to the bank book (INV-01's own source),
+    // not the SO state: a paid buyer's SO stays `awaiting_payment` until the PO
+    // releases, and BR-157 holds the PO back until the pool is paid up.
+    // An SO already past the PO (`po_released` onward) is in fulfilment and is
+    // not part of a short close.
+    const inShortfall = sos.filter((so) => so.state === 'awaiting_payment' || so.state === 'payment_verifying');
+    const paidPaiseBySoId = new Map();
+    for (const so of inShortfall) {
+        const soId = so._id.toString();
+        paidPaiseBySoId.set(soId, await getPostedReceiptsPaiseForSo(soId));
+    }
+    const anyoneUnpaid = inShortfall.some((so) => (paidPaiseBySoId.get(so._id.toString()) ?? 0) < so.totalPaise);
+    if (!anyoneUnpaid)
+        return {}; // Fully paid — nothing to resolve.
+    if (sellerWillShipLowerQty)
+        return {}; // Accepted as-is; unpaid buyers simply drop off at their own payment deadline.
+    // BR-158 — "everyone is refunded" means everyone who paid. A buyer who has
+    // not paid has nothing to refund: he is released, no strike, no Refund row.
+    // The pool reopens as a fresh document (never mutated in place — matches the
+    // "append, don't edit history" pattern used throughout the money modules).
+    return withTransaction(async (session) => {
+        for (const so of inShortfall) {
+            const paidPaise = paidPaiseBySoId.get(so._id.toString()) ?? 0;
+            if (paidPaise > 0) {
+                const buyer = await Buyer.findById(so.buyerId);
+                const buyerCounterparty = await Counterparty.findById(buyer.counterpartyId);
+                await Refund.create([
+                    {
+                        chainId: so.chainId,
+                        buyerId: so.buyerId,
+                        amountPaise: Math.min(paidPaise, so.totalPaise), // BR-034 — what he paid, never more.
+                        reasonCode: 'supply_failure_full',
+                        state: 'payable',
+                        targetAccountMasked: buyerCounterparty?.mobile ?? 'unknown',
+                    },
+                ], { session, ordered: true });
+            }
+            so.state = 'cancelled';
+            await so.save({ session });
+        }
+        pool.status = 'reopened';
+        pool.isActive = false;
+        await pool.save({ session });
+        const [reopened] = await Pool.create([
+            {
+                skuId: pool.skuId,
+                conditionSetKey: pool.conditionSetKey,
+                expiryBand: pool.expiryBand,
+                moqBand: pool.moqBand,
+                deliveryBand: pool.deliveryBand,
+                provenance: pool.provenance,
+                moq: pool.moq,
+                status: 'open',
+                isActive: true,
+            },
+        ], { session, ordered: true });
+        await writeAuditLog({
+            actorId: actor.employeeId,
+            actorType: 'staff',
+            entity: 'pool',
+            entityId: pool._id,
+            field: 'status',
+            oldValue: 'triggered',
+            newValue: 'reopened',
+            correlationId: actor.correlationId,
+        }, session);
+        return { reopenedPoolId: reopened._id.toString() };
+    });
+}
+export { buildConditionSetKey };
