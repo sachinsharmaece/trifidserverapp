@@ -421,15 +421,25 @@ describe('GET /staff/sales/buyers, /staff/sales/buyers/:buyerId', () => {
     const data = fileRes.body.data as {
       liveQuotes: unknown[];
       orders: unknown[];
-      ordersByStage: Record<'paymentPending' | 'paid' | 'delivered' | 'other', unknown[]>;
+      ordersByStage: Record<
+        'paymentPending' | 'paid' | 'billed' | 'dispatched' | 'delivered' | 'other',
+        unknown[]
+      >;
     };
     expect(data.liveQuotes).toEqual([]);
-    const { paymentPending, paid, delivered, other } = data.ordersByStage;
-    expect(paymentPending.length + paid.length + delivered.length + other.length).toBe(
-      data.orders.length,
-    );
+    const { paymentPending, paid, billed, dispatched, delivered, other } = data.ordersByStage;
+    expect(
+      paymentPending.length +
+        paid.length +
+        billed.length +
+        dispatched.length +
+        delivered.length +
+        other.length,
+    ).toBe(data.orders.length);
     expect(stages.find((s) => s.key === 'took_it')?.count).toBe(paymentPending.length);
     expect(stages.find((s) => s.key === 'paid')?.count).toBe(paid.length);
+    expect(stages.find((s) => s.key === 'billed')?.count).toBe(billed.length);
+    expect(stages.find((s) => s.key === 'dispatched')?.count).toBe(dispatched.length);
     expect(stages.find((s) => s.key === 'delivered')?.count).toBe(delivered.length);
   });
 
@@ -550,13 +560,13 @@ describe('GET /staff/sales/orders', () => {
 });
 
 describe('GET /staff/sales/funnel', () => {
-  it('returns the nine-stage report shape', async () => {
+  it('returns the eleven-stage report shape', async () => {
     const sales = await staffToken(app, 'sales');
     const res = await request(app)
       .get('/api/v1/staff/sales/funnel')
       .set('Authorization', `Bearer ${sales.token}`);
     expect(res.status).toBe(200);
-    expect(res.body.data.metrics).toHaveLength(9);
+    expect(res.body.data.metrics).toHaveLength(11);
     expect(res.body.data.metrics.map((m: { key: string }) => m.key)).toEqual([
       'registered',
       'classified',
@@ -565,6 +575,8 @@ describe('GET /staff/sales/funnel', () => {
       'rate_held',
       'took_it',
       'paid',
+      'billed',
+      'dispatched',
       'delivered',
       'ordered_again',
     ]);

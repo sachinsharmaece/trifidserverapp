@@ -192,13 +192,18 @@ describe('seller app writes reach the Purchase and Sales desks, read-only', () =
     expect(gaps.status).toBe(200);
     expect(gaps.body.data).toHaveLength(1);
 
-    // Sales: the buyer's ask is now `quoted` on his file, and the funnel counts a held rate.
+    // Sales: the ask has left "He asked" and its rate sits under "Rate given", stamped with
+    // when it was given and how many boxes he asked for; the funnel counts a held rate.
     const file = await get(w.sales.token, `/staff/sales/buyers/${w.buyerDocId}`);
     expect(
-      (file.body.data.openAsks as Array<{ askId: string; state: string }>).find(
-        (a) => a.askId === askId,
-      )?.state,
-    ).toBe('quoted');
+      (file.body.data.openAsks as Array<{ askId: string }>).some((a) => a.askId === askId),
+    ).toBe(false);
+    const given = (
+      file.body.data.liveQuotes as Array<{ askId: string; askQty: number; givenAt: string }>
+    ).find((q) => q.askId === askId);
+    expect(given).toBeDefined();
+    expect(given!.askQty).toBeGreaterThan(0);
+    expect(Number.isNaN(Date.parse(given!.givenAt))).toBe(false);
     const funnel = await get(w.sales.token, '/staff/sales/funnel');
     const held = (funnel.body.data.metrics as Array<{ key: string; value: number }>).find(
       (m) => m.key === 'rate_held',

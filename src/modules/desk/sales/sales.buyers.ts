@@ -14,7 +14,9 @@ import { AppError } from '../../../shared/errors.js';
 import { addDays } from '../../../shared/clock.js';
 import {
   ASK_LEAK_STALENESS_HOURS,
+  BILLED_SO_STATES,
   DELIVERED_SO_STATES,
+  DISPATCHED_SO_STATES,
   FUNNEL_LABELS,
   PAID_SO_STATES,
   PAYMENT_PENDING_SO_STATES,
@@ -169,6 +171,7 @@ export interface BuyerFileOpenAsk {
   brand: string;
   technical: string;
   packLabel: string | null; // Only when the ask names a specific pack.
+  askedAt: string;
 }
 
 /** A live quote on one of his asks — the rate he is holding right now. */
@@ -180,7 +183,11 @@ export interface BuyerFileLiveQuote {
   packLabel: string | null;
   ratePaiseForIndore: number;
   qtyAvailable: number;
+  /** How many boxes he asked for — what Confirm compares the quote against. */
+  askQty: number;
   daysToIndore: number;
+  /** When the rate was given to him; the desk shows it as "15 minutes ago". */
+  givenAt: string;
   bindingUntil: string;
 }
 
@@ -188,6 +195,8 @@ export interface BuyerFileLiveQuote {
 export interface BuyerFileOrdersByStage {
   paymentPending: SalesOrderRow[];
   paid: SalesOrderRow[];
+  billed: SalesOrderRow[];
+  dispatched: SalesOrderRow[];
   delivered: SalesOrderRow[];
   other: SalesOrderRow[];
 }
@@ -266,20 +275,23 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     }),
   );
 
-  const openAsks = await Ask.find({
+  // An ask moves on as it is worked: `open` (waiting on a rate) is "He asked"; once a rate is
+  // given it is `quoted` and lives under "Rate given"; once he confirms it is an order.
+  const liveAsks = await Ask.find({
     buyerId: buyer._id,
-    state: { $nin: ['lapsed', 'withdrawn'] },
+    state: { $in: ['open', 'quoted'] },
   }).sort({
     createdAt: -1,
   });
+  const openAsks = liveAsks.filter((a) => a.state === 'open');
 
   // An ask names a product, or only a pack (SKU) — resolve either to the product so
   // "He asked" can show a name, never a bare id.
   const askSkus = await Sku.find({
-    _id: { $in: openAsks.filter((a) => a.skuId).map((a) => a.skuId) },
+    _id: { $in: liveAsks.filter((a) => a.skuId).map((a) => a.skuId) },
   });
   const askSkuById = new Map(askSkus.map((s) => [(s._id as Types.ObjectId).toString(), s]));
-  const askProductIdOf = (a: (typeof openAsks)[number]): string | null =>
+  const askProductIdOf = (a: (typeof liveAsks)[number]): string | null =>
     a.productId
       ? (a.productId as Types.ObjectId).toString()
       : a.skuId
@@ -289,19 +301,19 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
           )?.toString() ?? null)
         : null;
   const askProducts = await Product.find({
-    _id: { $in: [...new Set(openAsks.map(askProductIdOf).filter((id): id is string => !!id))] },
+    _id: { $in: [...new Set(liveAsks.map(askProductIdOf).filter((id): id is string => !!id))] },
   });
   const askProductById = new Map(askProducts.map((p) => [(p._id as Types.ObjectId).toString(), p]));
 
   const [callLogs, orders, liveQuotes] = await Promise.all([
     listCallLogsForBuyer(buyerId),
     listOrders({ buyerId }),
-    Quote.find({ askId: { $in: openAsks.map((a) => a._id) }, status: 'live' }).sort({
+    Quote.find({ askId: { $in: liveAsks.map((a) => a._id) }, status: 'live' }).sort({
       bindingUntil: 1,
     }),
   ]);
   const liveQuoteCount = liveQuotes.length;
-  const askById = new Map(openAsks.map((a) => [(a._id as Types.ObjectId).toString(), a]));
+  const askById = new Map(liveAsks.map((a) => [(a._id as Types.ObjectId).toString(), a]));
   const liveQuoteRows: BuyerFileLiveQuote[] = liveQuotes.map((q) => {
     const ask = askById.get((q.askId as Types.ObjectId).toString());
     const productId = ask ? askProductIdOf(ask) : null;
@@ -314,7 +326,9 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
       packLabel: sku?.packLabel ?? null,
       ratePaiseForIndore: q.ratePaiseForIndore,
       qtyAvailable: q.qtyAvailable,
+      askQty: ask?.qty ?? q.qtyAvailable,
       daysToIndore: q.daysToIndore,
+      givenAt: (q as unknown as { createdAt: Date }).createdAt.toISOString(),
       bindingUntil: q.bindingUntil.toISOString(),
     };
   });
@@ -329,6 +343,8 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     orders.filter((o) => states.includes(o.state)).length;
   const pendingCount = countOrders(PAYMENT_PENDING_SO_STATES);
   const paidCount = countOrders(PAID_SO_STATES);
+  const billedCount = countOrders(BILLED_SO_STATES);
+  const dispatchedCount = countOrders(DISPATCHED_SO_STATES);
   const deliveredCount = countOrders(DELIVERED_SO_STATES);
   // Same state lists as the three counts above, so each section's size is its joint's count.
   const inStates = (states: readonly string[]): SalesOrderRow[] =>
@@ -336,12 +352,18 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
   const ordersByStage: BuyerFileOrdersByStage = {
     paymentPending: inStates(PAYMENT_PENDING_SO_STATES),
     paid: inStates(PAID_SO_STATES),
+    billed: inStates(BILLED_SO_STATES),
+    dispatched: inStates(DISPATCHED_SO_STATES),
     delivered: inStates(DELIVERED_SO_STATES),
     other: orders.filter(
       (o) =>
-        ![...PAYMENT_PENDING_SO_STATES, ...PAID_SO_STATES, ...DELIVERED_SO_STATES].includes(
-          o.state as never,
-        ),
+        ![
+          ...PAYMENT_PENDING_SO_STATES,
+          ...PAID_SO_STATES,
+          ...BILLED_SO_STATES,
+          ...DISPATCHED_SO_STATES,
+          ...DELIVERED_SO_STATES,
+        ].includes(o.state as never),
     ),
   };
   const stage = (
@@ -358,6 +380,8 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     stage('rate_held', liveQuoteCount > 0, liveQuoteCount),
     stage('took_it', pendingCount > 0, pendingCount),
     stage('paid', paidCount > 0, paidCount),
+    stage('billed', billedCount > 0, billedCount),
+    stage('dispatched', dispatchedCount > 0, dispatchedCount),
     stage('delivered', deliveredCount > 0, deliveredCount),
     stage('ordered_again', sos.length > 1, null),
   ];
@@ -398,6 +422,7 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
         brand: product?.brand ?? '—',
         technical: product?.technical ?? '—',
         packLabel: sku?.packLabel ?? null,
+        askedAt: (a as unknown as { createdAt: Date }).createdAt.toISOString(),
       };
     }),
     liveQuotes: liveQuoteRows,

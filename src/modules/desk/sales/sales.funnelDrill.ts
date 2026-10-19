@@ -100,7 +100,7 @@ async function describeAsks(asks: AskLike[]) {
 
 /** GET /staff/sales/funnel/asked — the asks counted under "Asked", oldest first. */
 export async function listFunnelAsks(now: Date = new Date()): Promise<FunnelAskRow[]> {
-  const asks = await Ask.find({ state: { $nin: ['lapsed', 'withdrawn'] } }).sort({ createdAt: 1 });
+  const asks = await Ask.find({ state: 'open' }).sort({ createdAt: 1 });
   const describe = await describeAsks(asks);
   const staleBefore = addDays(now, -(ASK_LEAK_STALENESS_HOURS / 24));
   return asks.map((a) => {

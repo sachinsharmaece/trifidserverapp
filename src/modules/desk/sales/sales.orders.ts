@@ -43,6 +43,10 @@ export interface SalesOrderRow {
   upcomingReceiptId: string | null;
   claimedAt: string | null;
   claimedAmountPaise: number | null;
+  /** When the order was raised. */
+  placedAt: string;
+  /** When the order last changed — the desk reads it as "paid / billed / dispatched … ago". */
+  updatedAt: string;
 }
 
 const CLOSED_SO_STATES: SoState[] = ['delivered', 'closed', 'cancelled', 'supply_failed'];
@@ -129,6 +133,8 @@ export async function listOrders(filters: {
       upcomingReceiptId: waitingClaim ? (waitingClaim._id as Types.ObjectId).toString() : null,
       claimedAt: appliedClaim ? appliedClaim.claimedAt.toISOString() : null,
       claimedAmountPaise: appliedClaim ? appliedClaim.amountPaise : null,
+      placedAt: (so as unknown as { createdAt: Date }).createdAt.toISOString(),
+      updatedAt: (so as unknown as { updatedAt: Date }).updatedAt.toISOString(),
     };
   });
 }

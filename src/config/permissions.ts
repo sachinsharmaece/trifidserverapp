@@ -87,6 +87,17 @@ export const PERMISSIONS = {
   PROXY_BUYER_CALL: 'proxy:buyer_call',
   PROXY_SELLER_CALL: 'proxy:seller_call',
   ACCOUNTS_CONFIRM_RECEIPT: 'accounts:confirm_receipt',
+  // Buyer file stage buttons — Sales takes a buyer's payment itself (UTR + receipt + PO
+  // release in one step), a deliberate interim stand-in for Accounts' bank:post (BR-027).
+  SALES_MARK_PAID: 'sales:mark_paid',
+  // Same idea for the next two money/stock steps: Sales keys the Marg invoice and records
+  // the leg 2 dispatch from the buyer file (stand-ins for marg:key / movement:write).
+  SALES_MARK_BILLED: 'sales:mark_billed',
+  SALES_DISPATCH: 'sales:dispatch',
+  // INTERIM — lets Sales jump a paid order straight to Billed, recording leg 1 and an
+  // all-accepted dock inspection itself. Take it off the Sales role once Logistics and
+  // the dock record those steps for real.
+  SALES_SKIP_TO_BILLED: 'sales:skip_to_billed',
   // Enquiry journey (DEC-051) — owner, follow-up and notes on an enquiry.
   // Sales and Purchase work their own desk's half; Controller (and Admin) either.
   ENQUIRY_MANAGE: 'enquiry:manage',
@@ -164,6 +175,10 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       // Staff-assisted enquiries — Sales proxies for a buyer only.
       PERMISSIONS.ONBOARDING_STAFF_ASSIST_BUYER,
       PERMISSIONS.PROXY_BUYER_CALL,
+      PERMISSIONS.SALES_MARK_PAID,
+      PERMISSIONS.SALES_MARK_BILLED,
+      PERMISSIONS.SALES_DISPATCH,
+      PERMISSIONS.SALES_SKIP_TO_BILLED,
       // Enquiry journey — the Sales half of an enquiry.
       PERMISSIONS.ENQUIRY_MANAGE,
     ],

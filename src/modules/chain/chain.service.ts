@@ -1315,7 +1315,7 @@ export async function cancelUnpaidSo(
  */
 export async function closeDeliveredSo(
   soId: string,
-  by: { actorId: string; actorType: 'counterparty' | 'system' },
+  by: { actorId: string; actorType: 'counterparty' | 'system' | 'staff' },
   correlationId: string,
   extraFilter: Record<string, unknown> = {},
 ): Promise<boolean> {
@@ -1337,7 +1337,9 @@ export async function closeDeliveredSo(
         summary:
           by.actorType === 'system'
             ? `${closed.soNo} — seven days after leg 2 with no complaint: silence is delivery (BR-192).`
-            : `${closed.soNo} — buyer confirmed receipt (BR-192).`,
+            : by.actorType === 'staff'
+              ? `${closed.soNo} — Sales recorded the buyer's confirmation of receipt on a call (BR-192).`
+              : `${closed.soNo} — buyer confirmed receipt (BR-192).`,
       },
       session,
     );
