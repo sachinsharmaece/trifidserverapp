@@ -37,13 +37,14 @@ function actingStaffId(req: Request): string {
 // buyer's own POST /asks would call; the call note lands on the Ask this
 // creates.
 export async function postBuyerCallAsk(req: Request, res: Response): Promise<void> {
-  const { buyerCounterpartyId, callNote, ...input } = req.body as z.infer<
+  const { buyerCounterpartyId, callNote, expectedRatePaise, ...input } = req.body as z.infer<
     typeof proxyRaiseAskSchema
   >;
   // DEC-051 — the enquiry it opens is recorded as a Sales call, by this staff member.
   const result = await demandService.raiseAsk(buyerCounterpartyId, input, {
     channel: 'sales_call',
     raisedBy: actingStaffId(req),
+    ...(expectedRatePaise ? { expectedRatePaise } : {}),
   });
   await appendProxyLog(Ask, result.askId, {
     actingStaffId: actingStaffId(req),
@@ -64,9 +65,11 @@ export async function postBuyerCallAsks(req: Request, res: Response): Promise<vo
   > = [];
   for (const [index, line] of lines.entries()) {
     try {
-      const result = await demandService.raiseAsk(buyerCounterpartyId, line, {
+      const { expectedRatePaise, ...askLine } = line;
+      const result = await demandService.raiseAsk(buyerCounterpartyId, askLine, {
         channel: 'sales_call',
         raisedBy: actingStaffId(req),
+        ...(expectedRatePaise ? { expectedRatePaise } : {}),
       });
       await appendProxyLog(Ask, result.askId, {
         actingStaffId: actingStaffId(req),

@@ -10,6 +10,7 @@ import {
   listAllProductsQuerySchema,
   listManufacturersQuerySchema,
   listProductsQuerySchema,
+  searchProductsQuerySchema,
   skuImportSchema,
   updateManufacturerSchema,
   updateProductSchema,
@@ -34,6 +35,13 @@ catalogRouter.get(
   authenticate,
   validateQuery(listProductsQuerySchema),
   controller.getProducts,
+);
+// The searchable product dropdown on staff call forms — any authenticated staff member.
+catalogRouter.get(
+  '/catalog/product-search',
+  authenticate,
+  validateQuery(searchProductsQuerySchema),
+  controller.getProductSearch,
 );
 catalogRouter.get('/catalog/products/:id/skus', authenticate, controller.getSkus);
 

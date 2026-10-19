@@ -40,6 +40,11 @@ export async function getProducts(req: Request, res: Response): Promise<void> {
   ok(res, req, await catalogService.listProducts(technical, manufacturer));
 }
 
+export async function getProductSearch(req: Request, res: Response): Promise<void> {
+  const { q, limit } = req.validatedQuery as { q: string; limit: number };
+  ok(res, req, await catalogService.searchProducts(q, limit));
+}
+
 export async function getSkus(req: Request, res: Response): Promise<void> {
   ok(res, req, await catalogService.listSkusForProduct(req.params.id as string));
 }

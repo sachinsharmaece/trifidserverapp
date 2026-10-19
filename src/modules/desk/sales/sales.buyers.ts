@@ -172,6 +172,8 @@ export interface BuyerFileOpenAsk {
   technical: string;
   packLabel: string | null; // Only when the ask names a specific pack.
   askedAt: string;
+  /** What he said he hopes to pay, noted on the call — Sales-internal. */
+  expectedRatePaise: number | null;
 }
 
 /** A live quote on one of his asks — the rate he is holding right now. */
@@ -423,6 +425,7 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
         technical: product?.technical ?? '—',
         packLabel: sku?.packLabel ?? null,
         askedAt: (a as unknown as { createdAt: Date }).createdAt.toISOString(),
+        expectedRatePaise: a.expectedRatePaise ?? null,
       };
     }),
     liveQuotes: liveQuoteRows,

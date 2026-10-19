@@ -100,6 +100,8 @@ export interface RaiseAskOptions {
   raisedBy?: string;
   /** DEC-052 — convert this pre-trade enquiry into the new ask instead of opening a new one. */
   enquiryId?: string;
+  /** What he said he hopes to pay, noted by Sales on a call. Staff-internal; never shown outside Sales. */
+  expectedRatePaise?: number;
 }
 
 /**
@@ -163,6 +165,7 @@ export async function raiseAsk(
           skuId: input.skuId ?? null,
           productId: input.productId ?? null,
           allPacks: input.allPacks,
+          expectedRatePaise: options.expectedRatePaise ?? null,
           qty: input.qty,
           conditionRequirement: input.conditionRequirement,
           visibleToAllAt,

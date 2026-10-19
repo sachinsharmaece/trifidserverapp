@@ -14,6 +14,13 @@ export const listManufacturersQuerySchema = z
   })
   .strict();
 
+export const searchProductsQuerySchema = z
+  .object({
+    q: z.string().max(80).optional().default(''),
+    limit: z.coerce.number().int().min(1).max(50).optional().default(50),
+  })
+  .strict();
+
 export const listProductsQuerySchema = z
   .object({
     technical: z.string().min(1),

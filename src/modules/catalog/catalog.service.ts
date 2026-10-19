@@ -89,6 +89,33 @@ export async function listManufacturersForTechnical(
 }
 
 // API-022 — step 3.
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * The searchable product dropdown on staff call forms: live products matched by brand or
+ * technical name, no technical chosen first. Same visibility rule as `listProducts` —
+ * drafts never appear as a choice. Capped, so an empty search is "the first fifty".
+ */
+export async function searchProducts(
+  q: string,
+  limit: number,
+): Promise<Array<{ productId: string; brand: string; technical: string }>> {
+  const query: Record<string, unknown> = { active: true, state: 'live', deletedAt: null };
+  const term = q.trim();
+  if (term) {
+    const pattern = new RegExp(escapeRegex(term), 'i');
+    query.$or = [{ brand: pattern }, { technical: pattern }];
+  }
+  const products = await Product.find(query).sort({ brand: 1 }).limit(limit);
+  return products.map((product) => ({
+    productId: (product._id as Types.ObjectId).toString(),
+    brand: product.brand,
+    technical: product.technical,
+  }));
+}
+
 export async function listProducts(
   technical: string,
   manufacturerId?: string,
