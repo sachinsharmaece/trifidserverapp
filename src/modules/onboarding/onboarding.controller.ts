@@ -31,7 +31,7 @@ export async function postStaffRegisterBuyer(req: Request, res: Response): Promi
   const { callNote, ...input } = req.body as z.infer<typeof staffRegisterBuyerSchema>;
   const result = await onboardingService.registerBuyer(input, {
     employeeId: req.auth!.employeeId!,
-    callNote,
+    callNote: callNote ?? '',
     correlationId: req.correlationId,
   });
   ok(res, req, result, 201);

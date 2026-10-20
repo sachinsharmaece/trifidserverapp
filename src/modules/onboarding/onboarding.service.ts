@@ -52,15 +52,24 @@ interface ConsentInput {
 // so aren't skipped by validateBody alone. Never true in production.
 const validationDisabled = !isProduction && env.disableInputValidation;
 
-async function assertGstinAndMobileAreFree(gstin: string, mobile: string): Promise<void> {
-  if (!validationDisabled && !isValidGstin(gstin)) {
+async function assertGstinAndMobileAreFree(
+  gstin: string | undefined,
+  mobile: string,
+  skipGstinCheck = false,
+): Promise<void> {
+  if (!validationDisabled && !skipGstinCheck && gstin && !isValidGstin(gstin)) {
     throw new AppError({
       code: 'VALIDATION_FAILED',
       messageEn: 'That GSTIN does not check out.',
       field: 'gstin',
     });
   }
-  const existing = await Counterparty.findOne({ $or: [{ gstin }, { mobile }], deletedAt: null });
+  // Uniqueness is a data-integrity guard (unique indexes), not input
+  // validation — kept, but a blank GSTIN never matches anything.
+  const existing = await Counterparty.findOne({
+    $or: gstin ? [{ gstin }, { mobile }] : [{ mobile }],
+    deletedAt: null,
+  });
   if (existing) {
     throw new AppError({
       code: 'VALIDATION_FAILED',
@@ -198,13 +207,15 @@ async function createPendingBankDetail(
   );
 }
 
+// The staff-assisted path sends no validation at all — every field except
+// `mobile` (the account's identity key, required by the model) may be blank.
 interface RegisterBuyerInput {
   mobile: string;
-  firm: string;
-  gstin: string;
-  ownerName: string;
-  licenceNo: string;
-  gstPpobAddress: string;
+  firm?: string;
+  gstin?: string;
+  ownerName?: string;
+  licenceNo?: string;
+  gstPpobAddress?: string;
   dealerships?: Array<{ manufacturerId: string; isStrong?: boolean }>;
   // B-25 — optional for a buyer (he pays TriFid; a refund destination
   // traces to the payment itself, BR-018), unlike a seller, who is paid.
@@ -218,8 +229,11 @@ export async function registerBuyer(
   staffAssisted?: StaffAssistedRegistration,
   correlationId = 'unknown',
 ): Promise<{ registrationId: string; accountNameWarning: string | null }> {
-  await assertGstinAndMobileAreFree(input.gstin, input.mobile);
-  if (input.bankDetail) assertBankDetailIsWellFormed(input.bankDetail);
+  // Blank strings become undefined so the sparse-unique GSTIN index never
+  // sees two '' values.
+  const gstin = input.gstin?.trim() || undefined;
+  await assertGstinAndMobileAreFree(gstin, input.mobile, Boolean(staffAssisted));
+  if (input.bankDetail && !staffAssisted) assertBankDetailIsWellFormed(input.bankDetail);
 
   let accountNameWarning: string | null = null;
   const registrationId = await withTransaction(async (session) => {
@@ -227,10 +241,10 @@ export async function registerBuyer(
       [
         {
           mobile: input.mobile,
-          firm: input.firm,
-          gstin: input.gstin,
-          ownerName: input.ownerName,
-          licenceNo: input.licenceNo,
+          firm: input.firm || undefined,
+          gstin,
+          ownerName: input.ownerName || undefined,
+          licenceNo: input.licenceNo || undefined,
           kind: 'buyer',
           status: 'pending',
           ...(staffAssisted
@@ -247,7 +261,7 @@ export async function registerBuyer(
     if (!counterparty) throw new Error('Counterparty.create returned no document.');
 
     const [buyer] = await Buyer.create(
-      [{ counterpartyId: counterparty._id, gstPpobAddress: input.gstPpobAddress }],
+      [{ counterpartyId: counterparty._id, gstPpobAddress: input.gstPpobAddress || undefined }],
       { session },
     );
     if (!buyer) throw new Error('Buyer.create returned no document.');
@@ -287,8 +301,8 @@ export async function registerBuyer(
       accountNameWarning = await auditAccountNameMismatchIfAny(
         {
           accountName: input.bankDetail.accountName,
-          ownerName: input.ownerName,
-          firm: input.firm,
+          ownerName: input.ownerName ?? '',
+          firm: input.firm ?? '',
           entityId: counterparty._id as Types.ObjectId,
           correlationId: staffAssisted?.correlationId ?? correlationId,
         },
