@@ -1,6 +1,6 @@
 import type { Types } from 'mongoose';
 import { Ask } from '../../../models/Ask.js';
-import { Quote } from '../../../models/Quote.js';
+import { OPEN_QUOTE_STATUSES, Quote } from '../../../models/Quote.js';
 import { Po } from '../../../models/Po.js';
 import { Inspection } from '../../../models/Inspection.js';
 import { PoLine } from '../../../models/PoLine.js';
@@ -183,7 +183,9 @@ async function afterDispatchRows(
 }
 
 async function quotedRows(sellerId: string): Promise<SellerQuotedRow[]> {
-  const quotes = await Quote.find({ sellerId, status: 'live' }).sort({ bindingUntil: 1 });
+  const quotes = await Quote.find({ sellerId, status: { $in: OPEN_QUOTE_STATUSES } }).sort({
+    bindingUntil: 1,
+  });
   if (quotes.length === 0) return [];
   const asks = await Ask.find({ _id: { $in: quotes.map((q) => q.askId) } });
   const askById = new Map(asks.map((a) => [(a._id as Types.ObjectId).toString(), a]));

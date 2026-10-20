@@ -36,6 +36,8 @@ export const postQuoteSchema = z
     provenance: z.enum(PROVENANCE_VALUES),
     batch: z.string().min(1).optional(),
     daysToIndore: z.number().int().min(0),
+    // Needed only when the ask names a product rather than one pack.
+    skuId: z.string().min(1).optional(),
   })
   .strict();
 

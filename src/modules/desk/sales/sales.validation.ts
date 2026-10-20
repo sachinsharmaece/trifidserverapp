@@ -17,6 +17,9 @@ export const giveRateSchema = z
   .object({ listingLineId: z.string().min(1), callNote: stageCallNote })
   .strict();
 
+/** Sales giving the asking buyer a quote that has been parked for him. */
+export const giveParkedQuoteSchema = z.object({ callNote: stageCallNote }).strict();
+
 export const markPaidSchema = z
   .object({ utr: z.string().trim().min(6).max(40), callNote: stageCallNote })
   .strict();

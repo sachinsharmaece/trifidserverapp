@@ -196,6 +196,7 @@ export async function postSellerCallQuote(req: Request, res: Response): Promise<
     sellerCounterpartyId,
     req.params.id as string,
     input,
+    { holdForSales: true }, // Published as a listing at once; Sales gives it to the asking buyer.
   );
   await appendProxyLog(Quote, result.quoteId, {
     actingStaffId: actingStaffId(req),

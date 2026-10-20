@@ -140,6 +140,13 @@ salesRouter.post(
   requirePermission(PERMISSIONS.PROXY_BUYER_CALL),
   controller.postGiveRate,
 );
+// A quote already raised on his ask (parked for Sales) — give it to him as a rate.
+salesRouter.post(
+  '/staff/sales/quotes/:quoteId/give',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_BUYER_CALL),
+  controller.postGiveParkedQuote,
+);
 // Money-moving: Sales takes the payment itself, so it has its own permission.
 salesRouter.post(
   '/staff/sales/orders/:soId/mark-paid',

@@ -14,6 +14,7 @@ import {
   respondToMspSchema,
   createCallLogSchema,
   giveRateSchema,
+  giveParkedQuoteSchema,
   markPaidSchema,
   cancelOrderSchema,
   markBilledSchema,
@@ -37,6 +38,15 @@ export async function postGiveRate(req: Request, res: Response): Promise<void> {
   const result = await salesStageService.giveRateOnAsk(
     req.params.askId as string,
     { listingLineId },
+    stageActor(req),
+    callNote,
+  );
+  ok(res, req, result, 201);
+}
+export async function postGiveParkedQuote(req: Request, res: Response): Promise<void> {
+  const { callNote } = giveParkedQuoteSchema.parse(req.body);
+  const result = await salesStageService.giveParkedQuote(
+    req.params.quoteId as string,
     stageActor(req),
     callNote,
   );

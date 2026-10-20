@@ -21,7 +21,7 @@ import { isMargValueMatched } from '../../../shared/pricing.js';
 import { Po } from '../../../models/Po.js';
 import { PoLine } from '../../../models/PoLine.js';
 import { Inspection } from '../../../models/Inspection.js';
-import { postQuote } from '../../demand/demand.service.js';
+import { postQuote, releaseQuote } from '../../demand/demand.service.js';
 import { listPricedLinesVisibleToBuyerDoc } from '../../listing/listing.service.js';
 import { syncEnquiryForAsk } from '../../enquiry/enquiry.sync.js';
 import {
@@ -105,6 +105,15 @@ export async function giveRateOnAsk(
     await ask.save();
   }
 
+  // This line may be the very offer already quoted on his ask (a quote is published as a listing
+  // line the moment it is raised). Giving it then gives that quote — never a second one.
+  const parked = await Quote.findOne({
+    askId: ask._id,
+    status: 'pending_sales',
+    listingLineId: line._id,
+  });
+  if (parked) return giveParkedQuote((parked._id as Types.ObjectId).toString(), actor, callNote);
+
   const seller = await Seller.findById(listing.sellerId);
   if (!seller) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Seller not found.' });
 
@@ -129,6 +138,30 @@ export async function giveRateOnAsk(
     action: 'give_rate',
   });
   return result;
+}
+
+/**
+ * He asked → Rate given, from a quote a seller (or Purchase, on his behalf) has already raised.
+ * The quote has been a listing line since the moment it was raised; this is the step where the
+ * asking buyer is shown it as a rate on his ask. Any number can be given on one ask.
+ */
+export async function giveParkedQuote(
+  quoteId: string,
+  actor: StaffActor,
+  callNote: string,
+): Promise<{ quoteId: string }> {
+  const result = await releaseQuote(quoteId);
+  await appendProxyLog(Quote, result.quoteId, {
+    actingStaffId: actor.employeeId,
+    callNote,
+    action: 'give_rate',
+  });
+  await appendProxyLog(Ask, result.askId, {
+    actingStaffId: actor.employeeId,
+    callNote,
+    action: 'give_rate',
+  });
+  return { quoteId: result.quoteId };
 }
 
 async function loadOpenOrder(soId: string) {

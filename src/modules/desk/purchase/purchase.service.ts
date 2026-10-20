@@ -1,6 +1,6 @@
 import type { Types } from 'mongoose';
 import { Ask } from '../../../models/Ask.js';
-import { Quote } from '../../../models/Quote.js';
+import { OPEN_QUOTE_STATUSES, Quote } from '../../../models/Quote.js';
 import { Listing } from '../../../models/Listing.js';
 import { ListingLine } from '../../../models/ListingLine.js';
 import { Product } from '../../../models/Product.js';
@@ -199,7 +199,9 @@ export interface AskQuoteGap {
 }
 
 export async function getQuoteGapsForAsk(askId: string): Promise<AskQuoteGap[]> {
-  const quotes = await Quote.find({ askId, status: 'live' }).sort({ ratePaiseForIndore: 1 });
+  const quotes = await Quote.find({ askId, status: { $in: OPEN_QUOTE_STATUSES } }).sort({
+    ratePaiseForIndore: 1,
+  });
   return quotes.map((q) => ({
     quoteId: (q._id as Types.ObjectId).toString(),
     sellerId: (q.sellerId as Types.ObjectId).toString(),
@@ -238,7 +240,8 @@ export async function getAskSellerStates(askId: string): Promise<AskSellerStateI
     productId = sku ? (sku.productId as Types.ObjectId).toString() : null;
   }
 
-  const quotes = await Quote.find({ askId: ask._id, status: 'live' });
+  // A quote parked for Sales still counts as this seller having quoted — never raise it twice.
+  const quotes = await Quote.find({ askId: ask._id, status: { $in: OPEN_QUOTE_STATUSES } });
   const quoteBySellerId = new Map(
     quotes.map((q) => [(q.sellerId as Types.ObjectId).toString(), q]),
   );
