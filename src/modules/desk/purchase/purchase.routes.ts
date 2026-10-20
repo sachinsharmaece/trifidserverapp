@@ -165,6 +165,51 @@ purchaseRouter.post(
   controller.postPileChase,
 );
 
+// Stock → PO → Billed. Reads and the hand-over use `po:edit` like Dispatch; recording what the
+// seller said on a call (hold, invoice) uses the seller-call permission, with a call note.
+purchaseRouter.get(
+  '/staff/purchase/stock',
+  authenticate,
+  requirePermission(PERMISSIONS.PO_EDIT),
+  controller.getStockQueue,
+);
+purchaseRouter.post(
+  '/staff/purchase/stock/:soId/hold',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_SELLER_CALL),
+  controller.postStockHold,
+);
+purchaseRouter.post(
+  '/staff/purchase/stock/:soId/hold/confirm',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_SELLER_CALL),
+  controller.postConfirmStockHold,
+);
+purchaseRouter.get(
+  '/staff/purchase/pos',
+  authenticate,
+  requirePermission(PERMISSIONS.PO_EDIT),
+  controller.getPoQueue,
+);
+purchaseRouter.post(
+  '/staff/purchase/pos/:poId/invoice',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_SELLER_CALL),
+  controller.postSellerInvoice,
+);
+purchaseRouter.get(
+  '/staff/purchase/billed',
+  authenticate,
+  requirePermission(PERMISSIONS.PO_EDIT),
+  controller.getBilledQueue,
+);
+purchaseRouter.post(
+  '/staff/purchase/pos/:poId/hand-to-dispatch',
+  authenticate,
+  requirePermission(PERMISSIONS.PO_EDIT),
+  controller.postHandToDispatch,
+);
+
 // Dispatch — Purchase's own pre-leg-1 chase queue. `po:edit` (already held —
 // see chain.service.ts's dispatch-clock fields) since logging a chase touches the PO.
 purchaseRouter.get(

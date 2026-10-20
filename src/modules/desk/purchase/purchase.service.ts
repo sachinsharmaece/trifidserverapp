@@ -1107,14 +1107,24 @@ export interface DispatchQueueItem {
   noDispatch48h: boolean;
   dispatchedAt: string | null;
   daysInTransit: number | null;
+  /** The seller's invoice and e-way bill are on record. Not a gate — a PO can still be sent without. */
+  invoiceRecorded: boolean;
 }
 
 export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
   const now = Date.now();
-  const [pending, dispatchedLeg1] = await Promise.all([
+  const [released, dispatchedLeg1] = await Promise.all([
     Po.find({ state: 'released', failed: false }),
     Po.find({ state: 'dispatched_leg1', failed: false, receivedAt: null }),
   ]);
+  // Dispatch holds what Purchase has handed over after the seller invoiced it. A PO that is
+  // still on the PO or Billed screen stays there — unless the dispatch-clock job has already
+  // marked it missed (same-day or 48-hour, BR-174/BR-215): a missed obligation must never be
+  // hidden by which screen the PO happens to sit on. (`dispatchDueDate` itself is the release
+  // moment, so it cannot be the test — every new PO would count as overdue at once.)
+  const pending = released.filter(
+    (po) => po.handedToDispatchAt || po.sameDayMissAt || po.noDispatch48hAt,
+  );
   const allPos = [...pending, ...dispatchedLeg1];
   const movements = await Movement.find({
     chainId: { $in: dispatchedLeg1.map((p) => p.chainId) },
@@ -1167,6 +1177,7 @@ export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
       noDispatch48h: !!po.noDispatch48hAt,
       dispatchedAt: null,
       daysInTransit: null,
+      invoiceRecorded: !!po.sellerInvoiceNo,
     };
   });
 
@@ -1190,6 +1201,7 @@ export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
       daysInTransit: dispatchedAt
         ? Math.floor((now - dispatchedAt.getTime()) / (24 * 60 * 60 * 1000))
         : null,
+      invoiceRecorded: !!po.sellerInvoiceNo,
     };
   });
 
@@ -1338,7 +1350,10 @@ export async function getOpenDemandForSeller(sellerId: string): Promise<SellerOp
   // An ask carries a product or only a SKU — resolve either to the product so the
   // seller file can show a name, never the raw ask id.
   const productIdBySkuId = new Map(
-    skus.map((s) => [(s._id as Types.ObjectId).toString(), (s.productId as Types.ObjectId).toString()]),
+    skus.map((s) => [
+      (s._id as Types.ObjectId).toString(),
+      (s.productId as Types.ObjectId).toString(),
+    ]),
   );
   const askProductId = (a: (typeof asks)[number]): string | null =>
     a.productId

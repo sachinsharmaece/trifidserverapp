@@ -17,6 +17,29 @@ export const nonOrderReasonSchema = z
 // Purchase-desk v2.
 // ---------------------------------------------------------------------------
 
+// Stock → PO → Billed → Dispatch stage actions. Each records what the seller said on a call, so
+// each carries the call note (like every other staff-assisted action).
+const stageCallNote = z.string().trim().min(1);
+
+export const requestStockHoldSchema = z
+  .object({
+    // Default 24 hours (the buyer's payment window); a seller may agree to more or less.
+    holdHours: z.number().int().min(1).max(72).optional(),
+    callNote: stageCallNote,
+  })
+  .strict();
+
+export const stageCallNoteSchema = z.object({ callNote: stageCallNote }).strict();
+
+export const sellerInvoiceSchema = z
+  .object({
+    invoiceNo: z.string().trim().min(1).max(40),
+    date: z.coerce.date(),
+    ewayNo: z.string().trim().min(1).max(40),
+    callNote: stageCallNote,
+  })
+  .strict();
+
 export const askChaseSchema = z
   .object({
     sellerId: z.string().min(1),

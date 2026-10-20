@@ -1,4 +1,5 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
+import { proxyLogField } from '../shared/proxyLog.js';
 
 /**
  * ENT-29 `po`. Q4 (6 Sep 2026) — **no speculative stock, ever**: `chainId`
@@ -49,6 +50,16 @@ const poSchema = new Schema(
     // Both reset when a promoted seller accepts (WF-11): a new seller, a new clock.
     sameDayMissAt: { type: Date, default: null },
     noDispatch48hAt: { type: Date, default: null },
+    // Purchase desk stages after release: PO (released) → Billed (the seller has invoiced the
+    // goods) → Dispatch (handed over for the seller to send). Facts recorded on a call; the
+    // invoice is *not* the seller bill that is booked at inspection and drives his payout, and
+    // nothing here blocks recording leg 1 — the Dispatch screen only flags a missing invoice.
+    sellerInvoiceNo: { type: String, default: null },
+    sellerInvoiceDate: { type: Date, default: null },
+    sellerEwayNo: { type: String, default: null },
+    sellerInvoiceRecordedAt: { type: Date, default: null },
+    handedToDispatchAt: { type: Date, default: null },
+    proxyLog: proxyLogField,
   },
   { timestamps: true },
 );
