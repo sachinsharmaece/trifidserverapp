@@ -29,6 +29,13 @@ export const requestStockHoldSchema = z
   })
   .strict();
 
+export const adjustStockHoldSchema = z
+  .object({
+    holdHours: z.number().int().min(1).max(72),
+    callNote: stageCallNote,
+  })
+  .strict();
+
 export const stageCallNoteSchema = z.object({ callNote: stageCallNote }).strict();
 
 export const sellerInvoiceSchema = z
@@ -93,10 +100,7 @@ export const draftProductSchema = z
     brand: z.string().min(1),
     technical: z.string().min(1),
     manufacturerId: z.string().min(1),
-    hsn: z
-      .string()
-      .min(1)
-      .refine(isValidHsn, { message: 'HSN must be 6 or 8 digits starting with 3808.' }),
+    hsn: z.string().min(1).refine(isValidHsn, { message: 'HSN must be 6 or 8 digits.' }),
     class: z.enum(['High', 'Medium', 'Low']).optional(),
   })
   .strict();

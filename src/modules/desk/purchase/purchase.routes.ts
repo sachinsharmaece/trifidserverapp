@@ -189,6 +189,12 @@ purchaseRouter.post(
   controller.postStockHold,
 );
 purchaseRouter.post(
+  '/staff/purchase/stock/:soId/hold/adjust',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_SELLER_CALL),
+  controller.postAdjustStockHold,
+);
+purchaseRouter.post(
   '/staff/purchase/stock/:soId/hold/confirm',
   authenticate,
   requirePermission(PERMISSIONS.PROXY_SELLER_CALL),

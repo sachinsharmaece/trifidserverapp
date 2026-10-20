@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
+import { StockHold } from '../src/models/StockHold.js';
 import { Po } from '../src/models/Po.js';
 import { Buyer } from '../src/models/Buyer.js';
 import { Counterparty } from '../src/models/Counterparty.js';
@@ -128,7 +129,7 @@ describe('Purchase desk — the seller file funnel', () => {
       'paid',
     ]);
     expect(count('approved')).toMatchObject({ count: null, reached: true });
-    expect(count('stock')).toMatchObject({ count: 1, leakCount: 1 }); // No hold asked yet.
+    expect(count('stock')).toMatchObject({ count: 1, leakCount: 0 }); // On hold from the start.
     expect(count('po').count).toBe(1);
     expect(count('billed').count).toBe(1);
     expect(count('dispatch').count).toBe(2); // Handed over + on the way.
@@ -146,9 +147,19 @@ describe('Purchase desk — the seller file funnel', () => {
       expect(rows.filter((r) => r.sellerId === sellerId).length).toBe(count(key).count);
     }
 
-    // Asking for the hold clears that leak; the goods then arrive at Indore.
+    // A hold that runs out is the leak; the goods then arrive at Indore.
     const stockRow = (res.body.data.stages.stock as Array<{ soId: string }>)[0]!;
-    await post(`/staff/purchase/stock/${stockRow.soId}/hold`, { callNote: 'Asked him.' });
+    await StockHold.updateOne(
+      { soId: stockRow.soId },
+      { $set: { holdUntil: new Date(Date.now() - 1000) } },
+    );
+    res = await get(`/staff/purchase/sellers/${sellerId}/funnel`);
+    funnel = res.body.data.funnel as Stage[];
+    expect(count('stock')).toMatchObject({ count: 1, leakCount: 1 });
+    await post(`/staff/purchase/stock/${stockRow.soId}/hold/adjust`, {
+      holdHours: 24,
+      callNote: 'He will hold it again.',
+    });
     await Po.updateOne(
       { _id: transitPo },
       { $set: { state: 'at_indore', receivedAt: new Date() } },

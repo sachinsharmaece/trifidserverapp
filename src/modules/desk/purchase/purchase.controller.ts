@@ -10,6 +10,7 @@ import {
   draftSkuSchema,
   nonOrderReasonSchema,
   requestStockHoldSchema,
+  adjustStockHoldSchema,
   sellerCatalogueEntrySchema,
   sellerDispatchedSchema,
   sellerInvoiceSchema,
@@ -123,6 +124,19 @@ export async function postStockHold(req: Request, res: Response): Promise<void> 
       callNote,
     ),
     201,
+  );
+}
+export async function postAdjustStockHold(req: Request, res: Response): Promise<void> {
+  const { callNote, holdHours } = adjustStockHoldSchema.parse(req.body);
+  ok(
+    res,
+    req,
+    await stages.adjustStockHold(
+      req.params.soId as string,
+      { holdHours },
+      staffActor(req),
+      callNote,
+    ),
   );
 }
 export async function postConfirmStockHold(req: Request, res: Response): Promise<void> {

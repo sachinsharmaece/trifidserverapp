@@ -75,7 +75,8 @@ async function goodsByOwner(
 // Stock — confirmed orders still waiting on the buyer's payment.
 // ---------------------------------------------------------------------------
 
-export type StockHoldStatus = 'not_asked' | 'asked' | 'confirmed' | 'lapsed';
+/** The seller is holding the stock from the moment the order exists; `lapsed` once the hold runs out. */
+export type StockHoldStatus = 'holding' | 'lapsed';
 
 export interface StockQueueItem {
   soId: string;
@@ -85,13 +86,16 @@ export interface StockQueueItem {
   brand: string;
   packLabel: string;
   boxes: number;
+  /** The seller's own rate for these goods — never the buyer's rate or order total (the wall). */
+  sellerRatePaise: number | null;
   /** When the buyer's payment window closes — the order cancels after this if unpaid. */
   payDeadline: string;
   hold: StockHoldStatus;
+  /** Null on an order raised before holds opened automatically (it holds to the pay deadline). */
   holdHours: number | null;
-  holdUntil: string | null;
+  holdUntil: string;
   holdConfirmedAt: string | null;
-  hoursLeft: number | null;
+  hoursLeft: number;
 }
 
 /** GET /staff/purchase/stock — orders awaiting payment, with the seller's hold on each. */
@@ -112,6 +116,9 @@ export async function getStockQueue(sellerId?: string): Promise<StockQueueItem[]
       boxes: l.boxes,
     })),
   );
+  const sellerRateBySo = new Map(
+    lines.map((l) => [(l.soId as Types.ObjectId).toString(), l.sellerNetPaise as number]),
+  );
   const holds = await StockHold.find({ soId: { $in: sos.map((s) => s._id) } });
   const holdBySo = new Map(holds.map((h) => [(h.soId as Types.ObjectId).toString(), h]));
   const firms = await firmBySellerId(sos.map((s) => s.sellerId as Types.ObjectId));
@@ -119,14 +126,15 @@ export async function getStockQueue(sellerId?: string): Promise<StockQueueItem[]
   return sos.map((so) => {
     const soId = (so._id as Types.ObjectId).toString();
     const sellerId = (so.sellerId as Types.ObjectId).toString();
-    const hold = holdBySo.get(soId);
-    const status: StockHoldStatus = !hold
-      ? 'not_asked'
-      : hold.holdUntil.getTime() < now
-        ? 'lapsed'
-        : hold.confirmedAt
-          ? 'confirmed'
-          : 'asked';
+    // An order raised before holds opened automatically has no row: it counts as held for the
+    // buyer's payment window, the same as a new one.
+    const stored = holdBySo.get(soId);
+    const hold = stored ?? {
+      holdHours: null,
+      holdUntil: so.payDeadline,
+      confirmedAt: null,
+    };
+    const status: StockHoldStatus = hold.holdUntil.getTime() < now ? 'lapsed' : 'holding';
     const g = goods.get(soId) ?? { brand: '—', packLabel: '—', boxes: 0 };
     return {
       soId,
@@ -134,12 +142,13 @@ export async function getStockQueue(sellerId?: string): Promise<StockQueueItem[]
       sellerId,
       sellerFirm: firms.get(sellerId) ?? '—',
       ...g,
+      sellerRatePaise: sellerRateBySo.get(soId) ?? null,
       payDeadline: so.payDeadline.toISOString(),
       hold: status,
-      holdHours: hold?.holdHours ?? null,
-      holdUntil: hold ? hold.holdUntil.toISOString() : null,
-      holdConfirmedAt: hold?.confirmedAt ? hold.confirmedAt.toISOString() : null,
-      hoursLeft: hold ? Math.round(((hold.holdUntil.getTime() - now) / HOUR_MS) * 10) / 10 : null,
+      holdHours: hold.holdHours,
+      holdUntil: hold.holdUntil.toISOString(),
+      holdConfirmedAt: hold.confirmedAt ? hold.confirmedAt.toISOString() : null,
+      hoursLeft: Math.round(((hold.holdUntil.getTime() - now) / HOUR_MS) * 10) / 10,
     };
   });
 }
@@ -195,6 +204,46 @@ export async function requestStockHold(
     entityId: so._id as Types.ObjectId,
     field: 'requested',
     newValue: { holdHours },
+    correlationId: actor.correlationId,
+  });
+  return { holdUntil: holdUntil.toISOString() };
+}
+
+/**
+ * Stock: Purchase changes how long the seller holds the stock (the hold itself opens with the
+ * order). The new length runs from now, so it can lengthen or shorten what is left. The hold
+ * stays confirmed; a hold that had already run out is held again by this.
+ */
+export async function adjustStockHold(
+  soId: string,
+  input: { holdHours: number },
+  actor: StaffActor,
+  callNote: string,
+): Promise<{ holdUntil: string }> {
+  const so = await loadUnpaidOrder(soId);
+  const now = new Date();
+  const holdUntil = new Date(now.getTime() + input.holdHours * HOUR_MS);
+  const before = await StockHold.findOne({ soId: so._id });
+  await StockHold.findOneAndUpdate(
+    { soId: so._id },
+    {
+      $set: { holdHours: input.holdHours, holdUntil, confirmedAt: before?.confirmedAt ?? now },
+      $setOnInsert: { sellerId: so.sellerId, requestedAt: now, source: 'auto' },
+      $push: {
+        proxyLog: { actingStaffId: actor.employeeId, callNote, action: 'adjust_hold', at: now },
+      },
+    },
+    { upsert: true, new: true },
+  );
+  await writeAuditLog({
+    actorId: actor.employeeId,
+    actorType: 'staff',
+    entity: 'stock_hold',
+    entityId: so._id as Types.ObjectId,
+    field: 'holdHours',
+    oldValue: before?.holdHours ?? null,
+    newValue: input.holdHours,
+    reason: callNote,
     correlationId: actor.correlationId,
   });
   return { holdUntil: holdUntil.toISOString() };

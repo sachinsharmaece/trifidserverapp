@@ -56,7 +56,7 @@ export const SELLER_FUNNEL_LABELS: Record<SellerFunnelKey, string> = {
   on_board: 'On the board',
   quoted: 'Quoted',
   confirmations: 'Confirmations',
-  stock: 'Stock',
+  stock: 'Hold',
   po: 'PO',
   billed: 'Billed',
   dispatch: 'Dispatch',
@@ -124,7 +124,7 @@ export interface SellerFunnelDto {
   stages: {
     quoted: SellerQuotedRow[];
     confirmations: SellerPileRow[];
-    stock: StockQueueItem[];
+    stock: Omit<StockQueueItem, 'sellerRatePaise'>[];
     po: PoStageItem[];
     billed: PoStageItem[];
     dispatch: DispatchQueueItem[];
@@ -298,7 +298,7 @@ export async function getSellerStageFunnel(sellerId: string): Promise<SellerFunn
       leakCount: piles.filter((p) => p.chaseLeftHours < 0).length,
     }),
     stage('stock', stock.length, {
-      leakCount: stock.filter((s) => s.hold === 'not_asked' || s.hold === 'lapsed').length,
+      leakCount: stock.filter((s) => s.hold === 'lapsed').length,
     }),
     stage('po', po.length, {
       leakCount: po.filter(
@@ -318,7 +318,12 @@ export async function getSellerStageFunnel(sellerId: string): Promise<SellerFunn
     stages: {
       quoted: quoted.slice(0, ROW_LIMIT),
       confirmations: piles.slice(0, ROW_LIMIT),
-      stock: stock.slice(0, ROW_LIMIT),
+      // This view carries counts and goods only — the rate stays on the Stock tab.
+      stock: stock.slice(0, ROW_LIMIT).map((item) => {
+        const row: Partial<StockQueueItem> = { ...item };
+        delete row.sellerRatePaise;
+        return row as Omit<StockQueueItem, 'sellerRatePaise'>;
+      }),
       po: po.slice(0, ROW_LIMIT),
       billed: billed.slice(0, ROW_LIMIT),
       dispatch: dispatch.slice(0, ROW_LIMIT),

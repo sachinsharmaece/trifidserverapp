@@ -6,6 +6,8 @@ import { Po } from '../src/models/Po.js';
 import { Buyer } from '../src/models/Buyer.js';
 import { Counterparty } from '../src/models/Counterparty.js';
 import { StockHold } from '../src/models/StockHold.js';
+import { Sku } from '../src/models/Sku.js';
+import { SoLine } from '../src/models/SoLine.js';
 import {
   staffToken,
   createApprovedBuyer,
@@ -59,15 +61,30 @@ const get = (token: string, path: string) =>
   request(app).get(`/api/v1${path}`).set('Authorization', `Bearer ${token}`);
 
 describe('Purchase desk — Stock (the seller holds the stock until the buyer pays)', () => {
-  it('lists an unpaid order, takes a 24-hour hold by default, then the seller confirms it', async () => {
+  it('lists an unpaid order already on a confirmed 24-hour hold, and lets Purchase adjust the hours', async () => {
     const { soId, buyerId, purchase } = await raiseSo();
 
     const before = await get(purchase.token, '/staff/purchase/stock');
     expect(before.status).toBe(200);
-    const row = (before.body.data as Array<{ soId: string; hold: string }>).find(
-      (r) => r.soId === soId,
-    );
-    expect(row?.hold).toBe('not_asked');
+    const row = (
+      before.body.data as Array<{
+        soId: string;
+        hold: string;
+        holdHours: number;
+        sellerRatePaise: number;
+      }>
+    ).find((r) => r.soId === soId);
+    // No ask is needed: the hold opened with the order.
+    expect(row?.hold).toBe('holding');
+    expect(row?.holdHours).toBe(24);
+    // The seller's own rate is shown (never the buyer's rate or total).
+    expect(row?.sellerRatePaise).toBe(40000);
+    const hold = (await StockHold.findOne({ soId }))!;
+    expect(hold.source).toBe('auto');
+    expect(hold.confirmedAt).not.toBeNull();
+    const hoursAhead = (hold.holdUntil.getTime() - Date.now()) / 3_600_000;
+    expect(hoursAhead).toBeGreaterThan(23.9);
+    expect(hoursAhead).toBeLessThanOrEqual(24);
 
     // The desk's wall: no buyer identity and no rupee total in what Purchase reads.
     const buyer = (await Buyer.findById(buyerId))!;
@@ -77,65 +94,82 @@ describe('Purchase desk — Stock (the seller holds the stock until the buyer pa
     expect(text).not.toContain(counterparty.firm ?? '\u0000');
     expect(text.toLowerCase()).not.toContain('totalpaise');
 
-    const asked = await request(app)
-      .post(`/api/v1/staff/purchase/stock/${soId}/hold`)
+    // A different number of hours keeps the hold confirmed.
+    const adjusted = await request(app)
+      .post(`/api/v1/staff/purchase/stock/${soId}/hold/adjust`)
       .set('Authorization', `Bearer ${purchase.token}`)
-      .send({ callNote: 'Asked him to hold it till the buyer pays.' });
-    expect(asked.status).toBe(201);
-    const hold = (await StockHold.findOne({ soId }))!;
-    expect(hold.holdHours).toBe(24);
-    const hoursAhead = (hold.holdUntil.getTime() - Date.now()) / 3_600_000;
-    expect(hoursAhead).toBeGreaterThan(23.9);
-    expect(hoursAhead).toBeLessThanOrEqual(24);
-    expect(hold.confirmedAt).toBeNull();
-
-    const confirmed = await request(app)
-      .post(`/api/v1/staff/purchase/stock/${soId}/hold/confirm`)
-      .set('Authorization', `Bearer ${purchase.token}`)
-      .send({ callNote: 'He said yes, holding it.' });
-    expect(confirmed.status).toBe(200);
-    const after = await get(purchase.token, '/staff/purchase/stock');
+      .send({ holdHours: 12, callNote: 'He can only keep it half a day.' });
+    expect(adjusted.status).toBe(200);
+    const after = (await StockHold.findOne({ soId }))!;
+    expect(after.holdHours).toBe(12);
+    expect(after.confirmedAt).not.toBeNull();
+    expect((after.holdUntil.getTime() - Date.now()) / 3_600_000).toBeLessThanOrEqual(12);
+    const queue = await get(purchase.token, '/staff/purchase/stock');
     expect(
-      (after.body.data as Array<{ soId: string; hold: string }>).find((r) => r.soId === soId)?.hold,
-    ).toBe('confirmed');
+      (queue.body.data as Array<{ soId: string; hold: string }>).find((r) => r.soId === soId)?.hold,
+    ).toBe('holding');
 
-    // A different number of hours, and asking again, needs a fresh yes.
-    const again = await request(app)
-      .post(`/api/v1/staff/purchase/stock/${soId}/hold`)
+    // Out-of-range hours are refused.
+    const tooLong = await request(app)
+      .post(`/api/v1/staff/purchase/stock/${soId}/hold/adjust`)
       .set('Authorization', `Bearer ${purchase.token}`)
-      .send({ holdHours: 12, callNote: 'Shorter this time.' });
-    expect(again.status).toBe(201);
-    const reasked = (await StockHold.findOne({ soId }))!;
-    expect(reasked.holdHours).toBe(12);
-    expect(reasked.confirmedAt).toBeNull();
+      .send({ holdHours: 100, callNote: 'Too long.' });
+    expect(tooLong.status).toBeGreaterThanOrEqual(400);
+    expect(tooLong.status).toBeLessThan(500);
   });
 
-  it('refuses a hold for an order that is already paid, and confirming without asking first', async () => {
+  it('refuses adjusting the hold of an order that is already paid', async () => {
     const { soId, sales, purchase } = await raiseSo();
-    const early = await request(app)
-      .post(`/api/v1/staff/purchase/stock/${soId}/hold/confirm`)
-      .set('Authorization', `Bearer ${purchase.token}`)
-      .send({ callNote: 'Nothing asked yet.' });
-    expect(early.status).toBeGreaterThanOrEqual(400);
-    expect(early.status).toBeLessThan(500);
-
     await payOrder(sales.token, soId);
     const late = await request(app)
-      .post(`/api/v1/staff/purchase/stock/${soId}/hold`)
+      .post(`/api/v1/staff/purchase/stock/${soId}/hold/adjust`)
       .set('Authorization', `Bearer ${purchase.token}`)
-      .send({ callNote: 'Too late.' });
+      .send({ holdHours: 12, callNote: 'Too late.' });
     expect(late.status).toBe(409);
     // A paid order has left Stock.
     const queue = await get(purchase.token, '/staff/purchase/stock');
     expect((queue.body.data as Array<{ soId: string }>).some((r) => r.soId === soId)).toBe(false);
   });
 
+  it('raises an order for a pack that holds a fraction of a unit per box (350 ML × 30 = 10.5 L)', async () => {
+    const admin = await staffToken(app, 'admin');
+    const sales = await staffToken(app, 'sales');
+    const purchase = await staffToken(app, 'purchase');
+    const buyerId = await createApprovedBuyer(app, sales.token);
+    const sellerId = await createApprovedSeller(app, purchase.token);
+    const skuId = await createTestSku('Medium');
+    await Sku.updateOne(
+      { _id: skuId },
+      { $set: { packLabel: '350 ML', packSize: 0.35, unitsPerBox: 30, baseUnitsPerBox: 10.5 } },
+    );
+    await seedMarginCell('Medium', 'Dealer', 0.05, admin.employeeId);
+    const res = await request(app)
+      .post('/api/v1/staff/so')
+      .set('Authorization', `Bearer ${sales.token}`)
+      .set('Idempotency-Key', idemKey())
+      .send({
+        buyerId,
+        sellerId,
+        skuId,
+        boxes: 7,
+        sellerNetPaise: 25000,
+        placeOfSupply: 'intra_state',
+      });
+    expect(res.status).toBe(201);
+    const { soId } = res.body.data as { soId: string };
+    const line = (await SoLine.findOne({ soId }))!;
+    expect(line.baseUnitsPerBoxAtOrder).toBe(10.5);
+    expect(Number.isInteger(line.totalPaise)).toBe(true);
+    expect(line.totalPaise).toBe(Math.round(7 * 10.5 * line.ratePaise));
+    expect(await StockHold.exists({ soId })).toBeTruthy();
+  });
+
   it('is closed to a role that cannot act for a seller', async () => {
     const { soId, sales } = await raiseSo();
     const res = await request(app)
-      .post(`/api/v1/staff/purchase/stock/${soId}/hold`)
+      .post(`/api/v1/staff/purchase/stock/${soId}/hold/adjust`)
       .set('Authorization', `Bearer ${sales.token}`)
-      .send({ callNote: 'Not Sales to ask.' });
+      .send({ holdHours: 12, callNote: 'Not Sales to adjust.' });
     expect(res.status).toBe(403);
   });
 });
