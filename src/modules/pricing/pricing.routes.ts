@@ -13,6 +13,20 @@ pricingRouter.get(
   requirePermission(PERMISSIONS.MARGIN_MATRIX_READ),
   controller.getMarginMatrix,
 );
+// API-133 — every row ever written, including future-dated ones.
+pricingRouter.get(
+  '/admin/margin-matrix/history',
+  authenticate,
+  requirePermission(PERMISSIONS.MARGIN_MATRIX_READ),
+  controller.getMarginMatrixHistory,
+);
+// API-132 — several cells under one effectiveFrom, in one write.
+pricingRouter.put(
+  '/admin/margin-matrix/bulk',
+  authenticate,
+  requirePermission(PERMISSIONS.MARGIN_MATRIX_WRITE),
+  controller.putMarginMatrixBulk,
+);
 pricingRouter.put(
   '/admin/margin-matrix',
   authenticate,

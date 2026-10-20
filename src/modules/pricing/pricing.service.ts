@@ -107,3 +107,59 @@ export async function setMarginMatrixCell(
   });
   return toDto(created);
 }
+
+interface SetMarginMatrixBulkInput {
+  cells: Array<{ class: SkuClass; tier: RateTier; pct: number; creditPct?: number }>;
+  effectiveFrom: Date;
+}
+
+/**
+ * API-132. Saves several cells under one `effectiveFrom` in a single
+ * `insertMany`, so the admin screen never leaves a half-applied matrix
+ * behind. Still forward-only (BR-046): every cell is a new row. Mongoose
+ * validates every document before the write is sent, so one bad cell
+ * rejects the whole batch.
+ */
+export async function setMarginMatrixBulk(
+  input: SetMarginMatrixBulkInput,
+  actor: { employeeId: string },
+): Promise<MarginMatrixCellDto[]> {
+  const seen = new Set<string>();
+  for (const cell of input.cells) {
+    const key = `${cell.class}/${cell.tier}`;
+    if (seen.has(key)) {
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: `Cell ${key} appears more than once in this save.`,
+      });
+    }
+    seen.add(key);
+  }
+  const created = await MarginMatrix.insertMany(
+    input.cells.map((cell) => ({
+      class: cell.class,
+      tier: cell.tier,
+      pct: cell.pct,
+      creditPct: cell.creditPct ?? 0,
+      effectiveFrom: input.effectiveFrom,
+      createdBy: actor.employeeId as unknown as Types.ObjectId,
+    })),
+  );
+  return created.map((doc) => toDto(doc as HydratedDocument<MarginMatrixDocument>));
+}
+
+export interface MarginMatrixHistoryRowDto extends MarginMatrixCellDto {
+  createdAt: Date;
+}
+
+/**
+ * API-133. Every row ever written, newest `effectiveFrom` first — including
+ * rows dated in the future, which `getCurrentMarginMatrix` does not show yet.
+ */
+export async function getMarginMatrixHistory(limit = 200): Promise<MarginMatrixHistoryRowDto[]> {
+  const rows = await MarginMatrix.find().sort({ effectiveFrom: -1, createdAt: -1 }).limit(limit);
+  return rows.map((doc) => ({
+    ...toDto(doc as HydratedDocument<MarginMatrixDocument>),
+    createdAt: (doc as unknown as { createdAt: Date }).createdAt,
+  }));
+}
