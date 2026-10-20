@@ -1111,11 +1111,12 @@ export interface DispatchQueueItem {
   invoiceRecorded: boolean;
 }
 
-export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
+export async function getDispatchChaseQueue(sellerId?: string): Promise<DispatchQueueItem[]> {
   const now = Date.now();
+  const sellerFilter = sellerId ? { sellerId } : {};
   const [released, dispatchedLeg1] = await Promise.all([
-    Po.find({ state: 'released', failed: false }),
-    Po.find({ state: 'dispatched_leg1', failed: false, receivedAt: null }),
+    Po.find({ state: 'released', failed: false, ...sellerFilter }),
+    Po.find({ state: 'dispatched_leg1', failed: false, receivedAt: null, ...sellerFilter }),
   ]);
   // Dispatch holds what Purchase has handed over after the seller invoiced it. A PO that is
   // still on the PO or Billed screen stays there — unless the dispatch-clock job has already

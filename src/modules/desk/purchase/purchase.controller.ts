@@ -3,6 +3,7 @@ import * as purchaseService from './purchase.service.js';
 import * as catalogService from '../../catalog/catalog.service.js';
 import { getFunnelReport as getFunnelReportFromService } from './purchase.funnel.js';
 import * as stages from './purchase.stages.js';
+import { getSellerStageFunnel } from './purchase.sellerFunnel.js';
 import {
   draftManufacturerSchema,
   draftProductSchema,
@@ -10,6 +11,7 @@ import {
   nonOrderReasonSchema,
   requestStockHoldSchema,
   sellerCatalogueEntrySchema,
+  sellerDispatchedSchema,
   sellerInvoiceSchema,
   stageCallNoteSchema,
 } from './purchase.validation.js';
@@ -101,6 +103,10 @@ export async function getPilesAwaitingDecision(req: Request, res: Response): Pro
   ok(res, req, await purchaseService.getPilesAwaitingDecision());
 }
 
+export async function getSellerStageFunnelRoute(req: Request, res: Response): Promise<void> {
+  ok(res, req, await getSellerStageFunnel(req.params.sellerId as string));
+}
+
 // Stock → PO → Billed → Dispatch.
 export async function getStockQueue(req: Request, res: Response): Promise<void> {
   ok(res, req, await stages.getStockQueue());
@@ -135,6 +141,15 @@ export async function postSellerInvoice(req: Request, res: Response): Promise<vo
     res,
     req,
     await stages.recordSellerInvoice(req.params.poId as string, input, staffActor(req), callNote),
+    201,
+  );
+}
+export async function postSellerDispatched(req: Request, res: Response): Promise<void> {
+  const { callNote, ...input } = sellerDispatchedSchema.parse(req.body);
+  ok(
+    res,
+    req,
+    await stages.recordSellerDispatch(req.params.poId as string, input, staffActor(req), callNote),
     201,
   );
 }

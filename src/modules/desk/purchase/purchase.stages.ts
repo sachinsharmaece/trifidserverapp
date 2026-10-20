@@ -12,6 +12,7 @@ import { AppError } from '../../../shared/errors.js';
 import { appendProxyLog } from '../../../shared/proxyLog.js';
 import { writeAuditLog } from '../../../shared/audit.js';
 import { assertValidObjectId } from '../../../shared/objectId.js';
+import { recordMovement } from '../../movement/movement.service.js';
 
 /**
  * Purchase desk stages between Confirmations and Dispatch:
@@ -94,9 +95,12 @@ export interface StockQueueItem {
 }
 
 /** GET /staff/purchase/stock — orders awaiting payment, with the seller's hold on each. */
-export async function getStockQueue(): Promise<StockQueueItem[]> {
+export async function getStockQueue(sellerId?: string): Promise<StockQueueItem[]> {
   const now = Date.now();
-  const sos = await So.find({ state: { $in: ['awaiting_payment', 'payment_verifying'] } }).sort({
+  const sos = await So.find({
+    state: { $in: ['awaiting_payment', 'payment_verifying'] },
+    ...(sellerId ? { sellerId } : {}),
+  }).sort({
     payDeadline: 1,
   });
   if (sos.length === 0) return [];
@@ -287,17 +291,23 @@ async function describePos(pos: Array<InstanceType<typeof Po>>): Promise<PoStage
 }
 
 /** GET /staff/purchase/pos — released, the seller has not yet invoiced the goods. */
-export async function getPoQueue(): Promise<PoStageItem[]> {
-  const pos = await Po.find({ state: 'released', failed: false, sellerInvoiceNo: null }).sort({
+export async function getPoQueue(sellerId?: string): Promise<PoStageItem[]> {
+  const pos = await Po.find({
+    state: 'released',
+    failed: false,
+    sellerInvoiceNo: null,
+    ...(sellerId ? { sellerId } : {}),
+  }).sort({
     dispatchDueDate: 1,
   });
   return describePos(pos);
 }
 
 /** GET /staff/purchase/billed — invoiced by the seller, not yet handed to Dispatch. */
-export async function getBilledQueue(): Promise<PoStageItem[]> {
+export async function getBilledQueue(sellerId?: string): Promise<PoStageItem[]> {
   const pos = await Po.find({
     state: 'released',
+    ...(sellerId ? { sellerId } : {}),
     failed: false,
     sellerInvoiceNo: { $ne: null },
     handedToDispatchAt: null,
@@ -351,6 +361,31 @@ export async function recordSellerInvoice(
     newValue: { invoiceNo: input.invoiceNo, ewayNo: input.ewayNo },
     correlationId: actor.correlationId,
   });
+  /**
+   * Dispatch → At Indore: the seller has sent the goods (leg 1), reported by him on a call. It is
+   * the same `recordMovement` Logistics uses, so its guards apply (the PO must be released). That
+   * the goods then *arrive* is the dock's own act (goods-in) — nothing here records it.
+   */
+  export async function recordSellerDispatch(
+    poId: string,
+    input: Omit<Parameters<typeof recordMovement>[1], 'leg'>,
+    actor: StaffActor,
+    callNote: string,
+  ): Promise<{ movementId: string }> {
+    const po = await loadReleasedPo(poId);
+    const result = await recordMovement(
+      (po.chainId as Types.ObjectId).toString(),
+      { ...input, leg: 1 },
+      actor,
+    );
+    await appendProxyLog(Po, poId, {
+      actingStaffId: actor.employeeId,
+      callNote,
+      action: 'seller_dispatched',
+    });
+    return result;
+  }
+
   return { recorded: true };
 }
 

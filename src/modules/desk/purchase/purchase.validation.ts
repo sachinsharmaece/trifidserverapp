@@ -40,6 +40,33 @@ export const sellerInvoiceSchema = z
   })
   .strict();
 
+// "Seller dispatched" — leg 1, the same details Logistics records (BR-176): LR on transport mode,
+// bus number + driver + mobile on bus mode. Freight defaults to nothing owed.
+export const sellerDispatchedSchema = z
+  .object({
+    mode: z.enum(['transport', 'bus']),
+    transporter: z.string().trim().min(1).optional(),
+    lr: z.string().trim().min(1).optional(),
+    busNo: z.string().trim().min(1).optional(),
+    driver: z.string().trim().min(1).optional(),
+    driverMobile: z.string().trim().min(1).optional(),
+    freightTerms: z.enum(['prepaid', 'to_pay']),
+    freightAmountPaise: z.number().int().min(0).default(0),
+    callNote: stageCallNote,
+  })
+  .strict()
+  .refine((value) => value.mode !== 'transport' || !!value.lr, {
+    message: 'LR number is mandatory on transport mode (BR-176).',
+    path: ['lr'],
+  })
+  .refine(
+    (value) => value.mode !== 'bus' || (!!value.busNo && !!value.driver && !!value.driverMobile),
+    {
+      message: 'Bus number, driver name and driver mobile are required on bus mode (BR-176).',
+      path: ['busNo'],
+    },
+  );
+
 export const askChaseSchema = z
   .object({
     sellerId: z.string().min(1),

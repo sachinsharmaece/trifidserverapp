@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../../../middleware/auth.js';
 import { requirePermission } from '../../../middleware/requirePermission.js';
 import { validateBody } from '../../../middleware/validate.js';
+import { requireIdempotencyKey } from '../../../middleware/idempotency.js';
 import { PERMISSIONS } from '../../../config/permissions.js';
 import * as controller from './purchase.controller.js';
 import {
@@ -124,6 +125,14 @@ purchaseRouter.get(
   controller.getSellerFile,
 );
 
+// The seller file's funnel: where each of his orders sits, stage by stage.
+purchaseRouter.get(
+  '/staff/purchase/sellers/:sellerId/funnel',
+  authenticate,
+  requirePermission(PERMISSIONS.PO_EDIT),
+  controller.getSellerStageFunnelRoute,
+);
+
 // Supply matrix — computed from the catalogue + live listings.
 purchaseRouter.get(
   '/staff/purchase/matrix/by-product',
@@ -196,6 +205,14 @@ purchaseRouter.post(
   authenticate,
   requirePermission(PERMISSIONS.PROXY_SELLER_CALL),
   controller.postSellerInvoice,
+);
+// Leg 1 reported by the seller on a call — idempotent like every stage-moving POST.
+purchaseRouter.post(
+  '/staff/purchase/pos/:poId/seller-dispatched',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_SELLER_CALL),
+  requireIdempotencyKey(),
+  controller.postSellerDispatched,
 );
 purchaseRouter.get(
   '/staff/purchase/billed',
