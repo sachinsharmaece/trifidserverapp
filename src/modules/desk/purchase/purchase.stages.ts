@@ -361,32 +361,32 @@ export async function recordSellerInvoice(
     newValue: { invoiceNo: input.invoiceNo, ewayNo: input.ewayNo },
     correlationId: actor.correlationId,
   });
-  /**
-   * Dispatch → At Indore: the seller has sent the goods (leg 1), reported by him on a call. It is
-   * the same `recordMovement` Logistics uses, so its guards apply (the PO must be released). That
-   * the goods then *arrive* is the dock's own act (goods-in) — nothing here records it.
-   */
-  export async function recordSellerDispatch(
-    poId: string,
-    input: Omit<Parameters<typeof recordMovement>[1], 'leg'>,
-    actor: StaffActor,
-    callNote: string,
-  ): Promise<{ movementId: string }> {
-    const po = await loadReleasedPo(poId);
-    const result = await recordMovement(
-      (po.chainId as Types.ObjectId).toString(),
-      { ...input, leg: 1 },
-      actor,
-    );
-    await appendProxyLog(Po, poId, {
-      actingStaffId: actor.employeeId,
-      callNote,
-      action: 'seller_dispatched',
-    });
-    return result;
-  }
-
   return { recorded: true };
+}
+
+/**
+ * Dispatch → At Indore: the seller has sent the goods (leg 1), reported by him on a call. It is
+ * the same `recordMovement` Logistics uses, so its guards apply (the PO must be released). That
+ * the goods then *arrive* is the dock's own act (goods-in) — nothing here records it.
+ */
+export async function recordSellerDispatch(
+  poId: string,
+  input: Omit<Parameters<typeof recordMovement>[1], 'leg'>,
+  actor: StaffActor,
+  callNote: string,
+): Promise<{ movementId: string }> {
+  const po = await loadReleasedPo(poId);
+  const result = await recordMovement(
+    (po.chainId as Types.ObjectId).toString(),
+    { ...input, leg: 1 },
+    actor,
+  );
+  await appendProxyLog(Po, poId, {
+    actingStaffId: actor.employeeId,
+    callNote,
+    action: 'seller_dispatched',
+  });
+  return result;
 }
 
 /** Billed → Dispatch: hand the invoiced PO over to the dispatch chase. */
