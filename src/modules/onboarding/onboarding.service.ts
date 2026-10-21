@@ -4,6 +4,8 @@ import { Counterparty } from '../../models/Counterparty.js';
 import { Buyer } from '../../models/Buyer.js';
 import { BuyerDealership } from '../../models/BuyerDealership.js';
 import { Seller } from '../../models/Seller.js';
+import { SellerDealership } from '../../models/SellerDealership.js';
+import { Manufacturer } from '../../models/Manufacturer.js';
 import { SellerReference } from '../../models/SellerReference.js';
 import { SellerArea } from '../../models/SellerArea.js';
 import { BankDetail } from '../../models/BankDetail.js';
@@ -323,6 +325,7 @@ interface RegisterSellerInput {
   ownerName: string;
   licenceNo: string;
   references: Array<{ firm: string; phone: string; relationship: string; whatTheySaid: string }>;
+  dealerships?: Array<{ manufacturerId: string }>;
   bankDetail: BankDetailInput;
   consent: ConsentInput;
 }
@@ -335,6 +338,18 @@ export async function registerSeller(
 ): Promise<{ registrationId: string; accountNameWarning: string | null }> {
   await assertGstinAndMobileAreFree(input.gstin, input.mobile);
   assertBankDetailIsWellFormed(input.bankDetail);
+
+  const dealershipIds = [...new Set((input.dealerships ?? []).map((d) => d.manufacturerId))];
+  if (dealershipIds.length > 0) {
+    const known = await Manufacturer.countDocuments({ _id: { $in: dealershipIds } });
+    if (known !== dealershipIds.length) {
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: 'One of those companies does not exist.',
+        field: 'dealerships',
+      });
+    }
+  }
 
   let accountNameWarning: string | null = null;
   const registrationId = await withTransaction(async (session) => {
@@ -368,6 +383,17 @@ export async function registerSeller(
       input.references.map((reference) => ({ sellerId: seller._id, ...reference })),
       { session, ordered: true },
     );
+
+    if (dealershipIds.length > 0) {
+      await SellerDealership.create(
+        dealershipIds.map((manufacturerId) => ({
+          sellerId: seller._id,
+          manufacturerId,
+          setBy: staffAssisted?.employeeId ?? null,
+        })),
+        { session, ordered: true },
+      );
+    }
 
     await createPendingBankDetail(counterparty._id, input.bankDetail, session);
     await writeConsents(counterparty._id, input.consent, session);

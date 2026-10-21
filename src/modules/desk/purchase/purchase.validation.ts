@@ -88,6 +88,13 @@ export const sellerCatalogueEntrySchema = z
   })
   .strict();
 
+// The full set of companies he deals in — saved as a whole, so an empty list clears it.
+export const sellerDealershipsSchema = z
+  .object({
+    manufacturerIds: z.array(z.string().min(1)),
+  })
+  .strict();
+
 export const draftManufacturerSchema = z
   .object({
     name: z.string().min(1),

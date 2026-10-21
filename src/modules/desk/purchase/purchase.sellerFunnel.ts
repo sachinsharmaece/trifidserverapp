@@ -8,7 +8,6 @@ import { Sku } from '../../../models/Sku.js';
 import { Product } from '../../../models/Product.js';
 import { Listing } from '../../../models/Listing.js';
 import { ListingLine } from '../../../models/ListingLine.js';
-import { SellerCatalogueEntry } from '../../../models/SellerCatalogueEntry.js';
 import { Seller } from '../../../models/Seller.js';
 import { AppError } from '../../../shared/errors.js';
 import { assertValidObjectId } from '../../../shared/objectId.js';
@@ -18,6 +17,7 @@ import {
   getPilesAwaitingDecision,
   type DispatchQueueItem,
 } from './purchase.service.js';
+import { resolveCatalogueEntries } from './purchase.catalogue.js';
 import {
   getBilledQueue,
   getPoQueue,
@@ -241,7 +241,7 @@ export async function getSellerStageFunnel(sellerId: string): Promise<SellerFunn
     receivedPos,
     paidPos,
   ] = await Promise.all([
-    SellerCatalogueEntry.countDocuments({ sellerId }),
+    resolveCatalogueEntries({ sellerId }).then((rows) => rows.length),
     ListingLine.countDocuments({ listingId: { $in: listings.map((l) => l._id) }, qty: { $gt: 0 } }),
     quotedRows(sellerId),
     getOpenDemandForSeller(sellerId),

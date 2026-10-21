@@ -11,6 +11,7 @@ import {
   draftProductSchema,
   draftSkuSchema,
   sellerCatalogueEntrySchema,
+  sellerDealershipsSchema,
 } from './purchase.validation.js';
 
 export const purchaseRouter = Router();
@@ -117,6 +118,21 @@ purchaseRouter.post(
   requirePermission(PERMISSIONS.DEMAND_READ),
   validateBody(sellerCatalogueEntrySchema),
   controller.postSellerCatalogueEntry,
+);
+// The companies a seller deals in — every product of a ticked company counts
+// as carried (see purchase.catalogue.ts). Same boundary as the catalogue.
+purchaseRouter.get(
+  '/staff/purchase/sellers/:sellerId/dealerships',
+  authenticate,
+  requirePermission(PERMISSIONS.DEMAND_READ),
+  controller.getSellerDealerships,
+);
+purchaseRouter.put(
+  '/staff/purchase/sellers/:sellerId/dealerships',
+  authenticate,
+  requirePermission(PERMISSIONS.DEMAND_READ),
+  validateBody(sellerDealershipsSchema),
+  controller.putSellerDealerships,
 );
 purchaseRouter.get(
   '/staff/purchase/sellers/:sellerId/file',

@@ -3,6 +3,10 @@ import * as purchaseService from './purchase.service.js';
 import * as catalogService from '../../catalog/catalog.service.js';
 import { getFunnelReport as getFunnelReportFromService } from './purchase.funnel.js';
 import * as stages from './purchase.stages.js';
+import {
+  getSellerDealerships as getSellerDealershipsFromService,
+  setSellerDealerships,
+} from './purchase.catalogue.js';
 import { getSellerStageFunnel } from './purchase.sellerFunnel.js';
 import {
   draftManufacturerSchema,
@@ -12,6 +16,7 @@ import {
   requestStockHoldSchema,
   adjustStockHoldSchema,
   sellerCatalogueEntrySchema,
+  sellerDealershipsSchema,
   sellerDispatchedSchema,
   sellerInvoiceSchema,
   stageCallNoteSchema,
@@ -86,6 +91,19 @@ export async function postSellerCatalogueEntry(req: Request, res: Response): Pro
 
 export async function getSellerCatalogue(req: Request, res: Response): Promise<void> {
   ok(res, req, await purchaseService.getSellerCatalogue(req.params.sellerId as string));
+}
+
+export async function getSellerDealerships(req: Request, res: Response): Promise<void> {
+  ok(res, req, await getSellerDealershipsFromService(req.params.sellerId as string));
+}
+
+export async function putSellerDealerships(req: Request, res: Response): Promise<void> {
+  const { manufacturerIds } = sellerDealershipsSchema.parse(req.body);
+  ok(
+    res,
+    req,
+    await setSellerDealerships(req.params.sellerId as string, manufacturerIds, staffActor(req)),
+  );
 }
 
 export async function getSellerFile(req: Request, res: Response): Promise<void> {

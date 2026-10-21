@@ -85,6 +85,14 @@ export const registerSellerSchema = z
           .strict(),
       )
       .min(2, 'Two referees are required (BR-250).'),
+    // The companies he deals in — every product of each counts as carried.
+    dealerships: z
+      .array(
+        z
+          .object({ manufacturerId: z.string().min(1, 'A dealership entry needs a company.') })
+          .strict(),
+      )
+      .optional(),
     bankDetail: bankDetailInputSchema,
     consent: consentInputSchema,
   })

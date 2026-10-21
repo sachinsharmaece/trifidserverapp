@@ -12,6 +12,7 @@ import { Counterparty } from '../../../models/Counterparty.js';
 import { SellerReference } from '../../../models/SellerReference.js';
 import { SellerDebit } from '../../../models/SellerDebit.js';
 import { SellerCatalogueEntry } from '../../../models/SellerCatalogueEntry.js';
+import { SellerDealership } from '../../../models/SellerDealership.js';
 import { Tehsil } from '../../../models/Tehsil.js';
 import { Pile } from '../../../models/Pile.js';
 import { PileRequest } from '../../../models/PileRequest.js';
@@ -38,6 +39,11 @@ import {
   type SellerFunnelMetrics,
 } from './purchase.funnel.js';
 import { getSellerScorecard, type SellerScorecardDto } from '../../conduct/conduct.service.js';
+import {
+  getSellerDealerships,
+  resolveCatalogueEntries,
+  type SellerDealershipItem,
+} from './purchase.catalogue.js';
 
 const RETURN_NOTE_WINDOW_DAYS = 30; // BR-189.
 
@@ -258,7 +264,7 @@ export async function getAskSellerStates(askId: string): Promise<AskSellerStateI
     rateBySellerId.set((listing.sellerId as Types.ObjectId).toString(), line.ratePaise);
   }
 
-  const catalogueEntries = productId ? await SellerCatalogueEntry.find({ productId }) : [];
+  const catalogueEntries = productId ? await resolveCatalogueEntries({ productId }) : [];
   const carryingSellerIds = new Set(
     catalogueEntries.map((e) => (e.sellerId as Types.ObjectId).toString()),
   );
@@ -485,7 +491,7 @@ export async function getProductSellers(productId: string): Promise<ProductSelle
     listingsBySeller.set(key, packs);
   }
 
-  const entries = await SellerCatalogueEntry.find({ productId });
+  const entries = await resolveCatalogueEntries({ productId });
   const sellerIds = new Set([
     ...listingsBySeller.keys(),
     ...entries.map((e) => (e.sellerId as Types.ObjectId).toString()),
@@ -735,7 +741,10 @@ export interface SellerCataloguePackItem {
 }
 
 export interface SellerCatalogueItem {
-  entryId: string;
+  /** Null when he carries this product only through a company he deals in. */
+  entryId: string | null;
+  /** `dealership` = derived from a ticked company; `manual` = entered by the desk. */
+  source: 'manual' | 'dealership';
   productId: string;
   brand: string;
   technical: string;
@@ -744,12 +753,18 @@ export interface SellerCatalogueItem {
   packsDetailed: boolean;
   packs: SellerCataloguePackItem[];
   setAt: string;
-  setBy: string;
+  setBy: string | null;
 }
 
-/** What a seller sells, per the seller-file screen and `EnterListingPage`'s pack picker. */
+/**
+ * What a seller sells, per the seller-file screen and `EnterListingPage`'s
+ * pack picker: his hand-entered products plus every product of the companies
+ * he deals in (see `purchase.catalogue.ts`).
+ */
 export async function getSellerCatalogue(sellerId: string): Promise<SellerCatalogueItem[]> {
-  const entries = await SellerCatalogueEntry.find({ sellerId }).sort({ setAt: -1 });
+  const entries = (await resolveCatalogueEntries({ sellerId })).sort(
+    (a, b) => b.setAt.getTime() - a.setAt.getTime(),
+  );
   const productIds = entries.map((e) => e.productId);
   const products = await Product.find({ _id: { $in: productIds } });
   const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
@@ -787,7 +802,8 @@ export async function getSellerCatalogue(sellerId: string): Promise<SellerCatalo
         )
       : productSkus;
     return {
-      entryId: (entry._id as Types.ObjectId).toString(),
+      entryId: entry.entryId,
+      source: entry.source,
       productId: productKey,
       brand: product?.brand ?? '—',
       technical: product?.technical ?? '—',
@@ -805,7 +821,7 @@ export async function getSellerCatalogue(sellerId: string): Promise<SellerCatalo
         };
       }),
       setAt: entry.setAt.toISOString(),
-      setBy: entry.setBy.toString(),
+      setBy: entry.setBy ? entry.setBy.toString() : null,
     };
   });
 }
@@ -847,7 +863,7 @@ export interface SupplyMatrixProductRow {
  * Mongoose's to define, not this function's to repeat.
  */
 async function computeSellerCatalogueCoverage(productId?: string) {
-  const entries = await SellerCatalogueEntry.find(productId ? { productId } : {});
+  const entries = await resolveCatalogueEntries(productId ? { productId } : {});
   const carrySellersByProduct = new Map<string, Set<string>>();
   const entriesBySeller = new Map<string, typeof entries>();
   for (const e of entries) {
@@ -971,28 +987,40 @@ export async function getSupplyMatrixBySeller(): Promise<SupplyMatrixSellerRow[]
   const allEntries = [...entriesBySeller.values()].flat();
   const products = await Product.find({ _id: { $in: allEntries.map((e) => e.productId) } });
   const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+  // A company he deals in shows even before it has a single product.
+  const dealerships = await SellerDealership.find({});
   const manufacturers = await Manufacturer.find({
-    _id: { $in: products.map((p) => p.manufacturerId) },
+    _id: {
+      $in: [...products.map((p) => p.manufacturerId), ...dealerships.map((d) => d.manufacturerId)],
+    },
   });
   const manufacturerById = new Map(
     manufacturers.map((m) => [(m._id as Types.ObjectId).toString(), m]),
   );
+  const dealershipNamesBySeller = new Map<string, string[]>();
+  for (const d of dealerships) {
+    const name = manufacturerById.get(d.manufacturerId.toString())?.name;
+    if (!name) continue;
+    const key = d.sellerId.toString();
+    dealershipNamesBySeller.set(key, [...(dealershipNamesBySeller.get(key) ?? []), name]);
+  }
 
   return sellers.map((s) => {
     const key = (s._id as Types.ObjectId).toString();
     const myEntries = entriesBySeller.get(key) ?? [];
     const myListedProductIds = listedProductIdsBySeller.get(key) ?? new Set<string>();
     const manufacturerNames = [
-      ...new Set(
-        myEntries.map((e) => {
+      ...new Set([
+        ...(dealershipNamesBySeller.get(key) ?? []),
+        ...myEntries.map((e) => {
           const product = productById.get((e.productId as Types.ObjectId).toString());
           const manufacturer = product
             ? manufacturerById.get((product.manufacturerId as unknown as Types.ObjectId).toString())
             : undefined;
           return manufacturer?.name ?? '—';
         }),
-      ),
-    ];
+      ]),
+    ].sort((a, b) => a.localeCompare(b));
     return {
       sellerId: key,
       firm: counterpartyById.get((s.counterpartyId as Types.ObjectId).toString())?.firm ?? '—',
@@ -1337,7 +1365,7 @@ export interface SellerOpenDemandItem {
 }
 
 export async function getOpenDemandForSeller(sellerId: string): Promise<SellerOpenDemandItem[]> {
-  const entries = await SellerCatalogueEntry.find({ sellerId });
+  const entries = await resolveCatalogueEntries({ sellerId });
   if (entries.length === 0) return [];
   const productIds = entries.map((e) => e.productId);
   const skus = await Sku.find({ productId: { $in: productIds } });
@@ -1437,6 +1465,8 @@ export interface SellerFileDto {
     overdue: boolean;
   }>;
   catalogue: SellerCatalogueItem[];
+  /** The companies he deals in — each one brings all its products into `catalogue`. */
+  dealerships: SellerDealershipItem[];
   listings: SellerFileListingItem[];
   openDemand: SellerOpenDemandItem[];
 }
@@ -1454,6 +1484,7 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
     debits,
     returnNotes,
     catalogue,
+    dealerships,
     listings,
     scorecard,
     openDemand,
@@ -1464,6 +1495,7 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
     SellerDebit.find({ counterpartyId: seller._id, nettedAgainst: null }),
     ReturnNote.find({ sellerId: seller._id, returnedAt: null }),
     getSellerCatalogue(sellerId),
+    getSellerDealerships(sellerId),
     Listing.find({ sellerId: seller._id, state: 'live' }),
     getSellerScorecard((seller.counterpartyId as Types.ObjectId).toString()),
     getOpenDemandForSeller(sellerId),
@@ -1542,6 +1574,7 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
       };
     }),
     catalogue,
+    dealerships,
     listings: listingDtos,
     openDemand: openDemand.filter((d) => !d.hasQuoted),
   };
