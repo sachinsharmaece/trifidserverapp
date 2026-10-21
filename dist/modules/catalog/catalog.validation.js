@@ -1,5 +1,30 @@
 import { z } from 'zod';
 import { isValidHsn } from '../../shared/validators.js';
+import { PRODUCT_CATEGORIES } from '../../models/Hsn.js';
+const HSN_MESSAGE = 'HSN must be 6 or 8 digits.';
+const hsnField = z.string().min(1).refine(isValidHsn, { message: HSN_MESSAGE });
+const taxPercentField = z
+    .number()
+    .min(0, { message: 'Tax % must be between 0 and 100.' })
+    .max(100, { message: 'Tax % must be between 0 and 100.' });
+// A pack as the admin types it: a size in a unit they choose. ML/GM are
+// converted to the LTR/KG base unit server-side (BR-055 only knows LTR/KG/PC).
+export const PACK_UNITS = ['LTR', 'ML', 'KG', 'GM', 'PC'];
+export const productPackSchema = z
+    .object({
+    packSize: z.number().positive({ message: 'Pack size must be a positive number.' }),
+    unit: z.enum(PACK_UNITS),
+    unitsPerBox: z.number().int().positive({ message: 'Units in box must be a positive number.' }),
+})
+    .strict();
+export const createTechnicalSchema = z.object({ name: z.string().trim().min(1) }).strict();
+export const createHsnSchema = z
+    .object({
+    code: hsnField,
+    description: z.string().trim().max(200).optional(),
+    taxPercent: taxPercentField,
+})
+    .strict();
 export const createManufacturerSchema = z
     .object({
     name: z.string().min(1),
@@ -9,6 +34,12 @@ export const createManufacturerSchema = z
 export const listManufacturersQuerySchema = z
     .object({
     technical: z.string().min(1),
+})
+    .strict();
+export const searchProductsQuerySchema = z
+    .object({
+    q: z.string().max(80).optional().default(''),
+    limit: z.coerce.number().int().min(1).max(50).optional().default(50),
 })
     .strict();
 export const listProductsQuerySchema = z
@@ -33,11 +64,11 @@ export const createProductSchema = z
     brand: z.string().min(1),
     technical: z.string().min(1),
     manufacturerId: z.string().min(1),
-    hsn: z
-        .string()
-        .min(1)
-        .refine(isValidHsn, { message: 'HSN must be 6 or 8 digits starting with 3808.' }),
+    hsn: hsnField,
+    category: z.enum(PRODUCT_CATEGORIES).optional(),
+    taxPercent: taxPercentField.optional(),
     class: z.enum(['High', 'Medium', 'Low']).optional(),
+    packs: z.array(productPackSchema).max(50).optional(),
 })
     .strict();
 export const updateManufacturerSchema = z
@@ -54,11 +85,9 @@ export const updateProductSchema = z
     brand: z.string().min(1).optional(),
     technical: z.string().min(1).optional(),
     manufacturerId: z.string().min(1).optional(),
-    hsn: z
-        .string()
-        .min(1)
-        .refine(isValidHsn, { message: 'HSN must be 6 or 8 digits starting with 3808.' })
-        .optional(),
+    hsn: hsnField.optional(),
+    category: z.enum(PRODUCT_CATEGORIES).optional(),
+    taxPercent: taxPercentField.optional(),
     class: z.enum(['High', 'Medium', 'Low']).optional(),
     active: z.boolean().optional(),
     // Purchase-desk v2 — Admin's confirm action, same one-direction shape.

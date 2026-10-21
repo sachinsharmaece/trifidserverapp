@@ -10,8 +10,9 @@ import { Product } from '../../../models/Product.js';
 import { Ask } from '../../../models/Ask.js';
 import { Quote } from '../../../models/Quote.js';
 import { AppError } from '../../../shared/errors.js';
+import { computeBuyerFacingRatePaise } from '../../listing/listing.service.js';
 import { addDays } from '../../../shared/clock.js';
-import { ASK_LEAK_STALENESS_HOURS, DELIVERED_SO_STATES, FUNNEL_LABELS, PAID_SO_STATES, PAYMENT_PENDING_SO_STATES, } from './sales.funnel.js';
+import { ASK_LEAK_STALENESS_HOURS, BILLED_SO_STATES, DELIVERED_SO_STATES, DISPATCHED_SO_STATES, FUNNEL_LABELS, PAID_SO_STATES, PAYMENT_PENDING_SO_STATES, } from './sales.funnel.js';
 import { listCallLogsForBuyer } from './sales.calls.js';
 import { listOrders } from './sales.orders.js';
 // B-52 — `tradePosition` is stored lowercase (the enum); `rateTier` (the
@@ -140,16 +141,34 @@ export async function getBuyerFile(buyerId) {
         orderCount,
         lastPaidRatePaise: lastPaidByProduct.get(productId)?.ratePaise ?? null,
     }));
-    const openAsks = await Ask.find({
+    // An ask moves on as it is worked: `open` (waiting on a rate) is "He asked"; once a rate is
+    // given it is `quoted` and lives under "Rate given"; once he confirms it is an order.
+    const liveAsks = await Ask.find({
         buyerId: buyer._id,
-        state: { $nin: ['lapsed', 'withdrawn'] },
+        state: { $in: ['open', 'quoted'] },
     }).sort({
         createdAt: -1,
     });
+    // Quotes raised on his asks that Sales has not yet given him — the ask is still "He asked" for
+    // those, even once another quote has been given and it also shows under "Rate given".
+    const parkedQuotes = liveAsks.length
+        ? await Quote.find({
+            askId: { $in: liveAsks.map((a) => a._id) },
+            status: 'pending_sales',
+        }).sort({ createdAt: 1 })
+        : [];
+    const parkedByAskId = new Map();
+    for (const quote of parkedQuotes) {
+        const key = quote.askId.toString();
+        parkedByAskId.set(key, [...(parkedByAskId.get(key) ?? []), quote]);
+    }
+    // "He asked" is an ask still waiting on a rate. The moment any rate is given it moves to
+    // "Rate given"; quotes parked on it show on its row for as long as it is waiting.
+    const openAsks = liveAsks.filter((a) => a.state === 'open');
     // An ask names a product, or only a pack (SKU) — resolve either to the product so
     // "He asked" can show a name, never a bare id.
     const askSkus = await Sku.find({
-        _id: { $in: openAsks.filter((a) => a.skuId).map((a) => a.skuId) },
+        _id: { $in: liveAsks.filter((a) => a.skuId).map((a) => a.skuId) },
     });
     const askSkuById = new Map(askSkus.map((s) => [s._id.toString(), s]));
     const askProductIdOf = (a) => a.productId
@@ -158,49 +177,99 @@ export async function getBuyerFile(buyerId) {
             ? (askSkuById.get(a.skuId.toString())?.productId?.toString() ?? null)
             : null;
     const askProducts = await Product.find({
-        _id: { $in: [...new Set(openAsks.map(askProductIdOf).filter((id) => !!id))] },
+        _id: { $in: [...new Set(liveAsks.map(askProductIdOf).filter((id) => !!id))] },
     });
     const askProductById = new Map(askProducts.map((p) => [p._id.toString(), p]));
     const [callLogs, orders, liveQuotes] = await Promise.all([
         listCallLogsForBuyer(buyerId),
         listOrders({ buyerId }),
-        Quote.find({ askId: { $in: openAsks.map((a) => a._id) }, status: 'live' }).sort({
+        Quote.find({ askId: { $in: liveAsks.map((a) => a._id) }, status: 'live' }).sort({
             bindingUntil: 1,
         }),
     ]);
     const liveQuoteCount = liveQuotes.length;
-    const askById = new Map(openAsks.map((a) => [a._id.toString(), a]));
-    const liveQuoteRows = liveQuotes.map((q) => {
+    const askById = new Map(liveAsks.map((a) => [a._id.toString(), a]));
+    // The pack a quote names (a product-level ask has none of its own), and his rate on it: the
+    // seller's net plus the margin-matrix cell for his tier — the same figure he is shown.
+    const quoteSkuIds = [...liveQuotes, ...parkedQuotes]
+        .map((q) => q.skuId)
+        .filter((id) => !!id);
+    const quoteSkus = quoteSkuIds.length ? await Sku.find({ _id: { $in: quoteSkuIds } }) : [];
+    const quoteSkuById = new Map(quoteSkus.map((s) => [s._id.toString(), s]));
+    const skuOfQuote = (q) => {
+        const ask = askById.get(q.askId.toString());
+        const skuId = q.skuId ?? ask?.skuId;
+        return skuId
+            ? (quoteSkuById.get(skuId.toString()) ?? askSkuById.get(skuId.toString()))
+            : undefined;
+    };
+    const buyerRateOf = async (q) => {
+        const ask = askById.get(q.askId.toString());
+        const skuId = q.skuId ?? ask?.skuId;
+        return skuId ? computeBuyerFacingRatePaise(buyer, skuId, q.ratePaiseForIndore) : null;
+    };
+    const liveQuoteRows = await Promise.all(liveQuotes.map(async (q) => {
         const ask = askById.get(q.askId.toString());
         const productId = ask ? askProductIdOf(ask) : null;
-        const sku = ask?.skuId ? askSkuById.get(ask.skuId.toString()) : undefined;
         return {
             quoteId: q._id.toString(),
             askId: q.askId.toString(),
             productId,
             brand: (productId ? askProductById.get(productId)?.brand : undefined) ?? '—',
-            packLabel: sku?.packLabel ?? null,
-            ratePaiseForIndore: q.ratePaiseForIndore,
+            packLabel: skuOfQuote(q)?.packLabel ?? null,
+            ratePaise: await buyerRateOf(q),
             qtyAvailable: q.qtyAvailable,
+            askQty: ask?.qty ?? q.qtyAvailable,
             daysToIndore: q.daysToIndore,
+            givenAt: q.createdAt.toISOString(),
             bindingUntil: q.bindingUntil.toISOString(),
         };
-    });
+    }));
+    const parkedRowsByAskId = new Map();
+    for (const q of parkedQuotes) {
+        const row = {
+            quoteId: q._id.toString(),
+            askId: q.askId.toString(),
+            listingLineId: q.listingLineId ? q.listingLineId.toString() : null,
+            packLabel: skuOfQuote(q)?.packLabel ?? null,
+            ratePaise: await buyerRateOf(q),
+            qtyAvailable: q.qtyAvailable,
+            daysToIndore: q.daysToIndore,
+            expiryBand: q.conditionSet?.expiryBand ?? '',
+            expiryExact: q.conditionSet?.expiryExact ?? '',
+            deliveryBand: q.conditionSet?.deliveryBand ?? '',
+            raisedAt: q.createdAt.toISOString(),
+        };
+        parkedRowsByAskId.set(row.askId, [...(parkedRowsByAskId.get(row.askId) ?? []), row]);
+    }
     // The same nine joints as the Funnel tab, with the same state lists and wording,
     // counted over this buyer's own records only.
     const staleBefore = addDays(new Date(), -(ASK_LEAK_STALENESS_HOURS / 24));
-    const askLeakCount = openAsks.filter((a) => a.state === 'open' && a.createdAt <= staleBefore).length;
+    // An ask with a quote already waiting on Sales is not stale — the wait is on this desk.
+    const askLeakCount = openAsks.filter((a) => a.state === 'open' &&
+        !parkedByAskId.has(a._id.toString()) &&
+        a.createdAt <= staleBefore).length;
     const countOrders = (states) => orders.filter((o) => states.includes(o.state)).length;
     const pendingCount = countOrders(PAYMENT_PENDING_SO_STATES);
     const paidCount = countOrders(PAID_SO_STATES);
+    const billedCount = countOrders(BILLED_SO_STATES);
+    const dispatchedCount = countOrders(DISPATCHED_SO_STATES);
     const deliveredCount = countOrders(DELIVERED_SO_STATES);
     // Same state lists as the three counts above, so each section's size is its joint's count.
     const inStates = (states) => orders.filter((o) => states.includes(o.state));
     const ordersByStage = {
         paymentPending: inStates(PAYMENT_PENDING_SO_STATES),
         paid: inStates(PAID_SO_STATES),
+        billed: inStates(BILLED_SO_STATES),
+        dispatched: inStates(DISPATCHED_SO_STATES),
         delivered: inStates(DELIVERED_SO_STATES),
-        other: orders.filter((o) => ![...PAYMENT_PENDING_SO_STATES, ...PAID_SO_STATES, ...DELIVERED_SO_STATES].includes(o.state)),
+        other: orders.filter((o) => ![
+            ...PAYMENT_PENDING_SO_STATES,
+            ...PAID_SO_STATES,
+            ...BILLED_SO_STATES,
+            ...DISPATCHED_SO_STATES,
+            ...DELIVERED_SO_STATES,
+        ].includes(o.state)),
     };
     const stage = (key, reached, count, extra = {}) => ({ key, label: FUNNEL_LABELS[key], reached, count, ...extra });
     const funnel = [
@@ -211,6 +280,8 @@ export async function getBuyerFile(buyerId) {
         stage('rate_held', liveQuoteCount > 0, liveQuoteCount),
         stage('took_it', pendingCount > 0, pendingCount),
         stage('paid', paidCount > 0, paidCount),
+        stage('billed', billedCount > 0, billedCount),
+        stage('dispatched', dispatchedCount > 0, dispatchedCount),
         stage('delivered', deliveredCount > 0, deliveredCount),
         stage('ordered_again', sos.length > 1, null),
     ];
@@ -250,6 +321,9 @@ export async function getBuyerFile(buyerId) {
                 brand: product?.brand ?? '—',
                 technical: product?.technical ?? '—',
                 packLabel: sku?.packLabel ?? null,
+                askedAt: a.createdAt.toISOString(),
+                expectedRatePaise: a.expectedRatePaise ?? null,
+                pendingQuotes: parkedRowsByAskId.get(a._id.toString()) ?? [],
             };
         }),
         liveQuotes: liveQuoteRows,

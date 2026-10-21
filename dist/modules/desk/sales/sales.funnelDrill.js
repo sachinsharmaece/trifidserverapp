@@ -51,7 +51,7 @@ async function describeAsks(asks) {
 }
 /** GET /staff/sales/funnel/asked — the asks counted under "Asked", oldest first. */
 export async function listFunnelAsks(now = new Date()) {
-    const asks = await Ask.find({ state: { $nin: ['lapsed', 'withdrawn'] } }).sort({ createdAt: 1 });
+    const asks = await Ask.find({ state: 'open' }).sort({ createdAt: 1 });
     const describe = await describeAsks(asks);
     const staleBefore = addDays(now, -(ASK_LEAK_STALENESS_HOURS / 24));
     return asks.map((a) => {
@@ -81,7 +81,9 @@ export async function listFunnelHeldRates() {
             quoteId: q._id.toString(),
             askId: ask._id.toString(),
             ...describe(ask),
-            qty: ask.qty,
+            qty: q.qtyAvailable,
+            ratePaise: q.ratePaiseForIndore,
+            daysToIndore: q.daysToIndore,
             heldUntil: q.bindingUntil.toISOString(),
         });
     }

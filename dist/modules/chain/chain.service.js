@@ -21,6 +21,7 @@ import { PromotionOffer } from '../../models/PromotionOffer.js';
 import { PoolCommitment } from '../../models/PoolCommitment.js';
 import { UpcomingReceipt } from '../../models/UpcomingReceipt.js';
 import { SellerDebit } from '../../models/SellerDebit.js';
+import { StockHold } from '../../models/StockHold.js';
 import { recordFailure } from '../conduct/conduct.service.js';
 import { ensureBookAssignment, recordPulseEvent } from '../desk/sales/sales.service.js';
 import { AppError } from '../../shared/errors.js';
@@ -196,6 +197,20 @@ export async function createSoInSession(input, actor, session) {
         ], { session, ordered: true });
         if (!soLine)
             throw new Error('SoLine.create returned no document.');
+        // The seller already agreed to supply (his quote, or the pile he confirmed), so his stock is
+        // on hold for the buyer's whole payment window from the moment the order exists. Purchase
+        // can adjust the hours; it no longer has to ask.
+        await StockHold.create([
+            {
+                soId: so._id,
+                sellerId: seller._id,
+                holdHours: input.payDeadlineHours ?? 24,
+                requestedAt: now,
+                source: 'auto',
+                holdUntil: payDeadline,
+                confirmedAt: now,
+            },
+        ], { session, ordered: true });
         // CH §21.8 #4 — "24-hour window opens": the SO has just entered `awaiting_payment`.
         // Written before any other notification for this SO, so where the weekly cap
         // (BR-283) can only let one message through, it is the money deadline that wins.
@@ -950,7 +965,9 @@ export async function closeDeliveredSo(soId, by, correlationId, extraFilter = {}
             actorType: by.actorType,
             summary: by.actorType === 'system'
                 ? `${closed.soNo} — seven days after leg 2 with no complaint: silence is delivery (BR-192).`
-                : `${closed.soNo} — buyer confirmed receipt (BR-192).`,
+                : by.actorType === 'staff'
+                    ? `${closed.soNo} — Sales recorded the buyer's confirmation of receipt on a call (BR-192).`
+                    : `${closed.soNo} — buyer confirmed receipt (BR-192).`,
         }, session);
         await writeAuditLog({
             actorId: by.actorId,

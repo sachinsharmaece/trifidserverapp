@@ -3,6 +3,8 @@ import { Counterparty } from '../../models/Counterparty.js';
 import { Buyer } from '../../models/Buyer.js';
 import { BuyerDealership } from '../../models/BuyerDealership.js';
 import { Seller } from '../../models/Seller.js';
+import { SellerDealership } from '../../models/SellerDealership.js';
+import { Manufacturer } from '../../models/Manufacturer.js';
 import { SellerReference } from '../../models/SellerReference.js';
 import { SellerArea } from '../../models/SellerArea.js';
 import { BankDetail } from '../../models/BankDetail.js';
@@ -20,15 +22,20 @@ import { toBankDetailDto } from './onboarding.dto.js';
 // service-layer checksum/shape checks, which sit below the Zod boundary and
 // so aren't skipped by validateBody alone. Never true in production.
 const validationDisabled = !isProduction && env.disableInputValidation;
-async function assertGstinAndMobileAreFree(gstin, mobile) {
-    if (!validationDisabled && !isValidGstin(gstin)) {
+async function assertGstinAndMobileAreFree(gstin, mobile, skipGstinCheck = false) {
+    if (!validationDisabled && !skipGstinCheck && gstin && !isValidGstin(gstin)) {
         throw new AppError({
             code: 'VALIDATION_FAILED',
             messageEn: 'That GSTIN does not check out.',
             field: 'gstin',
         });
     }
-    const existing = await Counterparty.findOne({ $or: [{ gstin }, { mobile }], deletedAt: null });
+    // Uniqueness is a data-integrity guard (unique indexes), not input
+    // validation — kept, but a blank GSTIN never matches anything.
+    const existing = await Counterparty.findOne({
+        $or: gstin ? [{ gstin }, { mobile }] : [{ mobile }],
+        deletedAt: null,
+    });
     if (existing) {
         throw new AppError({
             code: 'VALIDATION_FAILED',
@@ -128,18 +135,21 @@ async function createPendingBankDetail(counterpartyId, input, session) {
 }
 /** API-010. WF-01 steps 1–5. */
 export async function registerBuyer(input, staffAssisted, correlationId = 'unknown') {
-    await assertGstinAndMobileAreFree(input.gstin, input.mobile);
-    if (input.bankDetail)
+    // Blank strings become undefined so the sparse-unique GSTIN index never
+    // sees two '' values.
+    const gstin = input.gstin?.trim() || undefined;
+    await assertGstinAndMobileAreFree(gstin, input.mobile, Boolean(staffAssisted));
+    if (input.bankDetail && !staffAssisted)
         assertBankDetailIsWellFormed(input.bankDetail);
     let accountNameWarning = null;
     const registrationId = await withTransaction(async (session) => {
         const [counterparty] = await Counterparty.create([
             {
                 mobile: input.mobile,
-                firm: input.firm,
-                gstin: input.gstin,
-                ownerName: input.ownerName,
-                licenceNo: input.licenceNo,
+                firm: input.firm || undefined,
+                gstin,
+                ownerName: input.ownerName || undefined,
+                licenceNo: input.licenceNo || undefined,
                 kind: 'buyer',
                 status: 'pending',
                 ...(staffAssisted
@@ -153,7 +163,7 @@ export async function registerBuyer(input, staffAssisted, correlationId = 'unkno
         ], { session });
         if (!counterparty)
             throw new Error('Counterparty.create returned no document.');
-        const [buyer] = await Buyer.create([{ counterpartyId: counterparty._id, gstPpobAddress: input.gstPpobAddress }], { session });
+        const [buyer] = await Buyer.create([{ counterpartyId: counterparty._id, gstPpobAddress: input.gstPpobAddress || undefined }], { session });
         if (!buyer)
             throw new Error('Buyer.create returned no document.');
         if (input.dealerships && input.dealerships.length > 0) {
@@ -181,8 +191,8 @@ export async function registerBuyer(input, staffAssisted, correlationId = 'unkno
         if (input.bankDetail) {
             accountNameWarning = await auditAccountNameMismatchIfAny({
                 accountName: input.bankDetail.accountName,
-                ownerName: input.ownerName,
-                firm: input.firm,
+                ownerName: input.ownerName ?? '',
+                firm: input.firm ?? '',
                 entityId: counterparty._id,
                 correlationId: staffAssisted?.correlationId ?? correlationId,
             }, session);
@@ -195,6 +205,17 @@ export async function registerBuyer(input, staffAssisted, correlationId = 'unkno
 export async function registerSeller(input, staffAssisted, correlationId = 'unknown') {
     await assertGstinAndMobileAreFree(input.gstin, input.mobile);
     assertBankDetailIsWellFormed(input.bankDetail);
+    const dealershipIds = [...new Set((input.dealerships ?? []).map((d) => d.manufacturerId))];
+    if (dealershipIds.length > 0) {
+        const known = await Manufacturer.countDocuments({ _id: { $in: dealershipIds } });
+        if (known !== dealershipIds.length) {
+            throw new AppError({
+                code: 'VALIDATION_FAILED',
+                messageEn: 'One of those companies does not exist.',
+                field: 'dealerships',
+            });
+        }
+    }
     let accountNameWarning = null;
     const registrationId = await withTransaction(async (session) => {
         const [counterparty] = await Counterparty.create([
@@ -221,6 +242,13 @@ export async function registerSeller(input, staffAssisted, correlationId = 'unkn
         if (!seller)
             throw new Error('Seller.create returned no document.');
         await SellerReference.create(input.references.map((reference) => ({ sellerId: seller._id, ...reference })), { session, ordered: true });
+        if (dealershipIds.length > 0) {
+            await SellerDealership.create(dealershipIds.map((manufacturerId) => ({
+                sellerId: seller._id,
+                manufacturerId,
+                setBy: staffAssisted?.employeeId ?? null,
+            })), { session, ordered: true });
+        }
         await createPendingBankDetail(counterparty._id, input.bankDetail, session);
         await writeConsents(counterparty._id, input.consent, session);
         if (staffAssisted) {

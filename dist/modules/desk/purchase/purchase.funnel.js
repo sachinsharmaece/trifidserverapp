@@ -7,10 +7,10 @@ import { Po } from '../../../models/Po.js';
 import { Movement } from '../../../models/Movement.js';
 import { Inspection } from '../../../models/Inspection.js';
 import { SellerDebit } from '../../../models/SellerDebit.js';
-import { SellerCatalogueEntry } from '../../../models/SellerCatalogueEntry.js';
 import { Sku } from '../../../models/Sku.js';
 import { addDays, istDateKey } from '../../../shared/clock.js';
 import { asksOnProductsFilter } from '../../demand/askScope.js';
+import { resolveCatalogueEntries } from './purchase.catalogue.js';
 /**
  * BR-275 (CH §18.11) — "Purchase is measured on leaks closed, not orders
  * placed": blind demand eliminated · time to confirm · same-day dispatch % ·
@@ -214,7 +214,7 @@ export async function getSellerFunnelMetrics(sellerId, now = new Date()) {
         createdAt: { $gte: from },
         nettedAgainst: { $ne: null },
     });
-    const catalogueEntries = await SellerCatalogueEntry.find({ sellerId });
+    const catalogueEntries = await resolveCatalogueEntries({ sellerId });
     const productIds = catalogueEntries.map((e) => e.productId);
     // A pack-specific ask has no productId of its own — match it through its SKU too.
     const catalogueSkus = productIds.length ? await Sku.find({ productId: { $in: productIds } }) : [];

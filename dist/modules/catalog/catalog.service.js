@@ -1,6 +1,8 @@
 import { Manufacturer } from '../../models/Manufacturer.js';
+import { Hsn } from '../../models/Hsn.js';
 import { Product } from '../../models/Product.js';
 import { Sku } from '../../models/Sku.js';
+import { Technical } from '../../models/Technical.js';
 import { AppError } from '../../shared/errors.js';
 import { packLabelMatchesBaseUnit } from '../../shared/validators.js';
 /**
@@ -43,6 +45,94 @@ export async function updateManufacturer(manufacturerId, updates) {
     }
     return { manufacturerId: manufacturer._id.toString() };
 }
+// ---------------------------------------------------------------------------
+// Technical and HSN masters. A product still stores `technical` (name) and
+// `hsn` (code) as plain strings; these masters are what the admin picks from,
+// and `ensureTechnical`/`ensureHsn` keep them in step whenever a product is
+// written (admin or Purchase draft), so a master can never be missing a value
+// a product already uses.
+// ---------------------------------------------------------------------------
+const CI = { locale: 'en', strength: 2 };
+function isDuplicateKey(error) {
+    return !!error && typeof error === 'object' && 'code' in error && error.code === 11000;
+}
+/** Returns the master's own spelling of `name`, creating the master row if there is none. */
+async function ensureTechnical(name, createdBy) {
+    const trimmed = name.trim();
+    const existing = await Technical.findOne({ name: trimmed }).collation(CI);
+    if (existing)
+        return existing.name;
+    try {
+        const created = await Technical.create({
+            name: trimmed,
+            ...(createdBy ? { state: 'draft', createdBy } : {}),
+        });
+        return created.name;
+    }
+    catch (error) {
+        // Lost a race with a concurrent create of the same name — take theirs.
+        if (isDuplicateKey(error)) {
+            const winner = await Technical.findOne({ name: trimmed }).collation(CI);
+            if (winner)
+                return winner.name;
+        }
+        throw error;
+    }
+}
+/** The master's default rate for `code`, creating the master row (at the fallback) if there is none. */
+async function ensureHsn(code, fallbackTaxPercent) {
+    const existing = await Hsn.findOne({ code });
+    if (existing)
+        return existing.taxPercent;
+    try {
+        await Hsn.create({ code, taxPercent: fallbackTaxPercent });
+    }
+    catch (error) {
+        if (!isDuplicateKey(error))
+            throw error;
+    }
+    return fallbackTaxPercent;
+}
+export async function listTechnicalMasters() {
+    const technicals = await Technical.find({ active: true }).sort({ name: 1 });
+    return technicals.map((t) => ({
+        technicalId: t._id.toString(),
+        name: t.name,
+        state: t.state,
+    }));
+}
+export async function createTechnical(name) {
+    const existing = await Technical.findOne({ name: name.trim() }).collation(CI);
+    if (existing) {
+        throw new AppError({
+            code: 'VALIDATION_FAILED',
+            messageEn: 'This technical already exists.',
+            field: 'name',
+        });
+    }
+    const technical = await Technical.create({ name: name.trim() });
+    return { technicalId: technical._id.toString() };
+}
+export async function listHsnMasters() {
+    const rows = await Hsn.find({ active: true }).sort({ code: 1 });
+    return rows.map((h) => ({
+        hsnId: h._id.toString(),
+        code: h.code,
+        description: h.description ?? '',
+        taxPercent: h.taxPercent,
+    }));
+}
+export async function createHsn(input) {
+    if (await Hsn.exists({ code: input.code })) {
+        throw new AppError({
+            code: 'VALIDATION_FAILED',
+            messageEn: 'This HSN already exists.',
+            field: 'code',
+        });
+    }
+    const hsn = await Hsn.create(input);
+    return { hsnId: hsn._id.toString() };
+}
 // API-020 — step 1 of the one picker (BR-111). Technical is the primary
 // axis everywhere.
 export async function listTechnicals() {
@@ -68,6 +158,28 @@ export async function listManufacturersForTechnical(technical) {
     }));
 }
 // API-022 — step 3.
+function escapeRegex(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+/**
+ * The searchable product dropdown on staff call forms: live products matched by brand or
+ * technical name, no technical chosen first. Same visibility rule as `listProducts` —
+ * drafts never appear as a choice. Capped, so an empty search is "the first fifty".
+ */
+export async function searchProducts(q, limit) {
+    const query = { active: true, state: 'live', deletedAt: null };
+    const term = q.trim();
+    if (term) {
+        const pattern = new RegExp(escapeRegex(term), 'i');
+        query.$or = [{ brand: pattern }, { technical: pattern }];
+    }
+    const products = await Product.find(query).sort({ brand: 1 }).limit(limit);
+    return products.map((product) => ({
+        productId: product._id.toString(),
+        brand: product.brand,
+        technical: product.technical,
+    }));
+}
 export async function listProducts(technical, manufacturerId) {
     // B-22 — this feeds every technical→product→pack picker (counterparty
     // and staff-proxy alike); a draft "cannot back a live listing until Admin
@@ -115,6 +227,8 @@ export async function listAllProducts(cursor, limit) {
         manufacturerId: product.manufacturerId.toString(),
         manufacturerName: manufacturerNameById.get(product.manufacturerId.toString()),
         hsn: product.hsn,
+        category: product.category,
+        taxPercent: product.taxPercent,
         class: product.class,
         active: product.active,
         state: product.state,
@@ -142,6 +256,8 @@ export async function getProductById(productId) {
         manufacturerId: product.manufacturerId.toString(),
         manufacturerName: manufacturer?.name,
         hsn: product.hsn,
+        category: product.category,
+        taxPercent: product.taxPercent,
         class: product.class,
         active: product.active,
         state: product.state,
@@ -168,8 +284,25 @@ export async function listSkusForProduct(productId) {
         state: sku.state,
     }));
 }
-// API-024 POST.
+/**
+ * BR-055 only knows LTR/KG/PC, so an ML/GM pack is stored in the base unit
+ * (500 ML -> 0.5 LTR) while the label keeps what the admin typed ("500 ML").
+ */
+function packToSkuFields(pack) {
+    const baseUnit = pack.unit === 'ML' ? 'LTR' : pack.unit === 'GM' ? 'KG' : pack.unit;
+    const factor = pack.unit === 'ML' || pack.unit === 'GM' ? 1000 : 1;
+    return {
+        packLabel: `${pack.packSize} ${pack.unit}`,
+        packSize: Math.round((pack.packSize / factor) * 1e6) / 1e6,
+        baseUnit,
+        unitsPerBox: pack.unitsPerBox,
+    };
+}
+// API-024 POST. Optionally creates the product's packs (SKUs) in the same
+// call. Mongo here has no multi-document transaction, so everything that can
+// be checked up front is, and a failed SKU insert rolls the product back.
 export async function createProduct(input) {
+    const { packs = [], ...productInput } = input;
     const manufacturer = await Manufacturer.findById(input.manufacturerId);
     if (!manufacturer) {
         throw new AppError({
@@ -178,14 +311,55 @@ export async function createProduct(input) {
             field: 'manufacturerId',
         });
     }
-    const product = await Product.create(input);
-    return { productId: product._id.toString() };
+    const skuRows = packs.map(packToSkuFields);
+    const labels = new Set();
+    for (const row of skuRows) {
+        const key = row.packLabel.toLowerCase();
+        if (labels.has(key)) {
+            throw new AppError({
+                code: 'VALIDATION_FAILED',
+                messageEn: `The pack "${row.packLabel}" is listed twice.`,
+                field: 'packs',
+            });
+        }
+        labels.add(key);
+    }
+    const technical = await ensureTechnical(input.technical);
+    const masterRate = await ensureHsn(input.hsn, input.taxPercent ?? 18);
+    const product = await Product.create({
+        ...productInput,
+        technical,
+        taxPercent: input.taxPercent ?? masterRate,
+    });
+    const productId = product._id.toString();
+    const skuIds = [];
+    try {
+        for (const row of skuRows) {
+            const sku = await Sku.create({ productId, ...row });
+            skuIds.push(sku._id.toString());
+        }
+    }
+    catch (error) {
+        await Sku.deleteMany({ productId });
+        await Product.deleteOne({ _id: productId });
+        throw error;
+    }
+    return { productId, skuIds };
 }
 // API-024 PATCH. `state` only ever moves draft → live (Admin's confirm
 // action) — never accepted going the other way, same one-direction shape
 // as `updateManufacturer` above.
 export async function updateProduct(productId, updates) {
-    const product = await Product.findByIdAndUpdate(productId, { $set: updates }, { new: true });
+    const $set = { ...updates };
+    if ($set.technical !== undefined)
+        $set.technical = await ensureTechnical($set.technical);
+    if ($set.hsn !== undefined) {
+        const masterRate = await ensureHsn($set.hsn, $set.taxPercent ?? 18);
+        // Changing the HSN picks up that HSN's rate unless the caller set one.
+        if ($set.taxPercent === undefined)
+            $set.taxPercent = masterRate;
+    }
+    const product = await Product.findByIdAndUpdate(productId, { $set }, { new: true });
     if (!product) {
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Product not found.' });
     }
@@ -226,7 +400,15 @@ export async function createProductDraft(input, createdBy) {
             field: 'manufacturerId',
         });
     }
-    const product = await Product.create({ ...input, state: 'draft', createdBy });
+    const technical = await ensureTechnical(input.technical, createdBy);
+    const taxPercent = input.taxPercent ?? (await ensureHsn(input.hsn, 18));
+    const product = await Product.create({
+        ...input,
+        technical,
+        taxPercent,
+        state: 'draft',
+        createdBy,
+    });
     return { productId: product._id.toString() };
 }
 export async function createSkuDraft(input, createdBy) {

@@ -33,7 +33,7 @@ export async function getDemandBoard(req, res) {
 // API-045 — 👤S.
 export async function postQuote(req, res) {
     const input = postQuoteSchema.parse(req.body);
-    const result = await demandService.postQuote(req.auth.counterpartyId, req.params.id, input);
+    const result = await demandService.postQuote(req.auth.counterpartyId, req.params.id, input, { holdForSales: true });
     ok(res, req, result, 201);
 }
 // API-046 — 👤S.

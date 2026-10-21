@@ -6,9 +6,52 @@ import * as salesBuyersService from './sales.buyers.js';
 import * as salesOrdersService from './sales.orders.js';
 import * as salesFunnelService from './sales.funnel.js';
 import * as salesFunnelDrillService from './sales.funnelDrill.js';
-import { requestMspSchema, respondToMspSchema, createCallLogSchema } from './sales.validation.js';
+import * as salesStageService from './sales.stageActions.js';
+import { requestMspSchema, respondToMspSchema, createCallLogSchema, giveRateSchema, giveParkedQuoteSchema, markPaidSchema, cancelOrderSchema, markBilledSchema, dispatchOrderSchema, markDeliveredSchema, skipToBilledSchema, } from './sales.validation.js';
 function ok(res, req, data, status = 200) {
     res.status(status).json({ data, meta: { correlationId: req.correlationId } });
+}
+function stageActor(req) {
+    return { employeeId: req.auth.employeeId, correlationId: req.correlationId };
+}
+// Buyer file stage buttons.
+export async function postGiveRate(req, res) {
+    const { listingLineId, callNote } = giveRateSchema.parse(req.body);
+    const result = await salesStageService.giveRateOnAsk(req.params.askId, { listingLineId }, stageActor(req), callNote);
+    ok(res, req, result, 201);
+}
+export async function postGiveParkedQuote(req, res) {
+    const { callNote } = giveParkedQuoteSchema.parse(req.body);
+    const result = await salesStageService.giveParkedQuote(req.params.quoteId, stageActor(req), callNote);
+    ok(res, req, result, 201);
+}
+export async function postMarkPaid(req, res) {
+    const { utr, callNote } = markPaidSchema.parse(req.body);
+    const result = await salesStageService.markOrderPaid(req.params.soId, { utr }, stageActor(req), callNote);
+    ok(res, req, result, 201);
+}
+export async function postMarkBilled(req, res) {
+    const { callNote, ...input } = markBilledSchema.parse(req.body);
+    const result = await salesStageService.markOrderBilled(req.params.soId, input, stageActor(req), callNote);
+    ok(res, req, result, 201);
+}
+export async function postSkipToBilled(req, res) {
+    const { callNote, ...input } = skipToBilledSchema.parse(req.body);
+    const result = await salesStageService.skipToBilled(req.params.soId, input, stageActor(req), callNote);
+    ok(res, req, result, 201);
+}
+export async function postDispatchOrder(req, res) {
+    const { callNote, ...input } = dispatchOrderSchema.parse(req.body);
+    const result = await salesStageService.dispatchOrder(req.params.soId, input, stageActor(req), callNote);
+    ok(res, req, result, 201);
+}
+export async function postMarkDelivered(req, res) {
+    const { callNote } = markDeliveredSchema.parse(req.body);
+    ok(res, req, await salesStageService.markOrderDelivered(req.params.soId, stageActor(req), callNote));
+}
+export async function postCancelOrder(req, res) {
+    const { callNote } = cancelOrderSchema.parse(req.body);
+    ok(res, req, await salesStageService.cancelOrder(req.params.soId, stageActor(req), callNote));
 }
 export async function getWorklist(req, res) {
     ok(res, req, await salesService.getSalesWorklist());

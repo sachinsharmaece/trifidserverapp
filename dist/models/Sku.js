@@ -27,7 +27,10 @@ skuSchema.index({ productId: 1, packLabel: 1 }, { unique: true });
 // BR-055 — LTR/KG: baseUnitsPerBox = packSize × unitsPerBox. PC: pack size is
 // descriptive only, so baseUnitsPerBox = unitsPerBox.
 skuSchema.pre('validate', function computeBaseUnitsPerBox() {
+    // Fractional is real (350 ML × 30 = 10.5 L); six decimals drops float noise like 0.1 × 3.
     this.baseUnitsPerBox =
-        this.baseUnit === 'PC' ? this.unitsPerBox : this.packSize * this.unitsPerBox;
+        this.baseUnit === 'PC'
+            ? this.unitsPerBox
+            : Math.round(this.packSize * this.unitsPerBox * 1e6) / 1e6;
 });
 export const Sku = model('Sku', skuSchema, 'sku');

@@ -26,6 +26,8 @@ export const FUNNEL_LABELS = {
     rate_held: 'Rate given',
     took_it: 'Payment pending',
     paid: 'Paid',
+    billed: 'Billed',
+    dispatched: 'Dispatch',
     delivered: 'Delivered',
     ordered_again: 'Ordered again',
 };
@@ -75,14 +77,14 @@ async function viewingMetric() {
     };
 }
 async function askedMetric(now) {
-    const count = await Ask.countDocuments({ state: { $nin: ['lapsed', 'withdrawn'] } });
+    const count = await Ask.countDocuments({ state: 'open' });
     const staleBefore = addDays(now, -(ASK_LEAK_STALENESS_HOURS / 24));
     const leakCount = await Ask.countDocuments({ state: 'open', createdAt: { $lte: staleBefore } });
     return {
         key: 'asked',
         label: FUNNEL_LABELS.asked,
-        formula: 'Count of asks not yet lapsed or withdrawn, right now — still live in some sense. ' +
-            `Leak: of those, how many are still "open" (no quote at all) after ${ASK_LEAK_STALENESS_HOURS} hours.`,
+        formula: 'Count of asks still waiting on a rate (no quote yet), right now — once a rate is given an ask moves on to Rate given. ' +
+            `Leak: of those, how many have waited more than ${ASK_LEAK_STALENESS_HOURS} hours.`,
         unit: 'count',
         value: count,
         numerator: count,
@@ -119,20 +121,42 @@ async function tookItMetric() {
         caveat: null,
     };
 }
-export const PAID_SO_STATES = [
-    'po_released',
-    'dispatched_leg1',
-    'at_indore',
-    'inspected',
-    'billed_in_marg',
-    'dispatched_leg2',
-];
+// Paid → Billed → Dispatch → Delivered are four disjoint slices of the order chain.
+export const PAID_SO_STATES = ['po_released', 'dispatched_leg1', 'at_indore', 'inspected'];
+export const BILLED_SO_STATES = ['billed_in_marg'];
+export const DISPATCHED_SO_STATES = ['dispatched_leg2'];
 async function paidMetric() {
     const count = await So.countDocuments({ state: { $in: [...PAID_SO_STATES] } });
     return {
         key: 'paid',
         label: FUNNEL_LABELS.paid,
-        formula: 'Count of sales orders paid in full and somewhere in the chain between PO release and leg 2 dispatch, right now.',
+        formula: 'Count of sales orders paid in full and still between PO release and the Marg bill (leg 1, dock, inspection), right now.',
+        unit: 'count',
+        value: count,
+        numerator: count,
+        denominator: null,
+        caveat: null,
+    };
+}
+async function billedMetric() {
+    const count = await So.countDocuments({ state: { $in: [...BILLED_SO_STATES] } });
+    return {
+        key: 'billed',
+        label: FUNNEL_LABELS.billed,
+        formula: 'Count of sales orders billed in Marg and waiting for the leg 2 dispatch, right now.',
+        unit: 'count',
+        value: count,
+        numerator: count,
+        denominator: null,
+        caveat: null,
+    };
+}
+async function dispatchedMetric() {
+    const count = await So.countDocuments({ state: { $in: [...DISPATCHED_SO_STATES] } });
+    return {
+        key: 'dispatched',
+        label: FUNNEL_LABELS.dispatched,
+        formula: 'Count of sales orders that have left Indore on leg 2 and are inside the buyer’s 7-day window, right now.',
         unit: 'count',
         value: count,
         numerator: count,
@@ -180,6 +204,8 @@ export async function getSalesFunnelReport(now = new Date()) {
         await rateHeldMetric(),
         await tookItMetric(),
         await paidMetric(),
+        await billedMetric(),
+        await dispatchedMetric(),
         await deliveredMetric(),
         await orderedAgainMetric(),
     ];

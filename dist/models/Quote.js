@@ -6,7 +6,21 @@ import { proxyLogField } from '../shared/proxyLog.js';
  * BR-063 — `rank`/`ofCount` are computed; the winning rate is never stored
  * on a losing quote and never returned to a seller in any field.
  */
-export const QUOTE_STATUSES = ['live', 'won', 'lost', 'expired', 'promoted', 'withdrawn'];
+export const QUOTE_STATUSES = [
+    'pending_sales',
+    'live',
+    'won',
+    'lost',
+    'expired',
+    'promoted',
+    'withdrawn',
+];
+/**
+ * A quote is born `pending_sales`: it is already a listing line for every buyer, but the asking
+ * buyer is not shown it as a rate on his ask until Sales gives it to him (`live`). Desks that
+ * ask "has this seller quoted?" count both.
+ */
+export const OPEN_QUOTE_STATUSES = ['pending_sales', 'live'];
 // BR-273 — fixed gap codes only, never free text.
 export const QUOTE_GAP_CODES = [
     'short_on_quantity',
@@ -17,6 +31,10 @@ export const QUOTE_GAP_CODES = [
 const quoteSchema = new Schema({
     askId: { type: Schema.Types.ObjectId, ref: 'Ask', required: true },
     sellerId: { type: Schema.Types.ObjectId, ref: 'Seller', required: true },
+    // The pack quoted. Always set on a quote that is parked for Sales; older quotes lean on `ask.skuId`.
+    skuId: { type: Schema.Types.ObjectId, ref: 'Sku', default: null },
+    // The listing line this quote was published as, the moment it was raised.
+    listingLineId: { type: Schema.Types.ObjectId, ref: 'ListingLine', default: null },
     ratePaiseForIndore: { type: Number, required: true },
     qtyAvailable: { type: Number, required: true, min: 1 },
     conditionSet: {

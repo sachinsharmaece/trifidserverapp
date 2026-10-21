@@ -2,9 +2,10 @@ import { Router } from 'express';
 import { authenticate } from '../../../middleware/auth.js';
 import { requirePermission } from '../../../middleware/requirePermission.js';
 import { validateBody } from '../../../middleware/validate.js';
+import { requireIdempotencyKey } from '../../../middleware/idempotency.js';
 import { PERMISSIONS } from '../../../config/permissions.js';
 import * as controller from './purchase.controller.js';
-import { askChaseSchema, draftManufacturerSchema, draftProductSchema, draftSkuSchema, sellerCatalogueEntrySchema, } from './purchase.validation.js';
+import { askChaseSchema, draftManufacturerSchema, draftProductSchema, draftSkuSchema, sellerCatalogueEntrySchema, sellerDealershipsSchema, } from './purchase.validation.js';
 export const purchaseRouter = Router();
 // New — M6. 🏢 Purchase. BR-069 — every response below carries no buyer
 // identity and no rupee figure; see purchase.service.ts's own DTOs.
@@ -35,7 +36,13 @@ purchaseRouter.get('/staff/purchase/dispute-recovery', authenticate, requirePerm
 // money and no board visibility in a catalogue entry (see purchase.service.ts).
 purchaseRouter.get('/staff/purchase/sellers/:sellerId/catalogue', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getSellerCatalogue);
 purchaseRouter.post('/staff/purchase/catalogue', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), validateBody(sellerCatalogueEntrySchema), controller.postSellerCatalogueEntry);
+// The companies a seller deals in — every product of a ticked company counts
+// as carried (see purchase.catalogue.ts). Same boundary as the catalogue.
+purchaseRouter.get('/staff/purchase/sellers/:sellerId/dealerships', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getSellerDealerships);
+purchaseRouter.put('/staff/purchase/sellers/:sellerId/dealerships', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), validateBody(sellerDealershipsSchema), controller.putSellerDealerships);
 purchaseRouter.get('/staff/purchase/sellers/:sellerId/file', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getSellerFile);
+// The seller file's funnel: where each of his orders sits, stage by stage.
+purchaseRouter.get('/staff/purchase/sellers/:sellerId/funnel', authenticate, requirePermission(PERMISSIONS.PO_EDIT), controller.getSellerStageFunnelRoute);
 // Supply matrix — computed from the catalogue + live listings.
 purchaseRouter.get('/staff/purchase/matrix/by-product', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getSupplyMatrixByProduct);
 purchaseRouter.get('/staff/purchase/matrix/by-seller', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getSupplyMatrixBySeller);
@@ -45,6 +52,18 @@ purchaseRouter.get('/staff/purchase/demand/on-board-not-quoted', authenticate, r
 // Confirmations — piles waiting on a seller's decision.
 purchaseRouter.get('/staff/purchase/piles', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getPilesAwaitingDecision);
 purchaseRouter.post('/staff/purchase/piles/:pileId/chase', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.postPileChase);
+// Stock → PO → Billed. Reads and the hand-over use `po:edit` like Dispatch; recording what the
+// seller said on a call (hold, invoice) uses the seller-call permission, with a call note.
+purchaseRouter.get('/staff/purchase/stock', authenticate, requirePermission(PERMISSIONS.PO_EDIT), controller.getStockQueue);
+purchaseRouter.post('/staff/purchase/stock/:soId/hold', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), controller.postStockHold);
+purchaseRouter.post('/staff/purchase/stock/:soId/hold/adjust', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), controller.postAdjustStockHold);
+purchaseRouter.post('/staff/purchase/stock/:soId/hold/confirm', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), controller.postConfirmStockHold);
+purchaseRouter.get('/staff/purchase/pos', authenticate, requirePermission(PERMISSIONS.PO_EDIT), controller.getPoQueue);
+purchaseRouter.post('/staff/purchase/pos/:poId/invoice', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), controller.postSellerInvoice);
+// Leg 1 reported by the seller on a call — idempotent like every stage-moving POST.
+purchaseRouter.post('/staff/purchase/pos/:poId/seller-dispatched', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), requireIdempotencyKey(), controller.postSellerDispatched);
+purchaseRouter.get('/staff/purchase/billed', authenticate, requirePermission(PERMISSIONS.PO_EDIT), controller.getBilledQueue);
+purchaseRouter.post('/staff/purchase/pos/:poId/hand-to-dispatch', authenticate, requirePermission(PERMISSIONS.PO_EDIT), controller.postHandToDispatch);
 // Dispatch — Purchase's own pre-leg-1 chase queue. `po:edit` (already held —
 // see chain.service.ts's dispatch-clock fields) since logging a chase touches the PO.
 purchaseRouter.get('/staff/purchase/dispatch', authenticate, requirePermission(PERMISSIONS.PO_EDIT), controller.getDispatchChaseQueue);

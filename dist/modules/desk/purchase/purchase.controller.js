@@ -1,7 +1,10 @@
 import * as purchaseService from './purchase.service.js';
 import * as catalogService from '../../catalog/catalog.service.js';
 import { getFunnelReport as getFunnelReportFromService } from './purchase.funnel.js';
-import { draftManufacturerSchema, draftProductSchema, draftSkuSchema, nonOrderReasonSchema, sellerCatalogueEntrySchema, } from './purchase.validation.js';
+import * as stages from './purchase.stages.js';
+import { getSellerDealerships as getSellerDealershipsFromService, setSellerDealerships, } from './purchase.catalogue.js';
+import { getSellerStageFunnel } from './purchase.sellerFunnel.js';
+import { draftManufacturerSchema, draftProductSchema, draftSkuSchema, nonOrderReasonSchema, requestStockHoldSchema, adjustStockHoldSchema, sellerCatalogueEntrySchema, sellerDealershipsSchema, sellerDispatchedSchema, sellerInvoiceSchema, stageCallNoteSchema, } from './purchase.validation.js';
 function ok(res, req, data, status = 200) {
     res.status(status).json({ data, meta: { correlationId: req.correlationId } });
 }
@@ -57,6 +60,13 @@ export async function postSellerCatalogueEntry(req, res) {
 export async function getSellerCatalogue(req, res) {
     ok(res, req, await purchaseService.getSellerCatalogue(req.params.sellerId));
 }
+export async function getSellerDealerships(req, res) {
+    ok(res, req, await getSellerDealershipsFromService(req.params.sellerId));
+}
+export async function putSellerDealerships(req, res) {
+    const { manufacturerIds } = sellerDealershipsSchema.parse(req.body);
+    ok(res, req, await setSellerDealerships(req.params.sellerId, manufacturerIds, staffActor(req)));
+}
 export async function getSellerFile(req, res) {
     ok(res, req, await purchaseService.getSellerFile(req.params.sellerId));
 }
@@ -68,6 +78,43 @@ export async function getSupplyMatrixBySeller(req, res) {
 }
 export async function getPilesAwaitingDecision(req, res) {
     ok(res, req, await purchaseService.getPilesAwaitingDecision());
+}
+export async function getSellerStageFunnelRoute(req, res) {
+    ok(res, req, await getSellerStageFunnel(req.params.sellerId));
+}
+// Stock → PO → Billed → Dispatch.
+export async function getStockQueue(req, res) {
+    ok(res, req, await stages.getStockQueue());
+}
+export async function postStockHold(req, res) {
+    const { callNote, holdHours } = requestStockHoldSchema.parse(req.body);
+    ok(res, req, await stages.requestStockHold(req.params.soId, { holdHours }, staffActor(req), callNote), 201);
+}
+export async function postAdjustStockHold(req, res) {
+    const { callNote, holdHours } = adjustStockHoldSchema.parse(req.body);
+    ok(res, req, await stages.adjustStockHold(req.params.soId, { holdHours }, staffActor(req), callNote));
+}
+export async function postConfirmStockHold(req, res) {
+    const { callNote } = stageCallNoteSchema.parse(req.body);
+    ok(res, req, await stages.confirmStockHold(req.params.soId, staffActor(req), callNote));
+}
+export async function getPoQueue(req, res) {
+    ok(res, req, await stages.getPoQueue());
+}
+export async function getBilledQueue(req, res) {
+    ok(res, req, await stages.getBilledQueue());
+}
+export async function postSellerInvoice(req, res) {
+    const { callNote, ...input } = sellerInvoiceSchema.parse(req.body);
+    ok(res, req, await stages.recordSellerInvoice(req.params.poId, input, staffActor(req), callNote), 201);
+}
+export async function postSellerDispatched(req, res) {
+    const { callNote, ...input } = sellerDispatchedSchema.parse(req.body);
+    ok(res, req, await stages.recordSellerDispatch(req.params.poId, input, staffActor(req), callNote), 201);
+}
+export async function postHandToDispatch(req, res) {
+    const { callNote } = stageCallNoteSchema.parse(req.body);
+    ok(res, req, await stages.handToDispatch(req.params.poId, staffActor(req), callNote));
 }
 export async function getDispatchChaseQueue(req, res) {
     ok(res, req, await purchaseService.getDispatchChaseQueue());

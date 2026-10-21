@@ -19,11 +19,12 @@ function actingStaffId(req) {
 // buyer's own POST /asks would call; the call note lands on the Ask this
 // creates.
 export async function postBuyerCallAsk(req, res) {
-    const { buyerCounterpartyId, callNote, ...input } = req.body;
+    const { buyerCounterpartyId, callNote, expectedRatePaise, ...input } = req.body;
     // DEC-051 — the enquiry it opens is recorded as a Sales call, by this staff member.
     const result = await demandService.raiseAsk(buyerCounterpartyId, input, {
         channel: 'sales_call',
         raisedBy: actingStaffId(req),
+        ...(expectedRatePaise ? { expectedRatePaise } : {}),
     });
     await appendProxyLog(Ask, result.askId, {
         actingStaffId: actingStaffId(req),
@@ -41,9 +42,11 @@ export async function postBuyerCallAsks(req, res) {
     const results = [];
     for (const [index, line] of lines.entries()) {
         try {
-            const result = await demandService.raiseAsk(buyerCounterpartyId, line, {
+            const { expectedRatePaise, ...askLine } = line;
+            const result = await demandService.raiseAsk(buyerCounterpartyId, askLine, {
                 channel: 'sales_call',
                 raisedBy: actingStaffId(req),
+                ...(expectedRatePaise ? { expectedRatePaise } : {}),
             });
             await appendProxyLog(Ask, result.askId, {
                 actingStaffId: actingStaffId(req),
@@ -135,7 +138,7 @@ export async function postSellerCallListing(req, res) {
 // BR-105 (batch), BR-124, BR-126 (hold) and BR-273 (gap codes) all still apply.
 export async function postSellerCallQuote(req, res) {
     const { sellerCounterpartyId, callNote, ...input } = req.body;
-    const result = await demandService.postQuote(sellerCounterpartyId, req.params.id, input);
+    const result = await demandService.postQuote(sellerCounterpartyId, req.params.id, input, { holdForSales: true });
     await appendProxyLog(Quote, result.quoteId, {
         actingStaffId: actingStaffId(req),
         callNote,
