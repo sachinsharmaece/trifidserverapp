@@ -43,12 +43,10 @@ export function isValidIfsc(ifsc: string): boolean {
   return IFSC_SHAPE.test(ifsc);
 }
 
-// This desk trades agrochemicals only (sellers hold an insecticide licence,
-// products carry a "technical" active ingredient) — every HSN on file is
-// chapter 3808, so the prefix is enforced unconditionally rather than
-// gated on a product field that has no chemistry meaning (see `class` on
-// the Product model, which is a margin/pricing tier, BR-040).
-const HSN_SHAPE = /^3808\d{2,4}$/; // 3808 + 2/4/6 digits = 6 or 8 digits total.
+// The catalogue now carries seeds and fertilizers as well as pesticides, so an
+// HSN is no longer pinned to chapter 3808 — and is independent of the product
+// category. Shape only: 6 or 8 digits. The HSN master holds the tax rate.
+const HSN_SHAPE = /^(\d{6}|\d{8})$/;
 
 export function isValidHsn(hsn: string): boolean {
   return HSN_SHAPE.test(hsn);

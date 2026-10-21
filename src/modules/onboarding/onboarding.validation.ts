@@ -85,17 +85,45 @@ export const registerSellerSchema = z
           .strict(),
       )
       .min(2, 'Two referees are required (BR-250).'),
+    // The companies he deals in — every product of each counts as carried.
+    dealerships: z
+      .array(
+        z
+          .object({ manufacturerId: z.string().min(1, 'A dealership entry needs a company.') })
+          .strict(),
+      )
+      .optional(),
     bankDetail: bankDetailInputSchema,
     consent: consentInputSchema,
   })
   .strict();
 
-// Staff-assisted enquiries — same body as the self-service registration,
-// plus the mandatory call note. Desk boundary (Sales=buyer, Purchase=seller)
-// is checked in the controller against the caller's permission, not here.
-export const staffRegisterBuyerSchema = registerBuyerSchema.extend({
-  callNote: z.string().min(1, 'A call note is required for a staff-assisted registration.'),
-});
+// Staff-assisted buyer registration — deliberately unvalidated: no format,
+// checksum or presence rules on any field except `mobile`, which keeps its
+// 10-digit validation (the account's identity key). Seller and self-service
+// schemas are untouched. Desk boundary (Sales=buyer) is checked by
+// permission on the route, not here.
+export const staffRegisterBuyerSchema = z
+  .object({
+    mobile: mobileSchema,
+    firm: z.string().optional(),
+    gstin: z.string().optional(),
+    ownerName: z.string().optional(),
+    licenceNo: z.string().optional(),
+    gstPpobAddress: z.string().optional(),
+    dealerships: registerBuyerSchema.shape.dealerships,
+    bankDetail: z
+      .object({
+        accountNumber: z.string(),
+        ifsc: z.string(),
+        accountName: z.string(),
+      })
+      .strict()
+      .optional(),
+    consent: consentInputSchema,
+    callNote: z.string().optional(),
+  })
+  .strict();
 
 export const staffRegisterSellerSchema = registerSellerSchema.extend({
   callNote: z.string().min(1, 'A call note is required for a staff-assisted registration.'),

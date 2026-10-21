@@ -11,10 +11,13 @@ import { Product } from '../../../models/Product.js';
 import { Ask } from '../../../models/Ask.js';
 import { Quote } from '../../../models/Quote.js';
 import { AppError } from '../../../shared/errors.js';
+import { computeBuyerFacingRatePaise } from '../../listing/listing.service.js';
 import { addDays } from '../../../shared/clock.js';
 import {
   ASK_LEAK_STALENESS_HOURS,
+  BILLED_SO_STATES,
   DELIVERED_SO_STATES,
+  DISPATCHED_SO_STATES,
   FUNNEL_LABELS,
   PAID_SO_STATES,
   PAYMENT_PENDING_SO_STATES,
@@ -169,6 +172,31 @@ export interface BuyerFileOpenAsk {
   brand: string;
   technical: string;
   packLabel: string | null; // Only when the ask names a specific pack.
+  askedAt: string;
+  /** What he said he hopes to pay, noted on the call — Sales-internal. */
+  expectedRatePaise: number | null;
+  /** Quotes already raised on this ask that Sales has not yet given him. */
+  pendingQuotes: BuyerFileParkedQuote[];
+}
+
+/**
+ * A quote raised on his ask (by the seller, or by Purchase on his behalf) and waiting for Sales
+ * to give it to him. It is already a listing line for every buyer.
+ */
+export interface BuyerFileParkedQuote {
+  quoteId: string;
+  askId: string;
+  /** The listing line this quote was published as — the same offer shows on his board. */
+  listingLineId: string | null;
+  packLabel: string | null;
+  /** His own rate — seller net plus the margin-matrix cell for his tier. `null`: no cell yet. */
+  ratePaise: number | null;
+  qtyAvailable: number;
+  daysToIndore: number;
+  expiryBand: string;
+  expiryExact: string;
+  deliveryBand: string;
+  raisedAt: string;
 }
 
 /** A live quote on one of his asks — the rate he is holding right now. */
@@ -178,9 +206,14 @@ export interface BuyerFileLiveQuote {
   productId: string | null;
   brand: string;
   packLabel: string | null;
-  ratePaiseForIndore: number;
+  /** His own rate — seller net plus the margin-matrix cell for his tier; what he is shown. */
+  ratePaise: number | null;
   qtyAvailable: number;
+  /** How many boxes he asked for — what Confirm compares the quote against. */
+  askQty: number;
   daysToIndore: number;
+  /** When the rate was given to him; the desk shows it as "15 minutes ago". */
+  givenAt: string;
   bindingUntil: string;
 }
 
@@ -188,6 +221,8 @@ export interface BuyerFileLiveQuote {
 export interface BuyerFileOrdersByStage {
   paymentPending: SalesOrderRow[];
   paid: SalesOrderRow[];
+  billed: SalesOrderRow[];
+  dispatched: SalesOrderRow[];
   delivered: SalesOrderRow[];
   other: SalesOrderRow[];
 }
@@ -266,20 +301,38 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     }),
   );
 
-  const openAsks = await Ask.find({
+  // An ask moves on as it is worked: `open` (waiting on a rate) is "He asked"; once a rate is
+  // given it is `quoted` and lives under "Rate given"; once he confirms it is an order.
+  const liveAsks = await Ask.find({
     buyerId: buyer._id,
-    state: { $nin: ['lapsed', 'withdrawn'] },
+    state: { $in: ['open', 'quoted'] },
   }).sort({
     createdAt: -1,
   });
+  // Quotes raised on his asks that Sales has not yet given him — the ask is still "He asked" for
+  // those, even once another quote has been given and it also shows under "Rate given".
+  const parkedQuotes = liveAsks.length
+    ? await Quote.find({
+        askId: { $in: liveAsks.map((a) => a._id) },
+        status: 'pending_sales',
+      }).sort({ createdAt: 1 })
+    : [];
+  const parkedByAskId = new Map<string, typeof parkedQuotes>();
+  for (const quote of parkedQuotes) {
+    const key = (quote.askId as Types.ObjectId).toString();
+    parkedByAskId.set(key, [...(parkedByAskId.get(key) ?? []), quote]);
+  }
+  // "He asked" is an ask still waiting on a rate. The moment any rate is given it moves to
+  // "Rate given"; quotes parked on it show on its row for as long as it is waiting.
+  const openAsks = liveAsks.filter((a) => a.state === 'open');
 
   // An ask names a product, or only a pack (SKU) — resolve either to the product so
   // "He asked" can show a name, never a bare id.
   const askSkus = await Sku.find({
-    _id: { $in: openAsks.filter((a) => a.skuId).map((a) => a.skuId) },
+    _id: { $in: liveAsks.filter((a) => a.skuId).map((a) => a.skuId) },
   });
   const askSkuById = new Map(askSkus.map((s) => [(s._id as Types.ObjectId).toString(), s]));
-  const askProductIdOf = (a: (typeof openAsks)[number]): string | null =>
+  const askProductIdOf = (a: (typeof liveAsks)[number]): string | null =>
     a.productId
       ? (a.productId as Types.ObjectId).toString()
       : a.skuId
@@ -289,46 +342,93 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
           )?.toString() ?? null)
         : null;
   const askProducts = await Product.find({
-    _id: { $in: [...new Set(openAsks.map(askProductIdOf).filter((id): id is string => !!id))] },
+    _id: { $in: [...new Set(liveAsks.map(askProductIdOf).filter((id): id is string => !!id))] },
   });
   const askProductById = new Map(askProducts.map((p) => [(p._id as Types.ObjectId).toString(), p]));
 
   const [callLogs, orders, liveQuotes] = await Promise.all([
     listCallLogsForBuyer(buyerId),
     listOrders({ buyerId }),
-    Quote.find({ askId: { $in: openAsks.map((a) => a._id) }, status: 'live' }).sort({
+    Quote.find({ askId: { $in: liveAsks.map((a) => a._id) }, status: 'live' }).sort({
       bindingUntil: 1,
     }),
   ]);
   const liveQuoteCount = liveQuotes.length;
-  const askById = new Map(openAsks.map((a) => [(a._id as Types.ObjectId).toString(), a]));
-  const liveQuoteRows: BuyerFileLiveQuote[] = liveQuotes.map((q) => {
+  const askById = new Map(liveAsks.map((a) => [(a._id as Types.ObjectId).toString(), a]));
+
+  // The pack a quote names (a product-level ask has none of its own), and his rate on it: the
+  // seller's net plus the margin-matrix cell for his tier — the same figure he is shown.
+  const quoteSkuIds = [...liveQuotes, ...parkedQuotes]
+    .map((q) => q.skuId)
+    .filter((id): id is NonNullable<typeof id> => !!id);
+  const quoteSkus = quoteSkuIds.length ? await Sku.find({ _id: { $in: quoteSkuIds } }) : [];
+  const quoteSkuById = new Map(quoteSkus.map((s) => [(s._id as Types.ObjectId).toString(), s]));
+  const skuOfQuote = (q: (typeof liveQuotes)[number]) => {
     const ask = askById.get((q.askId as Types.ObjectId).toString());
-    const productId = ask ? askProductIdOf(ask) : null;
-    const sku = ask?.skuId ? askSkuById.get((ask.skuId as Types.ObjectId).toString()) : undefined;
-    return {
+    const skuId = q.skuId ?? ask?.skuId;
+    return skuId
+      ? (quoteSkuById.get(skuId.toString()) ?? askSkuById.get(skuId.toString()))
+      : undefined;
+  };
+  const buyerRateOf = async (q: (typeof liveQuotes)[number]): Promise<number | null> => {
+    const ask = askById.get((q.askId as Types.ObjectId).toString());
+    const skuId = q.skuId ?? ask?.skuId;
+    return skuId ? computeBuyerFacingRatePaise(buyer, skuId, q.ratePaiseForIndore) : null;
+  };
+
+  const liveQuoteRows: BuyerFileLiveQuote[] = await Promise.all(
+    liveQuotes.map(async (q) => {
+      const ask = askById.get((q.askId as Types.ObjectId).toString());
+      const productId = ask ? askProductIdOf(ask) : null;
+      return {
+        quoteId: (q._id as Types.ObjectId).toString(),
+        askId: (q.askId as Types.ObjectId).toString(),
+        productId,
+        brand: (productId ? askProductById.get(productId)?.brand : undefined) ?? '—',
+        packLabel: skuOfQuote(q)?.packLabel ?? null,
+        ratePaise: await buyerRateOf(q),
+        qtyAvailable: q.qtyAvailable,
+        askQty: ask?.qty ?? q.qtyAvailable,
+        daysToIndore: q.daysToIndore,
+        givenAt: (q as unknown as { createdAt: Date }).createdAt.toISOString(),
+        bindingUntil: q.bindingUntil.toISOString(),
+      };
+    }),
+  );
+  const parkedRowsByAskId = new Map<string, BuyerFileParkedQuote[]>();
+  for (const q of parkedQuotes) {
+    const row: BuyerFileParkedQuote = {
       quoteId: (q._id as Types.ObjectId).toString(),
       askId: (q.askId as Types.ObjectId).toString(),
-      productId,
-      brand: (productId ? askProductById.get(productId)?.brand : undefined) ?? '—',
-      packLabel: sku?.packLabel ?? null,
-      ratePaiseForIndore: q.ratePaiseForIndore,
+      listingLineId: q.listingLineId ? (q.listingLineId as Types.ObjectId).toString() : null,
+      packLabel: skuOfQuote(q)?.packLabel ?? null,
+      ratePaise: await buyerRateOf(q),
       qtyAvailable: q.qtyAvailable,
       daysToIndore: q.daysToIndore,
-      bindingUntil: q.bindingUntil.toISOString(),
+      expiryBand: q.conditionSet?.expiryBand ?? '',
+      expiryExact: q.conditionSet?.expiryExact ?? '',
+      deliveryBand: q.conditionSet?.deliveryBand ?? '',
+      raisedAt: (q as unknown as { createdAt: Date }).createdAt.toISOString(),
     };
-  });
+    parkedRowsByAskId.set(row.askId, [...(parkedRowsByAskId.get(row.askId) ?? []), row]);
+  }
 
   // The same nine joints as the Funnel tab, with the same state lists and wording,
   // counted over this buyer's own records only.
   const staleBefore = addDays(new Date(), -(ASK_LEAK_STALENESS_HOURS / 24));
+  // An ask with a quote already waiting on Sales is not stale — the wait is on this desk.
   const askLeakCount = openAsks.filter(
-    (a) => a.state === 'open' && (a as unknown as { createdAt: Date }).createdAt <= staleBefore,
+    (a) =>
+      a.state === 'open' &&
+      !parkedByAskId.has((a._id as Types.ObjectId).toString()) &&
+      (a as unknown as { createdAt: Date }).createdAt <= staleBefore,
   ).length;
   const countOrders = (states: readonly string[]): number =>
     orders.filter((o) => states.includes(o.state)).length;
   const pendingCount = countOrders(PAYMENT_PENDING_SO_STATES);
   const paidCount = countOrders(PAID_SO_STATES);
+  const billedCount = countOrders(BILLED_SO_STATES);
+  const dispatchedCount = countOrders(DISPATCHED_SO_STATES);
   const deliveredCount = countOrders(DELIVERED_SO_STATES);
   // Same state lists as the three counts above, so each section's size is its joint's count.
   const inStates = (states: readonly string[]): SalesOrderRow[] =>
@@ -336,12 +436,18 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
   const ordersByStage: BuyerFileOrdersByStage = {
     paymentPending: inStates(PAYMENT_PENDING_SO_STATES),
     paid: inStates(PAID_SO_STATES),
+    billed: inStates(BILLED_SO_STATES),
+    dispatched: inStates(DISPATCHED_SO_STATES),
     delivered: inStates(DELIVERED_SO_STATES),
     other: orders.filter(
       (o) =>
-        ![...PAYMENT_PENDING_SO_STATES, ...PAID_SO_STATES, ...DELIVERED_SO_STATES].includes(
-          o.state as never,
-        ),
+        ![
+          ...PAYMENT_PENDING_SO_STATES,
+          ...PAID_SO_STATES,
+          ...BILLED_SO_STATES,
+          ...DISPATCHED_SO_STATES,
+          ...DELIVERED_SO_STATES,
+        ].includes(o.state as never),
     ),
   };
   const stage = (
@@ -358,6 +464,8 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     stage('rate_held', liveQuoteCount > 0, liveQuoteCount),
     stage('took_it', pendingCount > 0, pendingCount),
     stage('paid', paidCount > 0, paidCount),
+    stage('billed', billedCount > 0, billedCount),
+    stage('dispatched', dispatchedCount > 0, dispatchedCount),
     stage('delivered', deliveredCount > 0, deliveredCount),
     stage('ordered_again', sos.length > 1, null),
   ];
@@ -398,6 +506,9 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
         brand: product?.brand ?? '—',
         technical: product?.technical ?? '—',
         packLabel: sku?.packLabel ?? null,
+        askedAt: (a as unknown as { createdAt: Date }).createdAt.toISOString(),
+        expectedRatePaise: a.expectedRatePaise ?? null,
+        pendingQuotes: parkedRowsByAskId.get((a._id as Types.ObjectId).toString()) ?? [],
       };
     }),
     liveQuotes: liveQuoteRows,

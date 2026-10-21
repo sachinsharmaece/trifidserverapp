@@ -89,6 +89,21 @@ function assertNonNegativeInteger(value: number, label: string): void {
   }
 }
 
+/**
+ * `baseUnitsPerBox` can be fractional: a 350 ML pack of 30 is 0.35 LTR × 30 = 10.5 litres a box.
+ * Boxes and the per-unit rate stay whole numbers; the product is rounded to whole paise once.
+ * For a whole-number `baseUnitsPerBox` this is exactly `boxes × baseUnitsPerBox × rate`.
+ */
+function assertQuantityPerBox(value: number, label: string): void {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new TypeError(`${label} must be a non-negative number, got ${value}`);
+  }
+}
+
+function extendedPaise(boxes: number, baseUnitsPerBox: number, ratePaise: Paise): Paise {
+  return Math.round(boxes * baseUnitsPerBox * ratePaise);
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
    BUYER SIDE — rates are TAX-INCLUSIVE (DEC-045)
    ══════════════════════════════════════════════════════════════════════════ */
@@ -138,10 +153,10 @@ export function computeBuyerLineMoney(
   placeOfSupply: PlaceOfSupply,
 ): LineMoney {
   assertNonNegativeInteger(boxes, 'boxes');
-  assertNonNegativeInteger(baseUnitsPerBox, 'baseUnitsPerBox');
+  assertQuantityPerBox(baseUnitsPerBox, 'baseUnitsPerBox');
   assertNonNegativeInteger(inclusiveRatePaise, 'inclusiveRatePaise');
 
-  const totalPaise = boxes * baseUnitsPerBox * inclusiveRatePaise;
+  const totalPaise = extendedPaise(boxes, baseUnitsPerBox, inclusiveRatePaise);
   const taxablePaise = Math.round((totalPaise * 100) / GROSS_NUMERATOR);
   const taxPortionPaise = totalPaise - taxablePaise;
 
@@ -171,10 +186,10 @@ export function computeSellerLineMoney(
   placeOfSupply: PlaceOfSupply,
 ): LineMoney {
   assertNonNegativeInteger(boxes, 'boxes');
-  assertNonNegativeInteger(baseUnitsPerBox, 'baseUnitsPerBox');
+  assertQuantityPerBox(baseUnitsPerBox, 'baseUnitsPerBox');
   assertNonNegativeInteger(taxableRatePaise, 'taxableRatePaise');
 
-  const taxablePaise = boxes * baseUnitsPerBox * taxableRatePaise;
+  const taxablePaise = extendedPaise(boxes, baseUnitsPerBox, taxableRatePaise);
   const totalPaise = Math.round((taxablePaise * GROSS_NUMERATOR) / 100);
   const taxPortionPaise = totalPaise - taxablePaise;
 
@@ -204,16 +219,16 @@ export function computeSellerBillTotalFromTaxable(taxablePaise: Paise): {
    SHARED — direction-neutral
    ══════════════════════════════════════════════════════════════════════════ */
 
-/** BR-055 — quantity is transacted in boxes. Exact, never rounded. Direction-neutral. */
+/** BR-055 — quantity is transacted in boxes. Whole paise (rounded once if a box holds a fraction of a unit). Direction-neutral. */
 export function computeExtendedValuePaise(
   boxes: number,
   baseUnitsPerBox: number,
   ratePaise: Paise,
 ): Paise {
   assertNonNegativeInteger(boxes, 'boxes');
-  assertNonNegativeInteger(baseUnitsPerBox, 'baseUnitsPerBox');
+  assertQuantityPerBox(baseUnitsPerBox, 'baseUnitsPerBox');
   assertNonNegativeInteger(ratePaise, 'ratePaise');
-  return boxes * baseUnitsPerBox * ratePaise;
+  return extendedPaise(boxes, baseUnitsPerBox, ratePaise);
 }
 
 /**

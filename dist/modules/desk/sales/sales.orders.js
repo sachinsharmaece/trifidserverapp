@@ -72,6 +72,8 @@ export async function listOrders(filters) {
             upcomingReceiptId: waitingClaim ? waitingClaim._id.toString() : null,
             claimedAt: appliedClaim ? appliedClaim.claimedAt.toISOString() : null,
             claimedAmountPaise: appliedClaim ? appliedClaim.amountPaise : null,
+            placedAt: so.createdAt.toISOString(),
+            updatedAt: so.updatedAt.toISOString(),
         };
     });
 }

@@ -10,6 +10,10 @@ import { proxyLogField } from '../shared/proxyLog.js';
  *
  * BR-121 — the buyer states no price; there is no `ratePaise` field on this
  * schema at all, so there is nothing for a client to smuggle a price into.
+ * The one exception is `expectedRatePaise` below: a Sales-internal note of what the
+ * buyer said he hopes to pay on a phone call. Only the staff call endpoint can set
+ * it; the buyer's own ask endpoint still rejects any price, and no buyer-, seller-
+ * or Purchase-facing projection reads it.
  */
 export const ASK_STATES = ['open', 'quoted', 'converted', 'lapsed', 'withdrawn'] as const;
 export type AskState = (typeof ASK_STATES)[number];
@@ -20,6 +24,7 @@ const askSchema = new Schema(
     skuId: { type: Schema.Types.ObjectId, ref: 'Sku', default: null },
     productId: { type: Schema.Types.ObjectId, ref: 'Product', default: null },
     allPacks: { type: Boolean, required: true, default: false },
+    expectedRatePaise: { type: Number, min: 1, default: null }, // Sales-internal; see above.
     qty: { type: Number, required: true, min: 1 },
     conditionRequirement: {
       expiryBand: { type: String, enum: EXPIRY_BANDS, required: true },

@@ -5,11 +5,14 @@ import { validateBody, validateQuery } from '../../middleware/validate.js';
 import { PERMISSIONS } from '../../config/permissions.js';
 import * as controller from './catalog.controller.js';
 import {
+  createHsnSchema,
   createManufacturerSchema,
   createProductSchema,
+  createTechnicalSchema,
   listAllProductsQuerySchema,
   listManufacturersQuerySchema,
   listProductsQuerySchema,
+  searchProductsQuerySchema,
   skuImportSchema,
   updateManufacturerSchema,
   updateProductSchema,
@@ -34,6 +37,13 @@ catalogRouter.get(
   authenticate,
   validateQuery(listProductsQuerySchema),
   controller.getProducts,
+);
+// The searchable product dropdown on staff call forms — any authenticated staff member.
+catalogRouter.get(
+  '/catalog/product-search',
+  authenticate,
+  validateQuery(searchProductsQuerySchema),
+  controller.getProductSearch,
 );
 catalogRouter.get('/catalog/products/:id/skus', authenticate, controller.getSkus);
 
@@ -106,4 +116,34 @@ catalogRouter.patch(
   requirePermission(PERMISSIONS.CATALOG_WRITE),
   validateBody(updateSkuSchema),
   controller.patchSku,
+);
+
+// Technical and HSN masters — the admin's pickers on the product form. The
+// public `/catalog/technicals` above is unchanged (it lists technicals that
+// have an active product); these list the masters themselves.
+catalogRouter.get(
+  '/admin/technicals',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  controller.getTechnicalMasters,
+);
+catalogRouter.post(
+  '/admin/technicals',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  validateBody(createTechnicalSchema),
+  controller.postTechnical,
+);
+catalogRouter.get(
+  '/admin/hsn',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  controller.getHsnMasters,
+);
+catalogRouter.post(
+  '/admin/hsn',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  validateBody(createHsnSchema),
+  controller.postHsn,
 );

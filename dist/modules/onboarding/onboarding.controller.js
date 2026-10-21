@@ -21,7 +21,7 @@ export async function postStaffRegisterBuyer(req, res) {
     const { callNote, ...input } = req.body;
     const result = await onboardingService.registerBuyer(input, {
         employeeId: req.auth.employeeId,
-        callNote,
+        callNote: callNote ?? '',
         correlationId: req.correlationId,
     });
     ok(res, req, result, 201);

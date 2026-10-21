@@ -18,6 +18,8 @@
     "drill:restore": "tsx src/scripts/backupRestoreDrill.ts",
     "backfill:enquiries": "tsx src/scripts/backfillEnquiries.ts",
     "migrate:productClassLabels": "tsx src/scripts/migrateProductClassLabels.ts",
+    "backfill:catalogMasters": "tsx src/scripts/backfillCatalogMasters.ts",
+    "backfill:sellerDealerships": "tsx src/scripts/backfillSellerDealerships.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

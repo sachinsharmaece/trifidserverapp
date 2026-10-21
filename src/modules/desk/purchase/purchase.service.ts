@@ -1,6 +1,6 @@
 import type { Types } from 'mongoose';
 import { Ask } from '../../../models/Ask.js';
-import { Quote } from '../../../models/Quote.js';
+import { OPEN_QUOTE_STATUSES, Quote } from '../../../models/Quote.js';
 import { Listing } from '../../../models/Listing.js';
 import { ListingLine } from '../../../models/ListingLine.js';
 import { Product } from '../../../models/Product.js';
@@ -12,6 +12,7 @@ import { Counterparty } from '../../../models/Counterparty.js';
 import { SellerReference } from '../../../models/SellerReference.js';
 import { SellerDebit } from '../../../models/SellerDebit.js';
 import { SellerCatalogueEntry } from '../../../models/SellerCatalogueEntry.js';
+import { SellerDealership } from '../../../models/SellerDealership.js';
 import { Tehsil } from '../../../models/Tehsil.js';
 import { Pile } from '../../../models/Pile.js';
 import { PileRequest } from '../../../models/PileRequest.js';
@@ -38,6 +39,11 @@ import {
   type SellerFunnelMetrics,
 } from './purchase.funnel.js';
 import { getSellerScorecard, type SellerScorecardDto } from '../../conduct/conduct.service.js';
+import {
+  getSellerDealerships,
+  resolveCatalogueEntries,
+  type SellerDealershipItem,
+} from './purchase.catalogue.js';
 
 const RETURN_NOTE_WINDOW_DAYS = 30; // BR-189.
 
@@ -199,7 +205,9 @@ export interface AskQuoteGap {
 }
 
 export async function getQuoteGapsForAsk(askId: string): Promise<AskQuoteGap[]> {
-  const quotes = await Quote.find({ askId, status: 'live' }).sort({ ratePaiseForIndore: 1 });
+  const quotes = await Quote.find({ askId, status: { $in: OPEN_QUOTE_STATUSES } }).sort({
+    ratePaiseForIndore: 1,
+  });
   return quotes.map((q) => ({
     quoteId: (q._id as Types.ObjectId).toString(),
     sellerId: (q.sellerId as Types.ObjectId).toString(),
@@ -238,7 +246,8 @@ export async function getAskSellerStates(askId: string): Promise<AskSellerStateI
     productId = sku ? (sku.productId as Types.ObjectId).toString() : null;
   }
 
-  const quotes = await Quote.find({ askId: ask._id, status: 'live' });
+  // A quote parked for Sales still counts as this seller having quoted — never raise it twice.
+  const quotes = await Quote.find({ askId: ask._id, status: { $in: OPEN_QUOTE_STATUSES } });
   const quoteBySellerId = new Map(
     quotes.map((q) => [(q.sellerId as Types.ObjectId).toString(), q]),
   );
@@ -255,7 +264,7 @@ export async function getAskSellerStates(askId: string): Promise<AskSellerStateI
     rateBySellerId.set((listing.sellerId as Types.ObjectId).toString(), line.ratePaise);
   }
 
-  const catalogueEntries = productId ? await SellerCatalogueEntry.find({ productId }) : [];
+  const catalogueEntries = productId ? await resolveCatalogueEntries({ productId }) : [];
   const carryingSellerIds = new Set(
     catalogueEntries.map((e) => (e.sellerId as Types.ObjectId).toString()),
   );
@@ -482,7 +491,7 @@ export async function getProductSellers(productId: string): Promise<ProductSelle
     listingsBySeller.set(key, packs);
   }
 
-  const entries = await SellerCatalogueEntry.find({ productId });
+  const entries = await resolveCatalogueEntries({ productId });
   const sellerIds = new Set([
     ...listingsBySeller.keys(),
     ...entries.map((e) => (e.sellerId as Types.ObjectId).toString()),
@@ -732,7 +741,10 @@ export interface SellerCataloguePackItem {
 }
 
 export interface SellerCatalogueItem {
-  entryId: string;
+  /** Null when he carries this product only through a company he deals in. */
+  entryId: string | null;
+  /** `dealership` = derived from a ticked company; `manual` = entered by the desk. */
+  source: 'manual' | 'dealership';
   productId: string;
   brand: string;
   technical: string;
@@ -741,12 +753,18 @@ export interface SellerCatalogueItem {
   packsDetailed: boolean;
   packs: SellerCataloguePackItem[];
   setAt: string;
-  setBy: string;
+  setBy: string | null;
 }
 
-/** What a seller sells, per the seller-file screen and `EnterListingPage`'s pack picker. */
+/**
+ * What a seller sells, per the seller-file screen and `EnterListingPage`'s
+ * pack picker: his hand-entered products plus every product of the companies
+ * he deals in (see `purchase.catalogue.ts`).
+ */
 export async function getSellerCatalogue(sellerId: string): Promise<SellerCatalogueItem[]> {
-  const entries = await SellerCatalogueEntry.find({ sellerId }).sort({ setAt: -1 });
+  const entries = (await resolveCatalogueEntries({ sellerId })).sort(
+    (a, b) => b.setAt.getTime() - a.setAt.getTime(),
+  );
   const productIds = entries.map((e) => e.productId);
   const products = await Product.find({ _id: { $in: productIds } });
   const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
@@ -784,7 +802,8 @@ export async function getSellerCatalogue(sellerId: string): Promise<SellerCatalo
         )
       : productSkus;
     return {
-      entryId: (entry._id as Types.ObjectId).toString(),
+      entryId: entry.entryId,
+      source: entry.source,
       productId: productKey,
       brand: product?.brand ?? '—',
       technical: product?.technical ?? '—',
@@ -802,7 +821,7 @@ export async function getSellerCatalogue(sellerId: string): Promise<SellerCatalo
         };
       }),
       setAt: entry.setAt.toISOString(),
-      setBy: entry.setBy.toString(),
+      setBy: entry.setBy ? entry.setBy.toString() : null,
     };
   });
 }
@@ -844,7 +863,7 @@ export interface SupplyMatrixProductRow {
  * Mongoose's to define, not this function's to repeat.
  */
 async function computeSellerCatalogueCoverage(productId?: string) {
-  const entries = await SellerCatalogueEntry.find(productId ? { productId } : {});
+  const entries = await resolveCatalogueEntries(productId ? { productId } : {});
   const carrySellersByProduct = new Map<string, Set<string>>();
   const entriesBySeller = new Map<string, typeof entries>();
   for (const e of entries) {
@@ -968,28 +987,40 @@ export async function getSupplyMatrixBySeller(): Promise<SupplyMatrixSellerRow[]
   const allEntries = [...entriesBySeller.values()].flat();
   const products = await Product.find({ _id: { $in: allEntries.map((e) => e.productId) } });
   const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+  // A company he deals in shows even before it has a single product.
+  const dealerships = await SellerDealership.find({});
   const manufacturers = await Manufacturer.find({
-    _id: { $in: products.map((p) => p.manufacturerId) },
+    _id: {
+      $in: [...products.map((p) => p.manufacturerId), ...dealerships.map((d) => d.manufacturerId)],
+    },
   });
   const manufacturerById = new Map(
     manufacturers.map((m) => [(m._id as Types.ObjectId).toString(), m]),
   );
+  const dealershipNamesBySeller = new Map<string, string[]>();
+  for (const d of dealerships) {
+    const name = manufacturerById.get(d.manufacturerId.toString())?.name;
+    if (!name) continue;
+    const key = d.sellerId.toString();
+    dealershipNamesBySeller.set(key, [...(dealershipNamesBySeller.get(key) ?? []), name]);
+  }
 
   return sellers.map((s) => {
     const key = (s._id as Types.ObjectId).toString();
     const myEntries = entriesBySeller.get(key) ?? [];
     const myListedProductIds = listedProductIdsBySeller.get(key) ?? new Set<string>();
     const manufacturerNames = [
-      ...new Set(
-        myEntries.map((e) => {
+      ...new Set([
+        ...(dealershipNamesBySeller.get(key) ?? []),
+        ...myEntries.map((e) => {
           const product = productById.get((e.productId as Types.ObjectId).toString());
           const manufacturer = product
             ? manufacturerById.get((product.manufacturerId as unknown as Types.ObjectId).toString())
             : undefined;
           return manufacturer?.name ?? '—';
         }),
-      ),
-    ];
+      ]),
+    ].sort((a, b) => a.localeCompare(b));
     return {
       sellerId: key,
       firm: counterpartyById.get((s.counterpartyId as Types.ObjectId).toString())?.firm ?? '—',
@@ -1107,14 +1138,25 @@ export interface DispatchQueueItem {
   noDispatch48h: boolean;
   dispatchedAt: string | null;
   daysInTransit: number | null;
+  /** The seller's invoice and e-way bill are on record. Not a gate — a PO can still be sent without. */
+  invoiceRecorded: boolean;
 }
 
-export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
+export async function getDispatchChaseQueue(sellerId?: string): Promise<DispatchQueueItem[]> {
   const now = Date.now();
-  const [pending, dispatchedLeg1] = await Promise.all([
-    Po.find({ state: 'released', failed: false }),
-    Po.find({ state: 'dispatched_leg1', failed: false, receivedAt: null }),
+  const sellerFilter = sellerId ? { sellerId } : {};
+  const [released, dispatchedLeg1] = await Promise.all([
+    Po.find({ state: 'released', failed: false, ...sellerFilter }),
+    Po.find({ state: 'dispatched_leg1', failed: false, receivedAt: null, ...sellerFilter }),
   ]);
+  // Dispatch holds what Purchase has handed over after the seller invoiced it. A PO that is
+  // still on the PO or Billed screen stays there — unless the dispatch-clock job has already
+  // marked it missed (same-day or 48-hour, BR-174/BR-215): a missed obligation must never be
+  // hidden by which screen the PO happens to sit on. (`dispatchDueDate` itself is the release
+  // moment, so it cannot be the test — every new PO would count as overdue at once.)
+  const pending = released.filter(
+    (po) => po.handedToDispatchAt || po.sameDayMissAt || po.noDispatch48hAt,
+  );
   const allPos = [...pending, ...dispatchedLeg1];
   const movements = await Movement.find({
     chainId: { $in: dispatchedLeg1.map((p) => p.chainId) },
@@ -1167,6 +1209,7 @@ export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
       noDispatch48h: !!po.noDispatch48hAt,
       dispatchedAt: null,
       daysInTransit: null,
+      invoiceRecorded: !!po.sellerInvoiceNo,
     };
   });
 
@@ -1190,6 +1233,7 @@ export async function getDispatchChaseQueue(): Promise<DispatchQueueItem[]> {
       daysInTransit: dispatchedAt
         ? Math.floor((now - dispatchedAt.getTime()) / (24 * 60 * 60 * 1000))
         : null,
+      invoiceRecorded: !!po.sellerInvoiceNo,
     };
   });
 
@@ -1321,7 +1365,7 @@ export interface SellerOpenDemandItem {
 }
 
 export async function getOpenDemandForSeller(sellerId: string): Promise<SellerOpenDemandItem[]> {
-  const entries = await SellerCatalogueEntry.find({ sellerId });
+  const entries = await resolveCatalogueEntries({ sellerId });
   if (entries.length === 0) return [];
   const productIds = entries.map((e) => e.productId);
   const skus = await Sku.find({ productId: { $in: productIds } });
@@ -1338,7 +1382,10 @@ export async function getOpenDemandForSeller(sellerId: string): Promise<SellerOp
   // An ask carries a product or only a SKU — resolve either to the product so the
   // seller file can show a name, never the raw ask id.
   const productIdBySkuId = new Map(
-    skus.map((s) => [(s._id as Types.ObjectId).toString(), (s.productId as Types.ObjectId).toString()]),
+    skus.map((s) => [
+      (s._id as Types.ObjectId).toString(),
+      (s.productId as Types.ObjectId).toString(),
+    ]),
   );
   const askProductId = (a: (typeof asks)[number]): string | null =>
     a.productId
@@ -1418,6 +1465,8 @@ export interface SellerFileDto {
     overdue: boolean;
   }>;
   catalogue: SellerCatalogueItem[];
+  /** The companies he deals in — each one brings all its products into `catalogue`. */
+  dealerships: SellerDealershipItem[];
   listings: SellerFileListingItem[];
   openDemand: SellerOpenDemandItem[];
 }
@@ -1435,6 +1484,7 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
     debits,
     returnNotes,
     catalogue,
+    dealerships,
     listings,
     scorecard,
     openDemand,
@@ -1445,6 +1495,7 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
     SellerDebit.find({ counterpartyId: seller._id, nettedAgainst: null }),
     ReturnNote.find({ sellerId: seller._id, returnedAt: null }),
     getSellerCatalogue(sellerId),
+    getSellerDealerships(sellerId),
     Listing.find({ sellerId: seller._id, state: 'live' }),
     getSellerScorecard((seller.counterpartyId as Types.ObjectId).toString()),
     getOpenDemandForSeller(sellerId),
@@ -1523,6 +1574,7 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
       };
     }),
     catalogue,
+    dealerships,
     listings: listingDtos,
     openDemand: openDemand.filter((d) => !d.hasQuoted),
   };

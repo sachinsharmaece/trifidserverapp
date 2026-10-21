@@ -45,7 +45,11 @@ export interface FunnelHeldRateRow {
   brand: string;
   technical: string;
   packLabel: string | null;
+  /** The quote's own quantity — what the seller can supply, which may be less than he asked. */
   qty: number;
+  /** The rate that was given to him, as the buyer file shows it. */
+  ratePaise: number;
+  daysToIndore: number;
   heldUntil: string;
 }
 
@@ -100,7 +104,7 @@ async function describeAsks(asks: AskLike[]) {
 
 /** GET /staff/sales/funnel/asked — the asks counted under "Asked", oldest first. */
 export async function listFunnelAsks(now: Date = new Date()): Promise<FunnelAskRow[]> {
-  const asks = await Ask.find({ state: { $nin: ['lapsed', 'withdrawn'] } }).sort({ createdAt: 1 });
+  const asks = await Ask.find({ state: 'open' }).sort({ createdAt: 1 });
   const describe = await describeAsks(asks);
   const staleBefore = addDays(now, -(ASK_LEAK_STALENESS_HOURS / 24));
   return asks.map((a) => {
@@ -131,7 +135,9 @@ export async function listFunnelHeldRates(): Promise<FunnelHeldRateRow[]> {
       quoteId: (q._id as Types.ObjectId).toString(),
       askId: (ask._id as Types.ObjectId).toString(),
       ...describe(ask),
-      qty: ask.qty,
+      qty: q.qtyAvailable,
+      ratePaise: q.ratePaiseForIndore,
+      daysToIndore: q.daysToIndore,
       heldUntil: q.bindingUntil.toISOString(),
     });
   }

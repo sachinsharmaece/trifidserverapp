@@ -157,8 +157,10 @@ export async function postBankCredit(upcomingReceiptId, input, actor) {
                 amountPaise: receipt.amountPaise,
                 utr: input.utr,
                 narration: `Receipt for ${receipt.soIds.length} SO(s)`,
-                remitterAccountEncrypted: encryptAccountNumber(input.remitterAccountNumber),
-                remitterIfsc: input.remitterIfsc,
+                remitterAccountEncrypted: input.remitterAccountNumber
+                    ? encryptAccountNumber(input.remitterAccountNumber)
+                    : null,
+                remitterIfsc: input.remitterIfsc ?? null,
                 soIds: receipt.soIds,
                 postedBy: actor.employeeId,
             },

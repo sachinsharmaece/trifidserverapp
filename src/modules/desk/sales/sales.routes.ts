@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../../../middleware/auth.js';
 import { requirePermission } from '../../../middleware/requirePermission.js';
+import { requireIdempotencyKey } from '../../../middleware/idempotency.js';
 import { PERMISSIONS } from '../../../config/permissions.js';
 import * as controller from './sales.controller.js';
 
@@ -129,6 +130,66 @@ salesRouter.get(
   authenticate,
   requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
   controller.getFunnelHeldRates,
+);
+
+// Buyer file stage buttons. Raising an ask, confirming a rate and walking away reuse the
+// /staff/proxy/buyer/* endpoints; these three had none.
+salesRouter.post(
+  '/staff/sales/asks/:askId/give-rate',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_BUYER_CALL),
+  controller.postGiveRate,
+);
+// A quote already raised on his ask (parked for Sales) — give it to him as a rate.
+salesRouter.post(
+  '/staff/sales/quotes/:quoteId/give',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_BUYER_CALL),
+  controller.postGiveParkedQuote,
+);
+// Money-moving: Sales takes the payment itself, so it has its own permission.
+salesRouter.post(
+  '/staff/sales/orders/:soId/mark-paid',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_MARK_PAID),
+  requireIdempotencyKey(),
+  controller.postMarkPaid,
+);
+salesRouter.post(
+  '/staff/sales/orders/:soId/mark-billed',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_MARK_BILLED),
+  requireIdempotencyKey(),
+  controller.postMarkBilled,
+);
+// INTERIM — see PERMISSIONS.SALES_SKIP_TO_BILLED.
+salesRouter.post(
+  '/staff/sales/orders/:soId/skip-to-billed',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_SKIP_TO_BILLED),
+  requireIdempotencyKey(),
+  controller.postSkipToBilled,
+);
+salesRouter.post(
+  '/staff/sales/orders/:soId/dispatch',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_DISPATCH),
+  requireIdempotencyKey(),
+  controller.postDispatchOrder,
+);
+// The buyer's own confirmation of receipt, recorded by Sales on a call.
+salesRouter.post(
+  '/staff/sales/orders/:soId/mark-delivered',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_BUYER_CALL),
+  requireIdempotencyKey(),
+  controller.postMarkDelivered,
+);
+salesRouter.post(
+  '/staff/sales/orders/:soId/cancel',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_BUYER_CALL),
+  controller.postCancelOrder,
 );
 
 // 👤B — a buyer requesting a rate the board does not show him.

@@ -4,7 +4,7 @@ import { requirePermission } from '../../middleware/requirePermission.js';
 import { validateBody, validateQuery } from '../../middleware/validate.js';
 import { PERMISSIONS } from '../../config/permissions.js';
 import * as controller from './catalog.controller.js';
-import { createManufacturerSchema, createProductSchema, listAllProductsQuerySchema, listManufacturersQuerySchema, listProductsQuerySchema, skuImportSchema, updateManufacturerSchema, updateProductSchema, updateSkuSchema, } from './catalog.validation.js';
+import { createHsnSchema, createManufacturerSchema, createProductSchema, createTechnicalSchema, listAllProductsQuerySchema, listManufacturersQuerySchema, listProductsQuerySchema, searchProductsQuerySchema, skuImportSchema, updateManufacturerSchema, updateProductSchema, updateSkuSchema, } from './catalog.validation.js';
 export const catalogRouter = Router();
 // `authenticate` is applied per route, not via `catalogRouter.use(...)` —
 // see the comment in modules/file/file.routes.ts.
@@ -12,6 +12,8 @@ export const catalogRouter = Router();
 catalogRouter.get('/catalog/technicals', authenticate, controller.getTechnicals);
 catalogRouter.get('/catalog/manufacturers', authenticate, validateQuery(listManufacturersQuerySchema), controller.getManufacturers);
 catalogRouter.get('/catalog/products', authenticate, validateQuery(listProductsQuerySchema), controller.getProducts);
+// The searchable product dropdown on staff call forms — any authenticated staff member.
+catalogRouter.get('/catalog/product-search', authenticate, validateQuery(searchProductsQuerySchema), controller.getProductSearch);
 catalogRouter.get('/catalog/products/:id/skus', authenticate, controller.getSkus);
 // New — not in the original API_CONTRACT.md (see catalog.service.ts's
 // createManufacturer for why this exists).
@@ -29,3 +31,10 @@ catalogRouter.patch('/admin/products/:id', authenticate, requirePermission(PERMI
 catalogRouter.post('/admin/skus/import', authenticate, requirePermission(PERMISSIONS.CATALOG_WRITE), validateBody(skuImportSchema), controller.postSkuImport);
 // New — the Manage desk's own SKU edit.
 catalogRouter.patch('/admin/skus/:id', authenticate, requirePermission(PERMISSIONS.CATALOG_WRITE), validateBody(updateSkuSchema), controller.patchSku);
+// Technical and HSN masters — the admin's pickers on the product form. The
+// public `/catalog/technicals` above is unchanged (it lists technicals that
+// have an active product); these list the masters themselves.
+catalogRouter.get('/admin/technicals', authenticate, requirePermission(PERMISSIONS.CATALOG_WRITE), controller.getTechnicalMasters);
+catalogRouter.post('/admin/technicals', authenticate, requirePermission(PERMISSIONS.CATALOG_WRITE), validateBody(createTechnicalSchema), controller.postTechnical);
+catalogRouter.get('/admin/hsn', authenticate, requirePermission(PERMISSIONS.CATALOG_WRITE), controller.getHsnMasters);
+catalogRouter.post('/admin/hsn', authenticate, requirePermission(PERMISSIONS.CATALOG_WRITE), validateBody(createHsnSchema), controller.postHsn);

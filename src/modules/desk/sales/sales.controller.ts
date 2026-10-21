@@ -8,11 +8,109 @@ import * as salesBuyersService from './sales.buyers.js';
 import * as salesOrdersService from './sales.orders.js';
 import * as salesFunnelService from './sales.funnel.js';
 import * as salesFunnelDrillService from './sales.funnelDrill.js';
-import { requestMspSchema, respondToMspSchema, createCallLogSchema } from './sales.validation.js';
+import * as salesStageService from './sales.stageActions.js';
+import {
+  requestMspSchema,
+  respondToMspSchema,
+  createCallLogSchema,
+  giveRateSchema,
+  giveParkedQuoteSchema,
+  markPaidSchema,
+  cancelOrderSchema,
+  markBilledSchema,
+  dispatchOrderSchema,
+  markDeliveredSchema,
+  skipToBilledSchema,
+} from './sales.validation.js';
 import type { RateTier } from '../../pricing/pricing.service.js';
 
 function ok(res: Response, req: Request, data: unknown, status = 200): void {
   res.status(status).json({ data, meta: { correlationId: req.correlationId } });
+}
+
+function stageActor(req: Request): { employeeId: string; correlationId: string } {
+  return { employeeId: req.auth!.employeeId!, correlationId: req.correlationId };
+}
+
+// Buyer file stage buttons.
+export async function postGiveRate(req: Request, res: Response): Promise<void> {
+  const { listingLineId, callNote } = giveRateSchema.parse(req.body);
+  const result = await salesStageService.giveRateOnAsk(
+    req.params.askId as string,
+    { listingLineId },
+    stageActor(req),
+    callNote,
+  );
+  ok(res, req, result, 201);
+}
+export async function postGiveParkedQuote(req: Request, res: Response): Promise<void> {
+  const { callNote } = giveParkedQuoteSchema.parse(req.body);
+  const result = await salesStageService.giveParkedQuote(
+    req.params.quoteId as string,
+    stageActor(req),
+    callNote,
+  );
+  ok(res, req, result, 201);
+}
+export async function postMarkPaid(req: Request, res: Response): Promise<void> {
+  const { utr, callNote } = markPaidSchema.parse(req.body);
+  const result = await salesStageService.markOrderPaid(
+    req.params.soId as string,
+    { utr },
+    stageActor(req),
+    callNote,
+  );
+  ok(res, req, result, 201);
+}
+export async function postMarkBilled(req: Request, res: Response): Promise<void> {
+  const { callNote, ...input } = markBilledSchema.parse(req.body);
+  const result = await salesStageService.markOrderBilled(
+    req.params.soId as string,
+    input,
+    stageActor(req),
+    callNote,
+  );
+  ok(res, req, result, 201);
+}
+export async function postSkipToBilled(req: Request, res: Response): Promise<void> {
+  const { callNote, ...input } = skipToBilledSchema.parse(req.body);
+  const result = await salesStageService.skipToBilled(
+    req.params.soId as string,
+    input,
+    stageActor(req),
+    callNote,
+  );
+  ok(res, req, result, 201);
+}
+export async function postDispatchOrder(req: Request, res: Response): Promise<void> {
+  const { callNote, ...input } = dispatchOrderSchema.parse(req.body);
+  const result = await salesStageService.dispatchOrder(
+    req.params.soId as string,
+    input,
+    stageActor(req),
+    callNote,
+  );
+  ok(res, req, result, 201);
+}
+export async function postMarkDelivered(req: Request, res: Response): Promise<void> {
+  const { callNote } = markDeliveredSchema.parse(req.body);
+  ok(
+    res,
+    req,
+    await salesStageService.markOrderDelivered(
+      req.params.soId as string,
+      stageActor(req),
+      callNote,
+    ),
+  );
+}
+export async function postCancelOrder(req: Request, res: Response): Promise<void> {
+  const { callNote } = cancelOrderSchema.parse(req.body);
+  ok(
+    res,
+    req,
+    await salesStageService.cancelOrder(req.params.soId as string, stageActor(req), callNote),
+  );
 }
 
 export async function getWorklist(req: Request, res: Response): Promise<void> {

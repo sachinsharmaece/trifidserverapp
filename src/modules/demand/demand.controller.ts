@@ -55,6 +55,7 @@ export async function postQuote(req: Request, res: Response): Promise<void> {
     req.auth!.counterpartyId!,
     req.params.id as string,
     input,
+    { holdForSales: true }, // Published as a listing at once; Sales gives it to the asking buyer.
   );
   ok(res, req, result, 201);
 }

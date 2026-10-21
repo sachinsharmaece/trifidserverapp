@@ -12,9 +12,14 @@ const callNoteSchema = z.string().min(1);
 // Every staff-assisted-enquiries proxy body carries the same two things on
 // top of the counterparty-facing schema it extends: which counterparty this
 // is being done on behalf of, and the mandatory one-line call note.
+// What the buyer said he hopes to pay, noted by Sales. Only this staff-call schema accepts it;
+// the buyer's own `raiseAskSchema` stays price-free (BR-121).
+const expectedRatePaiseSchema = z.number().int().min(1).optional();
+
 export const proxyRaiseAskSchema = raiseAskSchema.extend({
   buyerCounterpartyId: z.string().min(1),
   callNote: callNoteSchema,
+  expectedRatePaise: expectedRatePaiseSchema,
 });
 
 // One call, several products: the same lines the single ask takes, one ask per line.
@@ -23,7 +28,10 @@ export const proxyRaiseAsksSchema = z
   .object({
     buyerCounterpartyId: z.string().min(1),
     callNote: callNoteSchema,
-    lines: z.array(raiseAskSchema).min(1).max(MAX_ASKS_PER_CALL),
+    lines: z
+      .array(raiseAskSchema.extend({ expectedRatePaise: expectedRatePaiseSchema }))
+      .min(1)
+      .max(MAX_ASKS_PER_CALL),
   })
   .strict();
 

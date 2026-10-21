@@ -1,5 +1,5 @@
 import { Ask } from '../../../models/Ask.js';
-import { Quote } from '../../../models/Quote.js';
+import { OPEN_QUOTE_STATUSES, Quote } from '../../../models/Quote.js';
 import { Listing } from '../../../models/Listing.js';
 import { ListingLine } from '../../../models/ListingLine.js';
 import { Product } from '../../../models/Product.js';
@@ -11,6 +11,7 @@ import { Counterparty } from '../../../models/Counterparty.js';
 import { SellerReference } from '../../../models/SellerReference.js';
 import { SellerDebit } from '../../../models/SellerDebit.js';
 import { SellerCatalogueEntry } from '../../../models/SellerCatalogueEntry.js';
+import { SellerDealership } from '../../../models/SellerDealership.js';
 import { Tehsil } from '../../../models/Tehsil.js';
 import { Pile } from '../../../models/Pile.js';
 import { PileRequest } from '../../../models/PileRequest.js';
@@ -29,6 +30,7 @@ import { writeAuditLog } from '../../../shared/audit.js';
 import { addDays } from '../../../shared/clock.js';
 import { FUNNEL_WINDOW_DAYS, getSellerFunnelMetrics, } from './purchase.funnel.js';
 import { getSellerScorecard } from '../../conduct/conduct.service.js';
+import { getSellerDealerships, resolveCatalogueEntries, } from './purchase.catalogue.js';
 const RETURN_NOTE_WINDOW_DAYS = 30; // BR-189.
 /**
  * Purchase is a supplier-side desk — a seller's firm name is exactly the
@@ -126,7 +128,9 @@ export async function getActiveDemandList(filters) {
     });
 }
 export async function getQuoteGapsForAsk(askId) {
-    const quotes = await Quote.find({ askId, status: 'live' }).sort({ ratePaiseForIndore: 1 });
+    const quotes = await Quote.find({ askId, status: { $in: OPEN_QUOTE_STATUSES } }).sort({
+        ratePaiseForIndore: 1,
+    });
     return quotes.map((q) => ({
         quoteId: q._id.toString(),
         sellerId: q.sellerId.toString(),
@@ -143,7 +147,8 @@ export async function getAskSellerStates(askId) {
         const sku = await Sku.findById(skuIds[0]);
         productId = sku ? sku.productId.toString() : null;
     }
-    const quotes = await Quote.find({ askId: ask._id, status: 'live' });
+    // A quote parked for Sales still counts as this seller having quoted — never raise it twice.
+    const quotes = await Quote.find({ askId: ask._id, status: { $in: OPEN_QUOTE_STATUSES } });
     const quoteBySellerId = new Map(quotes.map((q) => [q.sellerId.toString(), q]));
     const listingLines = skuIds.length ? await ListingLine.find({ skuId: { $in: skuIds } }) : [];
     const liveListings = listingLines.length
@@ -157,7 +162,7 @@ export async function getAskSellerStates(askId) {
             continue;
         rateBySellerId.set(listing.sellerId.toString(), line.ratePaise);
     }
-    const catalogueEntries = productId ? await SellerCatalogueEntry.find({ productId }) : [];
+    const catalogueEntries = productId ? await resolveCatalogueEntries({ productId }) : [];
     const carryingSellerIds = new Set(catalogueEntries.map((e) => e.sellerId.toString()));
     const allSellerIds = new Set([
         ...quoteBySellerId.keys(),
@@ -311,7 +316,7 @@ export async function getProductSellers(productId) {
         });
         listingsBySeller.set(key, packs);
     }
-    const entries = await SellerCatalogueEntry.find({ productId });
+    const entries = await resolveCatalogueEntries({ productId });
     const sellerIds = new Set([
         ...listingsBySeller.keys(),
         ...entries.map((e) => e.sellerId.toString()),
@@ -442,9 +447,13 @@ export async function upsertSellerCatalogueEntry(input, actor) {
     const entry = await SellerCatalogueEntry.findOneAndUpdate({ sellerId: input.sellerId, productId: input.productId }, { $set: { skuIds: input.skuIds ?? [], setBy: actor.employeeId, setAt: new Date() } }, { upsert: true, new: true });
     return { entryId: entry._id.toString() };
 }
-/** What a seller sells, per the seller-file screen and `EnterListingPage`'s pack picker. */
+/**
+ * What a seller sells, per the seller-file screen and `EnterListingPage`'s
+ * pack picker: his hand-entered products plus every product of the companies
+ * he deals in (see `purchase.catalogue.ts`).
+ */
 export async function getSellerCatalogue(sellerId) {
-    const entries = await SellerCatalogueEntry.find({ sellerId }).sort({ setAt: -1 });
+    const entries = (await resolveCatalogueEntries({ sellerId })).sort((a, b) => b.setAt.getTime() - a.setAt.getTime());
     const productIds = entries.map((e) => e.productId);
     const products = await Product.find({ _id: { $in: productIds } });
     const productById = new Map(products.map((p) => [p._id.toString(), p]));
@@ -476,7 +485,8 @@ export async function getSellerCatalogue(sellerId) {
             ? productSkus.filter((s) => entry.skuIds.some((id) => id.equals(s._id)))
             : productSkus;
         return {
-            entryId: entry._id.toString(),
+            entryId: entry.entryId,
+            source: entry.source,
             productId: productKey,
             brand: product?.brand ?? '—',
             technical: product?.technical ?? '—',
@@ -494,7 +504,7 @@ export async function getSellerCatalogue(sellerId) {
                 };
             }),
             setAt: entry.setAt.toISOString(),
-            setBy: entry.setBy.toString(),
+            setBy: entry.setBy ? entry.setBy.toString() : null,
         };
     });
 }
@@ -513,7 +523,7 @@ export async function getSellerCatalogue(sellerId) {
  * Mongoose's to define, not this function's to repeat.
  */
 async function computeSellerCatalogueCoverage(productId) {
-    const entries = await SellerCatalogueEntry.find(productId ? { productId } : {});
+    const entries = await resolveCatalogueEntries(productId ? { productId } : {});
     const carrySellersByProduct = new Map();
     const entriesBySeller = new Map();
     for (const e of entries) {
@@ -600,23 +610,38 @@ export async function getSupplyMatrixBySeller() {
     const allEntries = [...entriesBySeller.values()].flat();
     const products = await Product.find({ _id: { $in: allEntries.map((e) => e.productId) } });
     const productById = new Map(products.map((p) => [p._id.toString(), p]));
+    // A company he deals in shows even before it has a single product.
+    const dealerships = await SellerDealership.find({});
     const manufacturers = await Manufacturer.find({
-        _id: { $in: products.map((p) => p.manufacturerId) },
+        _id: {
+            $in: [...products.map((p) => p.manufacturerId), ...dealerships.map((d) => d.manufacturerId)],
+        },
     });
     const manufacturerById = new Map(manufacturers.map((m) => [m._id.toString(), m]));
+    const dealershipNamesBySeller = new Map();
+    for (const d of dealerships) {
+        const name = manufacturerById.get(d.manufacturerId.toString())?.name;
+        if (!name)
+            continue;
+        const key = d.sellerId.toString();
+        dealershipNamesBySeller.set(key, [...(dealershipNamesBySeller.get(key) ?? []), name]);
+    }
     return sellers.map((s) => {
         const key = s._id.toString();
         const myEntries = entriesBySeller.get(key) ?? [];
         const myListedProductIds = listedProductIdsBySeller.get(key) ?? new Set();
         const manufacturerNames = [
-            ...new Set(myEntries.map((e) => {
-                const product = productById.get(e.productId.toString());
-                const manufacturer = product
-                    ? manufacturerById.get(product.manufacturerId.toString())
-                    : undefined;
-                return manufacturer?.name ?? '—';
-            })),
-        ];
+            ...new Set([
+                ...(dealershipNamesBySeller.get(key) ?? []),
+                ...myEntries.map((e) => {
+                    const product = productById.get(e.productId.toString());
+                    const manufacturer = product
+                        ? manufacturerById.get(product.manufacturerId.toString())
+                        : undefined;
+                    return manufacturer?.name ?? '—';
+                }),
+            ]),
+        ].sort((a, b) => a.localeCompare(b));
         return {
             sellerId: key,
             firm: counterpartyById.get(s.counterpartyId.toString())?.firm ?? '—',
@@ -679,12 +704,19 @@ export async function getPilesAwaitingDecision() {
         };
     });
 }
-export async function getDispatchChaseQueue() {
+export async function getDispatchChaseQueue(sellerId) {
     const now = Date.now();
-    const [pending, dispatchedLeg1] = await Promise.all([
-        Po.find({ state: 'released', failed: false }),
-        Po.find({ state: 'dispatched_leg1', failed: false, receivedAt: null }),
+    const sellerFilter = sellerId ? { sellerId } : {};
+    const [released, dispatchedLeg1] = await Promise.all([
+        Po.find({ state: 'released', failed: false, ...sellerFilter }),
+        Po.find({ state: 'dispatched_leg1', failed: false, receivedAt: null, ...sellerFilter }),
     ]);
+    // Dispatch holds what Purchase has handed over after the seller invoiced it. A PO that is
+    // still on the PO or Billed screen stays there — unless the dispatch-clock job has already
+    // marked it missed (same-day or 48-hour, BR-174/BR-215): a missed obligation must never be
+    // hidden by which screen the PO happens to sit on. (`dispatchDueDate` itself is the release
+    // moment, so it cannot be the test — every new PO would count as overdue at once.)
+    const pending = released.filter((po) => po.handedToDispatchAt || po.sameDayMissAt || po.noDispatch48hAt);
     const allPos = [...pending, ...dispatchedLeg1];
     const movements = await Movement.find({
         chainId: { $in: dispatchedLeg1.map((p) => p.chainId) },
@@ -729,6 +761,7 @@ export async function getDispatchChaseQueue() {
             noDispatch48h: !!po.noDispatch48hAt,
             dispatchedAt: null,
             daysInTransit: null,
+            invoiceRecorded: !!po.sellerInvoiceNo,
         };
     });
     const inTransit = dispatchedLeg1.map((po) => {
@@ -751,6 +784,7 @@ export async function getDispatchChaseQueue() {
             daysInTransit: dispatchedAt
                 ? Math.floor((now - dispatchedAt.getTime()) / (24 * 60 * 60 * 1000))
                 : null,
+            invoiceRecorded: !!po.sellerInvoiceNo,
         };
     });
     return [...dueOrOverdue, ...inTransit].sort((a, b) => (a.hoursLeft ?? 0) - (b.hoursLeft ?? 0));
@@ -830,7 +864,7 @@ export async function getInspectionsPendingApply() {
     });
 }
 export async function getOpenDemandForSeller(sellerId) {
-    const entries = await SellerCatalogueEntry.find({ sellerId });
+    const entries = await resolveCatalogueEntries({ sellerId });
     if (entries.length === 0)
         return [];
     const productIds = entries.map((e) => e.productId);
@@ -844,7 +878,10 @@ export async function getOpenDemandForSeller(sellerId) {
     const quotedAskIds = new Set(quotes.map((q) => q.askId.toString()));
     // An ask carries a product or only a SKU — resolve either to the product so the
     // seller file can show a name, never the raw ask id.
-    const productIdBySkuId = new Map(skus.map((s) => [s._id.toString(), s.productId.toString()]));
+    const productIdBySkuId = new Map(skus.map((s) => [
+        s._id.toString(),
+        s.productId.toString(),
+    ]));
     const askProductId = (a) => a.productId
         ? a.productId.toString()
         : a.skuId
@@ -878,12 +915,13 @@ export async function getSellerFile(sellerId) {
     const counterparty = await Counterparty.findById(seller.counterpartyId);
     if (!counterparty)
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Counterparty not found.' });
-    const [areas, references, debits, returnNotes, catalogue, listings, scorecard, openDemand, performance,] = await Promise.all([
+    const [areas, references, debits, returnNotes, catalogue, dealerships, listings, scorecard, openDemand, performance,] = await Promise.all([
         SellerArea.find({ sellerId: seller._id }),
         SellerReference.find({ sellerId: seller._id }),
         SellerDebit.find({ counterpartyId: seller._id, nettedAgainst: null }),
         ReturnNote.find({ sellerId: seller._id, returnedAt: null }),
         getSellerCatalogue(sellerId),
+        getSellerDealerships(sellerId),
         Listing.find({ sellerId: seller._id, state: 'live' }),
         getSellerScorecard(seller.counterpartyId.toString()),
         getOpenDemandForSeller(sellerId),
@@ -958,6 +996,7 @@ export async function getSellerFile(sellerId) {
             };
         }),
         catalogue,
+        dealerships,
         listings: listingDtos,
         openDemand: openDemand.filter((d) => !d.hasQuoted),
     };

@@ -80,6 +80,40 @@ describe('pricing.ts — computeBuyerInclusiveRatePaise', () => {
   });
 });
 
+describe('pricing.ts — fractional baseUnitsPerBox (350 ML × 30 = 10.5 L a box)', () => {
+  it('prices a fractional box to whole paise, in every direction', () => {
+    // 20 boxes × 10.5 L × 25000 paise = 5,250,000 exactly.
+    const exact = computeBuyerLineMoney(20, 10.5, 25_000, 'intra_state');
+    expect(exact.totalPaise).toBe(5_250_000);
+    for (let i = 0; i < TRIALS; i += 1) {
+      const boxes = randomInt(1, 500);
+      const baseUnitsPerBox = randomInt(1, 400) / 2 + 0.5; // x.5 — the worst case for rounding.
+      const ratePaise = randomInt(1, 50_000);
+      const place = Math.random() < 0.5 ? 'intra_state' : 'inter_state';
+      const buyer = computeBuyerLineMoney(boxes, baseUnitsPerBox, ratePaise, place);
+      expect(Number.isInteger(buyer.totalPaise)).toBe(true);
+      expect(buyer.totalPaise).toBe(Math.round(boxes * baseUnitsPerBox * ratePaise));
+      expect(buyer.taxablePaise + buyer.taxPortionPaise).toBe(buyer.totalPaise);
+      const { cgstPaise, sgstPaise, igstPaise } = buyer.taxSplit;
+      expect(cgstPaise + sgstPaise + igstPaise).toBe(buyer.taxPortionPaise);
+
+      const seller = computeSellerLineMoney(boxes, baseUnitsPerBox, ratePaise, place);
+      expect(Number.isInteger(seller.taxablePaise)).toBe(true);
+      expect(Number.isInteger(seller.totalPaise)).toBe(true);
+      expect(seller.taxablePaise + seller.taxPortionPaise).toBe(seller.totalPaise);
+      expect(computeExtendedValuePaise(boxes, baseUnitsPerBox, ratePaise)).toBe(
+        Math.round(boxes * baseUnitsPerBox * ratePaise),
+      );
+    }
+  });
+
+  it('still refuses a negative or non-finite quantity per box, and fractional boxes', () => {
+    expect(() => computeBuyerLineMoney(1, -1, 100, 'intra_state')).toThrow(TypeError);
+    expect(() => computeBuyerLineMoney(1, Number.NaN, 100, 'intra_state')).toThrow(TypeError);
+    expect(() => computeBuyerLineMoney(1.5, 10.5, 100, 'intra_state')).toThrow(TypeError);
+  });
+});
+
 describe('pricing.ts — computeBuyerLineMoney (CH §22.2)', () => {
   it('the total is EXACT — a dealer multiplying the on-screen rate lands on the invoice figure', () => {
     for (let i = 0; i < TRIALS; i += 1) {

@@ -11,6 +11,7 @@ import {
 import { Quote, QUOTE_GAP_CODES, type QuoteGapCode } from '../../models/Quote.js';
 import { Buyer } from '../../models/Buyer.js';
 import { Seller } from '../../models/Seller.js';
+import { Sku } from '../../models/Sku.js';
 import {
   ListingLine,
   type DeliveryBand,
@@ -29,7 +30,7 @@ import { assertCounterpartyActive } from '../../shared/guards.js';
 import { assertValidObjectId } from '../../shared/objectId.js';
 import type { Paise } from '../../shared/money.js';
 import { createSo } from '../chain/chain.service.js';
-import { computeBuyerFacingRatePaise } from '../listing/listing.service.js';
+import { computeBuyerFacingRatePaise, createListing } from '../listing/listing.service.js';
 import { recordPulseEvent } from '../desk/sales/sales.service.js';
 import { getAgendaProducer, JOB_CONFIRM_PILE_FANOUT } from '../../worker/agendaProducer.js';
 import { runConfirmPileFanout } from './pileFanout.job.js';
@@ -100,6 +101,8 @@ export interface RaiseAskOptions {
   raisedBy?: string;
   /** DEC-052 — convert this pre-trade enquiry into the new ask instead of opening a new one. */
   enquiryId?: string;
+  /** What he said he hopes to pay, noted by Sales on a call. Staff-internal; never shown outside Sales. */
+  expectedRatePaise?: number;
 }
 
 /**
@@ -163,6 +166,7 @@ export async function raiseAsk(
           skuId: input.skuId ?? null,
           productId: input.productId ?? null,
           allPacks: input.allPacks,
+          expectedRatePaise: options.expectedRatePaise ?? null,
           qty: input.qty,
           conditionRequirement: input.conditionRequirement,
           visibleToAllAt,
@@ -285,6 +289,7 @@ export async function declineAsk(buyerCounterpartyId: string, askId: string): Pr
   await withTransaction(async (session) => {
     ask.state = 'withdrawn';
     await ask.save({ session });
+    await closeParkedQuotes(ask._id as Types.ObjectId, session);
     await syncEnquiryForAsk(ask._id as Types.ObjectId, session);
   });
 }
@@ -357,6 +362,7 @@ export async function acceptAskFill(
   await withTransaction(async (session) => {
     ask.state = 'converted';
     await ask.save({ session });
+    await closeParkedQuotes(ask._id as Types.ObjectId, session);
     await syncEnquiryForAsk(ask._id as Types.ObjectId, session);
   });
 
@@ -409,6 +415,126 @@ interface PostQuoteInput {
   provenance: Provenance;
   batch?: string;
   daysToIndore: number;
+  /** The pack quoted — required only when the ask names a product rather than a pack. */
+  skuId?: string;
+}
+
+interface PostQuoteOptions {
+  /**
+   * Park the quote for Sales instead of putting it in front of the asking buyer. The quote is
+   * published at once as an all-India listing line (every buyer sees it, priced by his own
+   * tier); the asking buyer sees it as a rate on his ask only when Sales gives it to him.
+   * Off by default so Sales' own "give rate" (which gives a rate straight away) is unchanged.
+   */
+  holdForSales?: boolean;
+}
+
+/** Which pack a quote is for: the ask's own, or — for a product-level ask — the one the seller names. */
+async function resolveQuotedSku(
+  ask: InstanceType<typeof Ask>,
+  skuId: string | undefined,
+): Promise<Types.ObjectId> {
+  if (ask.skuId) {
+    if (skuId && skuId !== (ask.skuId as Types.ObjectId).toString()) {
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: 'That pack is not the one he asked for.',
+        field: 'skuId',
+      });
+    }
+    return ask.skuId as Types.ObjectId;
+  }
+  if (!skuId) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'Pick the pack you are quoting — he asked for the product, not one pack.',
+      field: 'skuId',
+    });
+  }
+  assertValidObjectId(skuId, 'skuId');
+  const sku = await Sku.findById(skuId);
+  if (!sku || (ask.productId && !(sku.productId as Types.ObjectId).equals(ask.productId))) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'That pack does not belong to the product he asked for.',
+      field: 'skuId',
+    });
+  }
+  return sku._id as Types.ObjectId;
+}
+
+/**
+ * Publishes a quote as a listing line — all India, origin `quote_born` — so every buyer sees it
+ * at once, priced by his own tier from the margin matrix exactly as any other listing. An
+ * identical live line already on the seller's listing is reused rather than duplicated. A refusal
+ * (six-month shelf-life floor, batch, no area) refuses the quote too: the two never part.
+ */
+async function publishQuoteAsListing(
+  sellerCounterpartyId: string,
+  skuId: Types.ObjectId,
+  input: PostQuoteInput,
+): Promise<{ lineId: Types.ObjectId; newListingId: string | null }> {
+  const sku = await Sku.findById(skuId);
+  if (!sku) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Pack not found.' });
+  try {
+    const created = await createListing(
+      sellerCounterpartyId,
+      {
+        productId: (sku.productId as Types.ObjectId).toString(),
+        scopeType: 'all_india',
+        lines: [
+          {
+            skuId: skuId.toString(),
+            ratePaise: input.ratePaiseForIndore,
+            expiryBand: input.expiryBand,
+            expiryExact: input.expiryExact,
+            deliveryBand: input.deliveryBand,
+            provenance: input.provenance,
+            ...(input.batch ? { batch: input.batch } : {}),
+            qty: input.qtyAvailable,
+          },
+        ],
+      },
+      { origin: 'quote_born' },
+    );
+    return {
+      lineId: new mongoose.Types.ObjectId(created.lineIds[0]),
+      newListingId: created.listingId,
+    };
+  } catch (error) {
+    const existing =
+      error instanceof AppError && error.code === 'DUPLICATE_LISTING'
+        ? error.meta?.existingListingLineId
+        : undefined;
+    if (typeof existing === 'string') {
+      return { lineId: new mongoose.Types.ObjectId(existing), newListingId: null };
+    }
+    throw error;
+  }
+}
+
+/**
+ * The first rate in front of the buyer flips his ask `open` → `quoted` and starts his hold
+ * (BR-126 — first quote only, never restarts) and tells him (CH §21.8 #2). A later one changes
+ * nothing here. Shared by a seller's live quote and by Sales giving a parked one.
+ */
+async function markAskQuoted(
+  ask: InstanceType<typeof Ask>,
+  now: Date,
+  session: mongoose.ClientSession,
+): Promise<void> {
+  if (ask.state !== 'open') return;
+  ask.state = 'quoted';
+  if (!ask.holdExpiresAt) ask.holdExpiresAt = addHours(now, BUYER_HOLD_HOURS);
+  await ask.save({ session });
+  await enqueueNotification(
+    {
+      counterpartyId: await counterpartyIdForBuyer(ask.buyerId as Types.ObjectId, session),
+      templateKey: 'rate_ready',
+      params: { askId: (ask._id as Types.ObjectId).toString() },
+    },
+    session,
+  );
 }
 
 function computeGapCodes(ask: InstanceType<typeof Ask>, input: PostQuoteInput): QuoteGapCode[] {
@@ -433,6 +559,7 @@ export async function postQuote(
   sellerCounterpartyId: string,
   askId: string,
   input: PostQuoteInput,
+  options: PostQuoteOptions = {},
 ): Promise<{ quoteId: string }> {
   const seller = await requireActiveSeller(sellerCounterpartyId);
   await assertCounterpartyActive(sellerCounterpartyId); // QR-015 — blacklist blocks new quotes.
@@ -448,55 +575,132 @@ export async function postQuote(
     });
   }
   const now = new Date();
+  const holdForSales = options.holdForSales === true;
+  let skuId: Types.ObjectId | null = (ask.skuId as Types.ObjectId | null) ?? null;
+  let listingLineId: Types.ObjectId | null = null;
+  let newListingId: string | null = null;
+  if (holdForSales) {
+    skuId = await resolveQuotedSku(ask, input.skuId);
+    ({ lineId: listingLineId, newListingId } = await publishQuoteAsListing(
+      sellerCounterpartyId,
+      skuId,
+      input,
+    ));
+  }
   // TD-004 — the quote, the ask's state change and `rate_ready` commit together.
-  return withTransaction(async (session) => {
-    const [quote] = await Quote.create(
-      [
-        {
-          askId: ask._id,
-          sellerId: seller._id,
-          ratePaiseForIndore: input.ratePaiseForIndore,
-          qtyAvailable: input.qtyAvailable,
-          conditionSet: {
-            expiryBand: input.expiryBand,
-            expiryExact: input.expiryExact,
-            deliveryBand: input.deliveryBand,
-            provenance: input.provenance,
-            batch: input.batch ?? null,
+  try {
+    return await withTransaction(async (session) => {
+      const [quote] = await Quote.create(
+        [
+          {
+            askId: ask._id,
+            sellerId: seller._id,
+            skuId,
+            listingLineId,
+            ratePaiseForIndore: input.ratePaiseForIndore,
+            qtyAvailable: input.qtyAvailable,
+            conditionSet: {
+              expiryBand: input.expiryBand,
+              expiryExact: input.expiryExact,
+              deliveryBand: input.deliveryBand,
+              provenance: input.provenance,
+              batch: input.batch ?? null,
+            },
+            daysToIndore: input.daysToIndore,
+            // A parked quote's real 24h hold starts when Sales gives it; this is only a placeholder.
+            bindingUntil: addHours(now, BUYER_HOLD_HOURS),
+            status: holdForSales ? 'pending_sales' : 'live',
+            gapCodes: computeGapCodes(ask, input),
           },
-          daysToIndore: input.daysToIndore,
-          bindingUntil: addHours(now, BUYER_HOLD_HOURS),
-          status: 'live',
-          gapCodes: computeGapCodes(ask, input),
-        },
-      ],
-      { session, ordered: true },
-    );
-    if (!quote) throw new Error('Quote.create returned no document.');
-
-    if (ask.state === 'open') {
-      ask.state = 'quoted';
-      if (!ask.holdExpiresAt) {
-        ask.holdExpiresAt = addHours(now, BUYER_HOLD_HOURS); // BR-126 — first quote only, never restarts.
-      }
-      await ask.save({ session });
-
-      // CH §21.8 #2 — "First quote lands on his ask." Only the first quote flips the
-      // ask from `open`, so this fires once per ask, never once per quote.
-      await enqueueNotification(
-        {
-          counterpartyId: await counterpartyIdForBuyer(ask.buyerId as Types.ObjectId, session),
-          templateKey: 'rate_ready',
-          params: { askId: (ask._id as Types.ObjectId).toString() },
-        },
-        session,
+        ],
+        { session, ordered: true },
       );
-    }
-    // DEC-051 — the first quote moves the enquiry to "quotes received", in this transaction.
-    await syncEnquiryForAsk(ask._id as Types.ObjectId, session, now);
+      if (!quote) throw new Error('Quote.create returned no document.');
 
-    return { quoteId: (quote._id as Types.ObjectId).toString() };
+      // CH §21.8 #2 — only a quote the buyer can see flips the ask; a parked one waits for Sales.
+      if (!holdForSales) await markAskQuoted(ask, now, session);
+      // DEC-051 — the first quote moves the enquiry to "quotes received", in this transaction.
+      await syncEnquiryForAsk(ask._id as Types.ObjectId, session, now);
+
+      return { quoteId: (quote._id as Types.ObjectId).toString() };
+    });
+  } catch (error) {
+    // The listing line was published before the quote; if the quote never landed, take it back.
+    if (newListingId)
+      await Listing.updateOne({ _id: newListingId }, { $set: { state: 'withdrawn' } });
+    throw error;
+  }
+}
+
+/**
+ * Sales giving the asking buyer a parked quote (`pending_sales` → `live`). From here it is
+ * exactly a seller's live quote: his 24h hold starts, the first one flips the ask to `quoted`
+ * and tells him, and the buyer and the desk read the same margin-matrix rate. As many quotes as
+ * Sales wants can be given on one ask. A buyer with no margin cell cannot be given a rate.
+ */
+export async function releaseQuote(quoteId: string): Promise<{ quoteId: string; askId: string }> {
+  assertValidObjectId(quoteId, 'quoteId');
+  const quote = await Quote.findById(quoteId);
+  if (!quote) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Quote not found.' });
+  if (quote.status !== 'pending_sales') {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'This quote is not waiting on Sales — it has already been given or has closed.',
+    });
+  }
+  const ask = await Ask.findById(quote.askId);
+  if (!ask || (ask.state !== 'open' && ask.state !== 'quoted')) {
+    throw new AppError({ code: 'ENQUIRY_NOT_OPEN', messageEn: 'This ask is no longer open.' });
+  }
+  const buyer = await Buyer.findById(ask.buyerId);
+  const skuId = quote.skuId ?? ask.skuId;
+  if (!buyer || !skuId) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'This quote has no pack to price.',
+    });
+  }
+  if ((await computeBuyerFacingRatePaise(buyer, skuId, quote.ratePaiseForIndore)) === null) {
+    throw new AppError({
+      code: 'MARGIN_CELL_MISSING',
+      messageEn:
+        'There is no margin set for this buyer’s tier on this pack yet, so no rate can be given.',
+    });
+  }
+
+  const now = new Date();
+  await withTransaction(async (session) => {
+    // The status flip is the lock: a second click finds nothing to flip.
+    const flipped = await Quote.findOneAndUpdate(
+      { _id: quote._id, status: 'pending_sales' },
+      { $set: { status: 'live', bindingUntil: addHours(now, BUYER_HOLD_HOURS) } },
+      { session },
+    );
+    if (!flipped) {
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: 'This quote has just been given.',
+      });
+    }
+    await markAskQuoted(ask, now, session);
+    await syncEnquiryForAsk(ask._id as Types.ObjectId, session, now);
   });
+  return {
+    quoteId: (quote._id as Types.ObjectId).toString(),
+    askId: (ask._id as Types.ObjectId).toString(),
+  };
+}
+
+/** Quotes still parked on an ask that has ended are closed; their listing lines stay live. */
+async function closeParkedQuotes(
+  askId: Types.ObjectId,
+  session: mongoose.ClientSession,
+): Promise<void> {
+  await Quote.updateMany(
+    { askId, status: 'pending_sales' },
+    { $set: { status: 'expired' } },
+    { session },
+  );
 }
 
 /** API-046. BR-063 — rank only on closed quotes; the winning rate is in no field. */
@@ -509,7 +713,8 @@ export async function listMyQuotes(
   const quotes = await Quote.find({ sellerId: seller._id }).sort({ createdAt: -1 });
   return quotes.map((q) => ({
     quoteId: (q._id as Types.ObjectId).toString(),
-    status: q.status,
+    // Parked-for-Sales is Trifid's own step; to the seller his rate is simply given and live.
+    status: q.status === 'pending_sales' ? 'live' : q.status,
     qtyAvailable: q.qtyAvailable,
     ...(q.status === 'lost' || q.status === 'won'
       ? { rank: q.rank ?? undefined, ofCount: q.ofCount ?? undefined }

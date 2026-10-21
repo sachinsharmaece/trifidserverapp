@@ -127,7 +127,7 @@ function assertBatchRequiredForAuth(provenance, batch) {
     }
 }
 /** API-033. BR-083 — no area, no listing. BR-113 — one rate per ticked pack. */
-export async function createListing(sellerCounterpartyId, input) {
+export async function createListing(sellerCounterpartyId, input, options = {}) {
     const seller = await Seller.findOne({ counterpartyId: sellerCounterpartyId });
     if (!seller)
         throw new AppError({ code: 'PERMISSION_DENIED', messageEn: 'Sellers only.' });
@@ -223,7 +223,7 @@ export async function createListing(sellerCounterpartyId, input) {
     const listing = await Listing.create({
         productId: input.productId,
         sellerId: seller._id,
-        origin: 'seller_initiated',
+        origin: options.origin ?? 'seller_initiated',
         scopeType: input.scopeType,
         frozenTehsilIds, // BR-085 — frozen now, never a live reference to the seller's area.
         state: 'live',

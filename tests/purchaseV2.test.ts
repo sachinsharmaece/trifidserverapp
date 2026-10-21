@@ -828,6 +828,8 @@ describe('Purchase-desk v2 — dispatch chase queue', () => {
       state: 'released',
       dispatchDueDate: new Date(Date.now() - 60 * 60 * 1000), // an hour ago.
       promisedOutOfIndoreBy: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      // Dispatch holds what Purchase has handed over from Billed (see purchaseStages.test.ts).
+      handedToDispatchAt: new Date(),
     });
 
     const queue = await purchaseService.getDispatchChaseQueue();

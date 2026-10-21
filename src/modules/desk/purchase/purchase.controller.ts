@@ -2,12 +2,24 @@ import type { Request, Response } from 'express';
 import * as purchaseService from './purchase.service.js';
 import * as catalogService from '../../catalog/catalog.service.js';
 import { getFunnelReport as getFunnelReportFromService } from './purchase.funnel.js';
+import * as stages from './purchase.stages.js';
+import {
+  getSellerDealerships as getSellerDealershipsFromService,
+  setSellerDealerships,
+} from './purchase.catalogue.js';
+import { getSellerStageFunnel } from './purchase.sellerFunnel.js';
 import {
   draftManufacturerSchema,
   draftProductSchema,
   draftSkuSchema,
   nonOrderReasonSchema,
+  requestStockHoldSchema,
+  adjustStockHoldSchema,
   sellerCatalogueEntrySchema,
+  sellerDealershipsSchema,
+  sellerDispatchedSchema,
+  sellerInvoiceSchema,
+  stageCallNoteSchema,
 } from './purchase.validation.js';
 
 function ok(res: Response, req: Request, data: unknown, status = 200): void {
@@ -81,6 +93,19 @@ export async function getSellerCatalogue(req: Request, res: Response): Promise<v
   ok(res, req, await purchaseService.getSellerCatalogue(req.params.sellerId as string));
 }
 
+export async function getSellerDealerships(req: Request, res: Response): Promise<void> {
+  ok(res, req, await getSellerDealershipsFromService(req.params.sellerId as string));
+}
+
+export async function putSellerDealerships(req: Request, res: Response): Promise<void> {
+  const { manufacturerIds } = sellerDealershipsSchema.parse(req.body);
+  ok(
+    res,
+    req,
+    await setSellerDealerships(req.params.sellerId as string, manufacturerIds, staffActor(req)),
+  );
+}
+
 export async function getSellerFile(req: Request, res: Response): Promise<void> {
   ok(res, req, await purchaseService.getSellerFile(req.params.sellerId as string));
 }
@@ -95,6 +120,74 @@ export async function getSupplyMatrixBySeller(req: Request, res: Response): Prom
 
 export async function getPilesAwaitingDecision(req: Request, res: Response): Promise<void> {
   ok(res, req, await purchaseService.getPilesAwaitingDecision());
+}
+
+export async function getSellerStageFunnelRoute(req: Request, res: Response): Promise<void> {
+  ok(res, req, await getSellerStageFunnel(req.params.sellerId as string));
+}
+
+// Stock → PO → Billed → Dispatch.
+export async function getStockQueue(req: Request, res: Response): Promise<void> {
+  ok(res, req, await stages.getStockQueue());
+}
+export async function postStockHold(req: Request, res: Response): Promise<void> {
+  const { callNote, holdHours } = requestStockHoldSchema.parse(req.body);
+  ok(
+    res,
+    req,
+    await stages.requestStockHold(
+      req.params.soId as string,
+      { holdHours },
+      staffActor(req),
+      callNote,
+    ),
+    201,
+  );
+}
+export async function postAdjustStockHold(req: Request, res: Response): Promise<void> {
+  const { callNote, holdHours } = adjustStockHoldSchema.parse(req.body);
+  ok(
+    res,
+    req,
+    await stages.adjustStockHold(
+      req.params.soId as string,
+      { holdHours },
+      staffActor(req),
+      callNote,
+    ),
+  );
+}
+export async function postConfirmStockHold(req: Request, res: Response): Promise<void> {
+  const { callNote } = stageCallNoteSchema.parse(req.body);
+  ok(res, req, await stages.confirmStockHold(req.params.soId as string, staffActor(req), callNote));
+}
+export async function getPoQueue(req: Request, res: Response): Promise<void> {
+  ok(res, req, await stages.getPoQueue());
+}
+export async function getBilledQueue(req: Request, res: Response): Promise<void> {
+  ok(res, req, await stages.getBilledQueue());
+}
+export async function postSellerInvoice(req: Request, res: Response): Promise<void> {
+  const { callNote, ...input } = sellerInvoiceSchema.parse(req.body);
+  ok(
+    res,
+    req,
+    await stages.recordSellerInvoice(req.params.poId as string, input, staffActor(req), callNote),
+    201,
+  );
+}
+export async function postSellerDispatched(req: Request, res: Response): Promise<void> {
+  const { callNote, ...input } = sellerDispatchedSchema.parse(req.body);
+  ok(
+    res,
+    req,
+    await stages.recordSellerDispatch(req.params.poId as string, input, staffActor(req), callNote),
+    201,
+  );
+}
+export async function postHandToDispatch(req: Request, res: Response): Promise<void> {
+  const { callNote } = stageCallNoteSchema.parse(req.body);
+  ok(res, req, await stages.handToDispatch(req.params.poId as string, staffActor(req), callNote));
 }
 
 export async function getDispatchChaseQueue(req: Request, res: Response): Promise<void> {

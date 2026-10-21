@@ -40,6 +40,11 @@ export async function getProducts(req: Request, res: Response): Promise<void> {
   ok(res, req, await catalogService.listProducts(technical, manufacturer));
 }
 
+export async function getProductSearch(req: Request, res: Response): Promise<void> {
+  const { q, limit } = req.validatedQuery as { q: string; limit: number };
+  ok(res, req, await catalogService.searchProducts(q, limit));
+}
+
 export async function getSkus(req: Request, res: Response): Promise<void> {
   ok(res, req, await catalogService.listSkusForProduct(req.params.id as string));
 }
@@ -65,7 +70,14 @@ export async function postProduct(req: Request, res: Response): Promise<void> {
       technical: string;
       manufacturerId: string;
       hsn: string;
+      category?: 'seed' | 'pesticide' | 'fertilizer';
+      taxPercent?: number;
       class?: 'High' | 'Medium' | 'Low';
+      packs?: Array<{
+        packSize: number;
+        unit: 'LTR' | 'ML' | 'KG' | 'GM' | 'PC';
+        unitsPerBox: number;
+      }>;
     },
   );
   ok(res, req, result, 201);
@@ -79,6 +91,8 @@ export async function patchProduct(req: Request, res: Response): Promise<void> {
       technical?: string;
       manufacturerId?: string;
       hsn?: string;
+      category?: 'seed' | 'pesticide' | 'fertilizer';
+      taxPercent?: number;
       class?: 'High' | 'Medium' | 'Low';
       active?: boolean;
       state?: 'live';
@@ -108,4 +122,28 @@ export async function postSkuImport(req: Request, res: Response): Promise<void> 
   };
   const result = await catalogService.importSkus(productId, rows);
   ok(res, req, result, 201);
+}
+
+export async function getTechnicalMasters(req: Request, res: Response): Promise<void> {
+  ok(res, req, await catalogService.listTechnicalMasters());
+}
+
+export async function postTechnical(req: Request, res: Response): Promise<void> {
+  const { name } = req.body as { name: string };
+  ok(res, req, await catalogService.createTechnical(name), 201);
+}
+
+export async function getHsnMasters(req: Request, res: Response): Promise<void> {
+  ok(res, req, await catalogService.listHsnMasters());
+}
+
+export async function postHsn(req: Request, res: Response): Promise<void> {
+  ok(
+    res,
+    req,
+    await catalogService.createHsn(
+      req.body as { code: string; description?: string; taxPercent: number },
+    ),
+    201,
+  );
 }

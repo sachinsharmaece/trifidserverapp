@@ -171,9 +171,9 @@ describe('Admin catalog management — SKU edit', () => {
   });
 });
 
-/** QA fix — HSN must be 6/8 digits starting with 3808 (this desk is pesticides-only). */
+/** HSN must be 6 or 8 digits — any chapter, independent of the product category. */
 describe('Admin catalog management — HSN validation', () => {
-  it('rejects an HSN that is not numeric or does not start with 3808', async () => {
+  it('rejects an HSN that is not 6 or 8 digits', async () => {
     const admin = await staffToken(app, 'admin');
     const mfrRes = await request(app)
       .post('/api/v1/admin/manufacturers')
@@ -308,5 +308,151 @@ describe('Admin catalog management — manufacturer aka', () => {
       listAfter.body.data as Array<{ manufacturerId: string; aka?: string[] }>
     ).find((m) => m.manufacturerId === manufacturerId);
     expect(rowAfter?.aka).toEqual(['Bayer CropScience', 'Bayer India']);
+  });
+});
+
+describe('Admin catalog management — masters, category, tax and packs', () => {
+  async function newManufacturer(token: string): Promise<string> {
+    const res = await request(app)
+      .post('/api/v1/admin/manufacturers')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: `Mfr-${Date.now()}-${Math.random()}` });
+    return (res.body.data as { manufacturerId: string }).manufacturerId;
+  }
+
+  it('creates a technical and an HSN master, rejects duplicates, and lists them', async () => {
+    const admin = await staffToken(app, 'admin');
+    const name = `Tech-${Date.now()}-${Math.random()}`;
+    const code = String(Math.floor(10000000 + Math.random() * 89999999));
+
+    const t = await request(app)
+      .post('/api/v1/admin/technicals')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ name });
+    expect(t.status).toBe(201);
+    const dupe = await request(app)
+      .post('/api/v1/admin/technicals')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ name: name.toUpperCase() });
+    expect(dupe.status).toBe(400);
+
+    const h = await request(app)
+      .post('/api/v1/admin/hsn')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ code, taxPercent: 5 });
+    expect(h.status).toBe(201);
+    const badHsn = await request(app)
+      .post('/api/v1/admin/hsn')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ code: '12', taxPercent: 5 });
+    expect(badHsn.status).toBe(400);
+    const badTax = await request(app)
+      .post('/api/v1/admin/hsn')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ code: '31051000', taxPercent: 150 });
+    expect(badTax.status).toBe(400);
+
+    const techs = await request(app)
+      .get('/api/v1/admin/technicals')
+      .set('Authorization', `Bearer ${admin.token}`);
+    expect((techs.body.data as Array<{ name: string }>).some((x) => x.name === name)).toBe(true);
+    const hsns = await request(app)
+      .get('/api/v1/admin/hsn')
+      .set('Authorization', `Bearer ${admin.token}`);
+    expect(
+      (hsns.body.data as Array<{ code: string; taxPercent: number }>).find((x) => x.code === code)
+        ?.taxPercent,
+    ).toBe(5);
+  });
+
+  it('creates a fertilizer with a non-3808 HSN, its tax %, and packs in chosen units', async () => {
+    const admin = await staffToken(app, 'admin');
+    const manufacturerId = await newManufacturer(admin.token);
+    const res = await request(app)
+      .post('/api/v1/admin/products')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({
+        brand: 'Urea Plus',
+        technical: `Urea-${Date.now()}`,
+        manufacturerId,
+        hsn: '31021000',
+        category: 'fertilizer',
+        taxPercent: 5,
+        packs: [
+          { packSize: 1, unit: 'LTR', unitsPerBox: 12 },
+          { packSize: 500, unit: 'ML', unitsPerBox: 24 },
+        ],
+      });
+    expect(res.status).toBe(201);
+    const { productId, skuIds } = res.body.data as { productId: string; skuIds: string[] };
+    expect(skuIds).toHaveLength(2);
+
+    const detail = await request(app)
+      .get(`/api/v1/admin/products/${productId}`)
+      .set('Authorization', `Bearer ${admin.token}`);
+    expect(detail.body.data).toMatchObject({ category: 'fertilizer', taxPercent: 5 });
+
+    const skus = await request(app)
+      .get(`/api/v1/catalog/products/${productId}/skus`)
+      .set('Authorization', `Bearer ${admin.token}`);
+    const ml = (
+      skus.body.data as Array<{
+        packLabel: string;
+        packSize: number;
+        baseUnit: string;
+        baseUnitsPerBox: number;
+      }>
+    ).find((s) => s.packLabel === '500 ML');
+    expect(ml).toMatchObject({ packSize: 0.5, baseUnit: 'LTR', baseUnitsPerBox: 12 });
+  });
+
+  it('defaults a product to pesticide, takes the HSN master rate, and adds its technical to the master', async () => {
+    const admin = await staffToken(app, 'admin');
+    const manufacturerId = await newManufacturer(admin.token);
+    const technical = `Tech-${Date.now()}-${Math.random()}`;
+    const code = String(Math.floor(10000000 + Math.random() * 89999999));
+    await request(app)
+      .post('/api/v1/admin/hsn')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ code, taxPercent: 12 });
+
+    const res = await request(app)
+      .post('/api/v1/admin/products')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ brand: 'B', technical, manufacturerId, hsn: code });
+    expect(res.status).toBe(201);
+    const { productId } = res.body.data as { productId: string };
+    const detail = await request(app)
+      .get(`/api/v1/admin/products/${productId}`)
+      .set('Authorization', `Bearer ${admin.token}`);
+    expect(detail.body.data).toMatchObject({ category: 'pesticide', taxPercent: 12 });
+
+    const techs = await request(app)
+      .get('/api/v1/admin/technicals')
+      .set('Authorization', `Bearer ${admin.token}`);
+    expect((techs.body.data as Array<{ name: string }>).some((x) => x.name === technical)).toBe(
+      true,
+    );
+  });
+
+  it('rejects duplicate packs and rolls nothing half-created', async () => {
+    const admin = await staffToken(app, 'admin');
+    const manufacturerId = await newManufacturer(admin.token);
+    const brand = `Dupe-${Date.now()}-${Math.random()}`;
+    const res = await request(app)
+      .post('/api/v1/admin/products')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({
+        brand,
+        technical: 'T',
+        manufacturerId,
+        hsn: '38089199',
+        packs: [
+          { packSize: 1, unit: 'KG', unitsPerBox: 10 },
+          { packSize: 1, unit: 'KG', unitsPerBox: 20 },
+        ],
+      });
+    expect(res.status).toBe(400);
+    expect(await Product.countDocuments({ brand })).toBe(0);
   });
 });

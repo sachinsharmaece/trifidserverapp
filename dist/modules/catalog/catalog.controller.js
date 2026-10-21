@@ -25,6 +25,10 @@ export async function getProducts(req, res) {
     const { technical, manufacturer } = req.validatedQuery;
     ok(res, req, await catalogService.listProducts(technical, manufacturer));
 }
+export async function getProductSearch(req, res) {
+    const { q, limit } = req.validatedQuery;
+    ok(res, req, await catalogService.searchProducts(q, limit));
+}
 export async function getSkus(req, res) {
     ok(res, req, await catalogService.listSkusForProduct(req.params.id));
 }
@@ -56,4 +60,17 @@ export async function postSkuImport(req, res) {
     const { productId, rows } = req.body;
     const result = await catalogService.importSkus(productId, rows);
     ok(res, req, result, 201);
+}
+export async function getTechnicalMasters(req, res) {
+    ok(res, req, await catalogService.listTechnicalMasters());
+}
+export async function postTechnical(req, res) {
+    const { name } = req.body;
+    ok(res, req, await catalogService.createTechnical(name), 201);
+}
+export async function getHsnMasters(req, res) {
+    ok(res, req, await catalogService.listHsnMasters());
+}
+export async function postHsn(req, res) {
+    ok(res, req, await catalogService.createHsn(req.body), 201);
 }

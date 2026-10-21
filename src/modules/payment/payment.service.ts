@@ -186,8 +186,9 @@ export async function allocateUpcomingReceipt(
 
 interface PostBankCreditInput {
   utr: string;
-  remitterAccountNumber: string;
-  remitterIfsc: string;
+  // Optional only for Sales' mark-paid, which has the UTR but not the remitter's account.
+  remitterAccountNumber?: string;
+  remitterIfsc?: string;
 }
 
 /**
@@ -231,8 +232,10 @@ export async function postBankCredit(
           amountPaise: receipt.amountPaise,
           utr: input.utr,
           narration: `Receipt for ${receipt.soIds!.length} SO(s)`,
-          remitterAccountEncrypted: encryptAccountNumber(input.remitterAccountNumber),
-          remitterIfsc: input.remitterIfsc,
+          remitterAccountEncrypted: input.remitterAccountNumber
+            ? encryptAccountNumber(input.remitterAccountNumber)
+            : null,
+          remitterIfsc: input.remitterIfsc ?? null,
           soIds: receipt.soIds,
           postedBy: actor.employeeId,
         },

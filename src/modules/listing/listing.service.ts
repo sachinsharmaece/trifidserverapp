@@ -182,6 +182,7 @@ function assertBatchRequiredForAuth(provenance: Provenance, batch: string | unde
 export async function createListing(
   sellerCounterpartyId: string,
   input: CreateListingInput,
+  options: { origin?: 'seller_initiated' | 'quote_born' } = {},
 ): Promise<{ listingId: string; lineIds: string[] }> {
   const seller = await Seller.findOne({ counterpartyId: sellerCounterpartyId });
   if (!seller) throw new AppError({ code: 'PERMISSION_DENIED', messageEn: 'Sellers only.' });
@@ -289,7 +290,7 @@ export async function createListing(
   const listing = await Listing.create({
     productId: input.productId,
     sellerId: seller._id,
-    origin: 'seller_initiated',
+    origin: options.origin ?? 'seller_initiated',
     scopeType: input.scopeType,
     frozenTehsilIds, // BR-085 — frozen now, never a live reference to the seller's area.
     state: 'live',

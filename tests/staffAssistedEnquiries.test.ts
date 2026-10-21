@@ -441,9 +441,20 @@ describe('Seller-side proxy actions (Purchase desk)', () => {
     expect(quote!.proxyLog![0]!.action).toBe('post_quote');
     expect(quote!.proxyLog![0]!.actingStaffId!.toString()).toBe(purchase.employeeId);
 
+    // Parked for Sales: the asking buyer is not told, his hold has not started …
+    expect(quote!.status).toBe('pending_sales');
     const ask = await Ask.findById(askId);
-    expect(ask!.state).toBe('quoted');
-    expect(ask!.holdExpiresAt).toBeTruthy(); // BR-126
+    expect(ask!.state).toBe('open');
+    expect(ask!.holdExpiresAt).toBeFalsy();
+    // … but the quote is already a listing line every buyer can see, all India.
+    expect(quote!.listingLineId).toBeTruthy();
+    const { Listing } = await import('../src/models/Listing.js');
+    const line = await ListingLine.findById(quote!.listingLineId);
+    expect(line!.ratePaise).toBe(40000);
+    const listing = await Listing.findById(line!.listingId);
+    expect(listing!.origin).toBe('quote_born');
+    expect(listing!.scopeType).toBe('all_india');
+    expect(listing!.state).toBe('live');
 
     // BR-105 — "My stock" without a batch is refused exactly as on the seller's own screen.
     const noBatch = await request(app)
@@ -459,6 +470,51 @@ describe('Seller-side proxy actions (Purchase desk)', () => {
       .set('Authorization', `Bearer ${sales.token}`)
       .send({ ...quoteBody, callNote: 'note' });
     expect(salesRes.status).toBe(403);
+
+    // Sales sees it on his file under "He asked", at HIS rate (net + the margin cell) — and the
+    // same rate the buyer's own board shows for the listing line.
+    const admin = await staffToken(app, 'admin');
+    await seedMarginCell('Medium', 'Dealer', 0.05, admin.employeeId);
+    const file = await request(app)
+      .get(`/api/v1/staff/sales/buyers/${buyerId}`)
+      .set('Authorization', `Bearer ${sales.token}`);
+    const asked = (
+      file.body.data.openAsks as Array<{
+        askId: string;
+        pendingQuotes: Array<{ quoteId: string; ratePaise: number | null }>;
+      }>
+    ).find((a) => a.askId === askId);
+    expect(asked!.pendingQuotes).toHaveLength(1);
+    expect(asked!.pendingQuotes[0]!.ratePaise).toBeGreaterThan(40000);
+    expect(file.body.data.liveQuotes).toEqual([]);
+
+    // Sales gives it: the ask is quoted, his 24h hold starts, the quote is live.
+    const given = await request(app)
+      .post(`/api/v1/staff/sales/quotes/${quoteId}/give`)
+      .set('Authorization', `Bearer ${sales.token}`)
+      .send({ callNote: 'Rang him with the 400 rate.' });
+    expect(given.status).toBe(201);
+    expect((await Ask.findById(askId))!.state).toBe('quoted');
+    expect((await Ask.findById(askId))!.holdExpiresAt).toBeTruthy(); // BR-126
+    const live = await Quote.findById(quoteId);
+    expect(live!.status).toBe('live');
+    expect(live!.bindingUntil.getTime()).toBeGreaterThan(Date.now() + 23 * 3600 * 1000);
+
+    // A second click finds nothing to give.
+    const again = await request(app)
+      .post(`/api/v1/staff/sales/quotes/${quoteId}/give`)
+      .set('Authorization', `Bearer ${sales.token}`)
+      .send({ callNote: 'Again.' });
+    expect(again.status).toBe(400);
+
+    // Under "Rate given" it carries the same margin-added rate it showed under "He asked".
+    const after = await request(app)
+      .get(`/api/v1/staff/sales/buyers/${buyerId}`)
+      .set('Authorization', `Bearer ${sales.token}`);
+    const held = (after.body.data.liveQuotes as Array<{ quoteId: string; ratePaise: number }>).find(
+      (q) => q.quoteId === quoteId,
+    );
+    expect(held!.ratePaise).toBe(asked!.pendingQuotes[0]!.ratePaise);
   });
 
   it('desk boundary — Sales cannot log a seller call', async () => {
