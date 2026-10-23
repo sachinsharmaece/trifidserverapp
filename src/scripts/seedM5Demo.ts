@@ -19,7 +19,9 @@ import { So } from '../models/So.js';
 import { Po } from '../models/Po.js';
 import { Ask } from '../models/Ask.js';
 import { Quote } from '../models/Quote.js';
-import * as territoryService from '../modules/territory/territory.service.js';
+import { ensureDistrict } from '../modules/territory/territory.masters.js';
+import { State } from '../models/State.js';
+import { seedStates } from '../db/seedStates.js';
 import * as catalogService from '../modules/catalog/catalog.service.js';
 import * as pricingService from '../modules/pricing/pricing.service.js';
 import * as onboardingService from '../modules/onboarding/onboarding.service.js';
@@ -87,7 +89,15 @@ async function seed(): Promise<void> {
   // --- Tehsil ---------------------------------------------------------
   let tehsil = await Tehsil.findOne({ name: 'Indore', district: 'Indore' });
   if (!tehsil) {
-    await territoryService.createTehsil('Indore', 'Indore', 'Madhya Pradesh');
+    await seedStates();
+    const mp = await State.findOne({ gstStateCode: '23' });
+    const indore = await ensureDistrict(mp!._id, 'Indore');
+    await Tehsil.create({
+      name: 'Indore',
+      districtId: indore.districtId,
+      district: indore.name,
+      state: mp!.name,
+    });
     tehsil = await Tehsil.findOne({ name: 'Indore', district: 'Indore' });
   }
   console.log(`Tehsil: Indore, Indore, MP (${tehsil!._id})`);

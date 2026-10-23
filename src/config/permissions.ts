@@ -106,6 +106,15 @@ export const PERMISSIONS = {
   // only); a draft is usable in a seller's catalogue at once but cannot back
   // a live listing until Admin confirms it with the pre-existing CATALOG_WRITE.
   CATALOG_DRAFT_CREATE: 'catalog:draft_create',
+  // Phase 1 location masters — adding a State, District or Tehsil (from Manage
+  // or from "+ Add new" inside a form) and editing a tehsil. Admin and team
+  // leaders only (DEC-059; leaders get it with their position in Phase 2);
+  // an executive sees "Not in the list? Ask your leader." Reads stay on
+  // TERRITORY_READ.
+  LOCATION_MASTER_WRITE: 'location:master_write',
+  // Phase 1 — editing an unverified pincode's tehsil and marking it verified.
+  // Admin only.
+  PINCODE_VERIFY: 'location:pincode_verify',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -121,6 +130,8 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
     permissionKeys: [
       PERMISSIONS.CATALOG_WRITE,
       PERMISSIONS.TERRITORY_READ,
+      // Phase 1 — no longer adds tehsils (that is LOCATION_MASTER_WRITE, Admin
+      // and leaders only); no route checks TERRITORY_WRITE any more.
       PERMISSIONS.TERRITORY_WRITE,
       PERMISSIONS.ONBOARDING_READ,
       PERMISSIONS.ONBOARDING_APPROVE,
@@ -154,6 +165,10 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
     key: 'sales',
     label: 'Sales',
     permissionKeys: [
+      // Phase 1 — the State/District/Tehsil pickers on the buyer form and on
+      // approval. Sales had no territory read at all, so the Registrations
+      // desk could not load the tehsil list a buyer approval needs.
+      PERMISSIONS.TERRITORY_READ,
       PERMISSIONS.ONBOARDING_READ,
       PERMISSIONS.ONBOARDING_APPROVE,
       PERMISSIONS.BOOK_ASSIGN,
