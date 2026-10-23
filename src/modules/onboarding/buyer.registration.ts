@@ -19,6 +19,7 @@ import {
   callerCoversBuyer,
   defaultAssigneeFor,
   salesLeaderOf,
+  mayChangeOwner,
   type StaffCaller,
 } from '../../shared/team.js';
 import { assertLocationChain, recordPincodeIfUnknown } from '../territory/territory.masters.js';
@@ -433,6 +434,8 @@ export interface BuyerProfileDto {
   canEdit: boolean;
   canEditCategory: boolean;
   canEditIdentity: boolean;
+  /** Phase 5 — his leader (for his team and the Queue) or Admin. */
+  canChangeOwner: boolean;
 }
 
 export async function getBuyerProfile(
@@ -493,6 +496,7 @@ export async function getBuyerProfile(
     canEdit,
     canEditCategory: isAdmin || (canEdit && (leaderOfOwner || (await isLeader(caller.employeeId)))),
     canEditIdentity: isAdmin,
+    canChangeOwner: await mayChangeOwner('sales', caller, ownerId),
   };
 }
 

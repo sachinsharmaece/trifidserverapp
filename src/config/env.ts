@@ -66,6 +66,10 @@ export const env = {
   // first order no longer hands him to the least-busy Sales person (BR-276).
   // 'true' restores the old automatic assignment.
   firstOrderAutoAssign: process.env.FIRST_ORDER_AUTO_ASSIGN === 'true',
+  // Phase 5 (DEC-060) — each person sees only his own / his team's buyers and
+  // sellers. Off by default: switch it on only once every employee has his
+  // positions and reporting lines (Team page), or executives see nothing.
+  ownershipScopeEnforced: process.env.OWNERSHIP_SCOPE_ENFORCED === 'true',
   chainStageTrackingEnabled: process.env.CHAIN_STAGE_TRACKING_ENABLED === 'true',
 
   staffPasswordMinLength: optionalNumber('STAFF_PASSWORD_MIN_LENGTH', 12),

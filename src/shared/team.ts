@@ -164,6 +164,20 @@ export async function callerCovers(
 }
 
 /**
+ * Phase 5 — the Change owner action: Admin on any lead; a leader on his
+ * team's leads and the Queue. Never an executive.
+ */
+export async function mayChangeOwner(
+  side: Side,
+  caller: StaffCaller,
+  ownerId: string | null,
+): Promise<boolean> {
+  if (caller.permissions.includes(SIDE[side].admin)) return true;
+  if (!(await isLeaderOf(side, caller.employeeId))) return false;
+  return callerCovers(side, caller, ownerId, { queueAllowed: true });
+}
+
+/**
  * For the "Assigned to" picker: himself as an executive; his team as a
  * leader; everyone active on that side for Admin. Mirrors `assertMayAssign`.
  */

@@ -83,7 +83,11 @@ export async function postBookAssignment(req: Request, res: Response): Promise<v
   };
   const result = await adminService.assignBook(
     { buyerId, ownerEmployeeId, reason },
-    { employeeId: req.auth!.employeeId!, correlationId: req.correlationId },
+    {
+      employeeId: req.auth!.employeeId!,
+      permissions: req.auth!.permissions,
+      correlationId: req.correlationId,
+    },
   );
   ok(res, req, result, 201);
 }

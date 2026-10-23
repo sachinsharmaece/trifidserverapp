@@ -1,3 +1,5 @@
+import { bySellerId, field, param, requireInScope, scopeList } from '../../../shared/scope.js';
+import { sellerOfPile, sellerOfPo } from '../../../shared/scopeResolvers.js';
 import { Router } from 'express';
 import { authenticate } from '../../../middleware/auth.js';
 import { requireAnyPermission, requirePermission } from '../../../middleware/requirePermission.js';
@@ -28,6 +30,7 @@ purchaseRouter.get(
   '/staff/purchase/asks/:askId/quote-gaps',
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
+  scopeList('purchase', bySellerId),
   controller.getQuoteGaps,
 );
 // Purchase-desk v2 — per-ask seller states in the prototype's own vocabulary.
@@ -35,6 +38,7 @@ purchaseRouter.get(
   '/staff/purchase/asks/:askId/seller-states',
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
+  scopeList('purchase', bySellerId),
   controller.getAskSellerStates,
 );
 purchaseRouter.post(
@@ -60,6 +64,7 @@ purchaseRouter.get(
   '/staff/purchase/products/:productId/sellers',
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
+  scopeList('purchase', bySellerId),
   controller.getProductSellers,
 );
 // IC-06 — the response never carries the cap or the two source rates.
@@ -95,6 +100,7 @@ purchaseRouter.get(
   '/staff/purchase/dispute-recovery',
   authenticate,
   requirePermission(PERMISSIONS.DISPUTE_RECOVERY_READ),
+  scopeList('purchase', bySellerId),
   controller.getSellerRecoveryQueue,
 );
 
@@ -110,12 +116,14 @@ purchaseRouter.get(
   '/staff/purchase/sellers/:sellerId/catalogue',
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
+  requireInScope('purchase', param('sellerId')),
   controller.getSellerCatalogue,
 );
 purchaseRouter.post(
   '/staff/purchase/catalogue',
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
+  requireInScope('purchase', field('body', 'sellerId', 'profile')),
   validateBody(sellerCatalogueEntrySchema),
   controller.postSellerCatalogueEntry,
 );
@@ -125,12 +133,14 @@ purchaseRouter.get(
   '/staff/purchase/sellers/:sellerId/dealerships',
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
+  requireInScope('purchase', param('sellerId')),
   controller.getSellerDealerships,
 );
 purchaseRouter.put(
   '/staff/purchase/sellers/:sellerId/dealerships',
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
+  requireInScope('purchase', param('sellerId')),
   validateBody(sellerDealershipsSchema),
   controller.putSellerDealerships,
 );
@@ -138,6 +148,7 @@ purchaseRouter.get(
   '/staff/purchase/sellers/:sellerId/file',
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
+  requireInScope('purchase', param('sellerId')),
   controller.getSellerFile,
 );
 
@@ -146,6 +157,7 @@ purchaseRouter.get(
   '/staff/purchase/sellers/:sellerId/funnel',
   authenticate,
   requirePermission(PERMISSIONS.PO_EDIT),
+  requireInScope('purchase', param('sellerId')),
   controller.getSellerStageFunnelRoute,
 );
 
@@ -160,12 +172,14 @@ purchaseRouter.get(
   '/staff/purchase/matrix/by-seller',
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
+  scopeList('purchase', bySellerId),
   controller.getSupplyMatrixBySeller,
 );
 purchaseRouter.get(
   '/staff/purchase/matrix/by-product/:productId/call-list',
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
+  scopeList('purchase', bySellerId),
   controller.getSupplyMatrixCallList,
 );
 // Today — the desk-wide roll-up of `seller-states`' "listed, not quoted" (BR-275).
@@ -181,12 +195,14 @@ purchaseRouter.get(
   '/staff/purchase/piles',
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
+  scopeList('purchase', bySellerId),
   controller.getPilesAwaitingDecision,
 );
 purchaseRouter.post(
   '/staff/purchase/piles/:pileId/chase',
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
+  requireInScope('purchase', sellerOfPile()),
   controller.postPileChase,
 );
 
@@ -196,6 +212,7 @@ purchaseRouter.get(
   '/staff/purchase/stock',
   authenticate,
   requirePermission(PERMISSIONS.PO_EDIT),
+  scopeList('purchase', bySellerId),
   controller.getStockQueue,
 );
 purchaseRouter.post(
@@ -220,12 +237,14 @@ purchaseRouter.get(
   '/staff/purchase/pos',
   authenticate,
   requirePermission(PERMISSIONS.PO_EDIT),
+  scopeList('purchase', bySellerId),
   controller.getPoQueue,
 );
 purchaseRouter.post(
   '/staff/purchase/pos/:poId/invoice',
   authenticate,
   requirePermission(PERMISSIONS.PROXY_SELLER_CALL),
+  requireInScope('purchase', sellerOfPo()),
   controller.postSellerInvoice,
 );
 // Leg 1 reported by the seller on a call — idempotent like every stage-moving POST.
@@ -233,6 +252,7 @@ purchaseRouter.post(
   '/staff/purchase/pos/:poId/seller-dispatched',
   authenticate,
   requirePermission(PERMISSIONS.PROXY_SELLER_CALL),
+  requireInScope('purchase', sellerOfPo()),
   requireIdempotencyKey(),
   controller.postSellerDispatched,
 );
@@ -240,12 +260,14 @@ purchaseRouter.get(
   '/staff/purchase/billed',
   authenticate,
   requirePermission(PERMISSIONS.PO_EDIT),
+  scopeList('purchase', bySellerId),
   controller.getBilledQueue,
 );
 purchaseRouter.post(
   '/staff/purchase/pos/:poId/hand-to-dispatch',
   authenticate,
   requirePermission(PERMISSIONS.PO_EDIT),
+  requireInScope('purchase', sellerOfPo()),
   controller.postHandToDispatch,
 );
 
@@ -255,12 +277,14 @@ purchaseRouter.get(
   '/staff/purchase/dispatch',
   authenticate,
   requirePermission(PERMISSIONS.PO_EDIT),
+  scopeList('purchase', bySellerId),
   controller.getDispatchChaseQueue,
 );
 purchaseRouter.post(
   '/staff/purchase/dispatch/:poId/chase',
   authenticate,
   requirePermission(PERMISSIONS.PO_EDIT),
+  requireInScope('purchase', sellerOfPo()),
   controller.postDispatchChase,
 );
 
@@ -271,6 +295,7 @@ purchaseRouter.get(
   '/staff/purchase/inspections/pending-apply',
   authenticate,
   requirePermission(PERMISSIONS.PO_EDIT),
+  scopeList('purchase', bySellerId),
   controller.getInspectionsPendingApply,
 );
 
@@ -322,6 +347,7 @@ purchaseRouter.get(
   '/staff/purchase/debits',
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
+  scopeList('purchase', bySellerId),
   controller.getOpenSellerDebits,
 );
 purchaseRouter.post(

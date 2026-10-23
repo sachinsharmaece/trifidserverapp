@@ -132,6 +132,9 @@ export const PERMISSIONS = {
   // Phase 4 — the same for sellers: Admin assigns any seller to anyone, edits
   // any seller, changes his GSTIN. Purchase Leaders act within their team.
   SELLER_ADMIN: 'seller:admin',
+  // Phase 5 (DEC-060) — sees every buyer and seller whatever the team:
+  // Controller and Founder (and Admin, who holds everything).
+  LEADS_SEE_ALL: 'leads:see_all',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -294,6 +297,8 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.FUNNEL_READ,
       // Enquiry journey — Controller runs the trade, so may reassign either desk's owner.
       PERMISSIONS.ENQUIRY_MANAGE,
+      // Phase 5 — Controller sees every desk's buyers and sellers.
+      PERMISSIONS.LEADS_SEE_ALL,
     ],
   },
   {
@@ -326,6 +331,8 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.REGISTER_PURCHASE_READ,
       // M8 — the read-only Founder overview.
       PERMISSIONS.FOUNDER_OVERVIEW_READ,
+      // Phase 5 — Founder sees everything, read-only (DEC-063).
+      PERMISSIONS.LEADS_SEE_ALL,
     ],
   },
 ];

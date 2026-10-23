@@ -1,3 +1,4 @@
+import { param, requireInScope, scopeList } from '../../shared/scope.js';
 import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
 import { requireAnyPermission, requirePermission } from '../../middleware/requirePermission.js';
@@ -60,6 +61,12 @@ onboardingRouter.get(
   '/staff/registrations',
   authenticate,
   requirePermission(PERMISSIONS.ONBOARDING_READ),
+  scopeList('sales', (row) =>
+    row.kind === 'seller' ? null : { counterpartyId: String(row.registrationId) },
+  ),
+  scopeList('purchase', (row) =>
+    row.kind === 'seller' ? { counterpartyId: String(row.registrationId) } : null,
+  ),
   validateQuery(listRegistrationsQuerySchema),
   controller.getRegistrations,
 );
@@ -88,18 +95,21 @@ onboardingRouter.get(
   '/staff/registrations/:id/buyer-profile',
   authenticate,
   requireAnyPermission(PERMISSIONS.BUYER_APPROVE, PERMISSIONS.SALES_WORKLIST_READ),
+  requireInScope('sales', param('id', 'counterparty')),
   controller.getRegistrationBuyerProfile,
 );
 onboardingRouter.get(
   '/staff/buyers/:buyerId/profile',
   authenticate,
   requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  requireInScope('sales', param('buyerId')),
   controller.getBuyerProfile,
 );
 onboardingRouter.put(
   '/staff/buyers/:buyerId/profile',
   authenticate,
   requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  requireInScope('sales', param('buyerId')),
   requireIdempotencyKey(),
   validateBody(updateBuyerSchema),
   controller.putBuyerProfile,
@@ -110,18 +120,21 @@ onboardingRouter.get(
   '/staff/registrations/:id/seller-profile',
   authenticate,
   requireAnyPermission(PERMISSIONS.SELLER_APPROVE, PERMISSIONS.PROXY_SELLER_CALL),
+  requireInScope('purchase', param('id', 'counterparty')),
   controller.getRegistrationSellerProfile,
 );
 onboardingRouter.get(
   '/staff/sellers/:sellerId/profile',
   authenticate,
   requirePermission(PERMISSIONS.PROXY_SELLER_CALL),
+  requireInScope('purchase', param('sellerId')),
   controller.getSellerProfile,
 );
 onboardingRouter.put(
   '/staff/sellers/:sellerId/profile',
   authenticate,
   requirePermission(PERMISSIONS.PROXY_SELLER_CALL),
+  requireInScope('purchase', param('sellerId')),
   requireIdempotencyKey(),
   validateBody(updateSellerSchema),
   controller.putSellerProfile,
@@ -133,6 +146,8 @@ onboardingRouter.get(
   '/staff/counterparties/:id/bank-detail',
   authenticate,
   requirePermission(PERMISSIONS.BANK_DETAIL_READ),
+  requireInScope('sales', param('id', 'counterparty')),
+  requireInScope('purchase', param('id', 'counterparty')),
   controller.getBankDetail,
 );
 onboardingRouter.post(

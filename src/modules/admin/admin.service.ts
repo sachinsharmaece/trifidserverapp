@@ -14,6 +14,8 @@ import { Buyer } from '../../models/Buyer.js';
 import { BookAssignment } from '../../models/BookAssignment.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
+import { isAbsenceActiveNow, resolveEffectiveHolder } from '../../shared/absence.js';
+import { moveLead } from '../lead/lead.service.js';
 
 // CH §24.1 — enforced password rules. Length comes from the config env var;
 // requiring one letter and one digit is a baseline technical policy, not a
@@ -147,34 +149,7 @@ export async function issueEmployeeMfa(
   };
 }
 
-// The window during which an absence is "in effect" — used both to resolve
-// cover chains and to decide who currently counts as active.
-function isAbsenceActiveNow(absence: { from: Date; returnDate: Date }, now: Date): boolean {
-  return absence.from.getTime() <= now.getTime() && absence.returnDate.getTime() >= now.getTime();
-}
-
-/**
- * BR-264 — cover follows the chain. Where A is covered by B, and B is then
- * also covered by C, A resolves to C, not to an empty chair. `activeById`
- * is the currently-active-absence lookup, built once per call site so a
- * lane-board listing does not re-query per lane.
- */
-function resolveEffectiveHolder(
-  employeeId: Types.ObjectId,
-  activeAbsenceByEmployeeId: Map<string, { coveredBy: Types.ObjectId }>,
-): Types.ObjectId {
-  let current = employeeId;
-  const visited = new Set([current.toString()]);
-  for (let hops = 0; hops < 50; hops += 1) {
-    const absence = activeAbsenceByEmployeeId.get(current.toString());
-    if (!absence) return current;
-    const next = absence.coveredBy;
-    if (visited.has(next.toString())) return current; // guarded at creation time — should not happen
-    visited.add(next.toString());
-    current = next;
-  }
-  return current;
-}
+// BR-264 — the cover-chain helpers live in shared/absence.ts (Phase 5 reuses them).
 
 interface LaneBoardItem {
   laneKey: string;
@@ -379,10 +354,14 @@ interface AssignBookInput {
  * buyer's first order belongs in `modules/chain` (M4, where orders start
  * existing); this is the manual admin/Sales-head action M3 can actually
  * build against a real `Buyer` collection.
+ *
+ * Phase 5 — under the same assign rule as Change owner (DEC-062): anyone
+ * may take an unowned buyer for whom he may assign to; moving one already
+ * owned needs his leader or Admin.
  */
 export async function assignBook(
   input: AssignBookInput,
-  actor: AdminActor,
+  actor: AdminActor & { permissions: string[] },
 ): Promise<{ bookAssignmentId: string }> {
   const buyer = await Buyer.findById(input.buyerId);
   if (!buyer) {
@@ -401,29 +380,10 @@ export async function assignBook(
     });
   }
 
-  const assignment = await BookAssignment.findOneAndUpdate(
-    { buyerId: buyer._id },
-    {
-      $set: {
-        ownerEmployeeId: owner._id,
-        assignedAt: new Date(),
-        assignedBy: actor.employeeId,
-        reason: input.reason,
-      },
-    },
-    { upsert: true, new: true },
-  );
-
-  await writeAuditLog({
-    actorId: actor.employeeId,
-    actorType: 'staff',
-    entity: 'book_assignment',
-    entityId: assignment._id as Types.ObjectId,
-    field: 'owner',
-    newValue: { buyerId: input.buyerId, ownerEmployeeId: input.ownerEmployeeId },
+  await moveLead('sales', input.buyerId, String(owner._id), actor, {
     reason: input.reason,
-    correlationId: actor.correlationId,
+    leadersOnly: false,
   });
-
-  return { bookAssignmentId: (assignment._id as Types.ObjectId).toString() };
+  const assignment = await BookAssignment.findOne({ buyerId: buyer._id }, { _id: 1 });
+  return { bookAssignmentId: (assignment!._id as Types.ObjectId).toString() };
 }
