@@ -21,6 +21,9 @@ import { enqueueNotification } from '../notification/notification.outbox.js';
 import { toBankDetailDto, type BankDetailDto } from './onboarding.dto.js';
 import { checkBuyerIdentity } from './buyer.identity.js';
 import { BookAssignment } from '../../models/BookAssignment.js';
+import { SellerAssignment } from '../../models/SellerAssignment.js';
+import { assertMayAssign, callerCovers, type StaffCaller } from '../../shared/team.js';
+import { recordPincodeIfUnknown, assertLocationChain } from '../territory/territory.masters.js';
 import { Employee } from '../../models/Employee.js';
 import { panFromGstin } from '../../shared/validators.js';
 
@@ -349,11 +352,32 @@ interface RegisterSellerInput {
   consent: ConsentInput;
 }
 
+/**
+ * Phase 4 — what a staff "Add a seller" adds to a registration: his own
+ * location, Marg party code, who he is assigned to (null = Queue), and the
+ * proprietor-agreed tick (DEC-056). Checked by seller.registration.ts before
+ * it calls registerSeller.
+ */
+export interface StaffSellerExtras {
+  location: {
+    address: string;
+    pincode?: string;
+    stateId: string;
+    districtId: string;
+    tehsilId: string;
+  };
+  tehsilId: Types.ObjectId;
+  margPartyCode?: string;
+  assignee: string | null;
+  caller: StaffCaller & { correlationId: string };
+}
+
 /** API-011. WF-02. */
 export async function registerSeller(
   input: RegisterSellerInput,
   staffAssisted?: StaffAssistedRegistration,
   correlationId = 'unknown',
+  extras?: StaffSellerExtras,
 ): Promise<{ registrationId: string; accountNameWarning: string | null }> {
   await assertGstinAndMobileAreFree(input.gstin, input.mobile);
   assertBankDetailIsWellFormed(input.bankDetail);
@@ -389,6 +413,7 @@ export async function registerSeller(
                 staffAssisted: true,
                 staffAssistedByEmployeeId: staffAssisted.employeeId,
                 staffAssistedCallNote: staffAssisted.callNote,
+                ...(extras ? { proprietorAgreedAt: new Date() } : {}),
               }
             : {}),
         },
@@ -397,7 +422,22 @@ export async function registerSeller(
     );
     if (!counterparty) throw new Error('Counterparty.create returned no document.');
 
-    const [seller] = await Seller.create([{ counterpartyId: counterparty._id }], { session });
+    const [seller] = await Seller.create(
+      [
+        {
+          counterpartyId: counterparty._id,
+          ...(extras
+            ? {
+                tehsilId: extras.tehsilId,
+                address: extras.location.address,
+                pincode: extras.location.pincode ?? null,
+                margPartyCode: extras.margPartyCode ?? null,
+              }
+            : {}),
+        },
+      ],
+      { session },
+    );
     if (!seller) throw new Error('Seller.create returned no document.');
 
     await SellerReference.create(
@@ -419,15 +459,45 @@ export async function registerSeller(
     await createPendingBankDetail(counterparty._id, input.bankDetail, session);
     await writeConsents(counterparty._id, input.consent, session);
 
+    if (extras?.location.pincode) {
+      await recordPincodeIfUnknown(
+        { pincode: extras.location.pincode, tehsilId: extras.location.tehsilId },
+        extras.caller,
+        session,
+      );
+    }
+    if (extras?.assignee && seller) {
+      await SellerAssignment.create(
+        [
+          {
+            sellerId: seller._id,
+            ownerEmployeeId: extras.assignee,
+            assignedAt: new Date(),
+            assignedBy: extras.caller.employeeId,
+            reason: 'Assigned at registration.',
+          },
+        ],
+        { session },
+      );
+    }
     if (staffAssisted) {
+      // F10 — the staff member is the actor (the old entry named the seller).
       await writeAuditLog(
         {
-          actorId: (counterparty._id as Types.ObjectId).toString(),
-          actorType: 'counterparty',
+          actorId: staffAssisted.employeeId,
+          actorType: 'staff',
           entity: 'counterparty',
           entityId: counterparty._id as Types.ObjectId,
           field: 'staff_assisted_registration',
-          reason: `Logged by staff ${staffAssisted.employeeId}: ${staffAssisted.callNote}`,
+          newValue: extras
+            ? {
+                kind: 'seller',
+                tehsilId: extras.location.tehsilId,
+                assignedToEmployeeId: extras.assignee,
+                proprietorAgreed: true,
+              }
+            : { kind: 'seller' },
+          reason: staffAssisted.callNote,
           correlationId: staffAssisted.correlationId,
         },
         session,
@@ -556,9 +626,41 @@ export async function listRegistrations(
   );
   const districtOfTehsil = new Map(tehsils.map((t) => [String(t._id), t.district]));
 
+  // Phase 4 — the same two columns for seller registrations.
+  const sellers = await Seller.find(
+    { counterpartyId: { $in: page.map((c) => c._id) } },
+    { counterpartyId: 1, tehsilId: 1 },
+  );
+  const sellerByCounterparty = new Map(sellers.map((x) => [String(x.counterpartyId), x]));
+  const sellerAssignments = await SellerAssignment.find({
+    sellerId: { $in: sellers.map((x) => x._id) },
+  });
+  const ownerBySeller = new Map(
+    sellerAssignments.map((a) => [String(a.sellerId), String(a.ownerEmployeeId)]),
+  );
+  const sellerOwners = await Employee.find(
+    { _id: { $in: [...ownerBySeller.values()] } },
+    { person: 1 },
+  );
+  for (const e of sellerOwners) ownerName.set(String(e._id), e.person);
+  const sellerTehsils = await Tehsil.find(
+    { _id: { $in: sellers.map((x) => x.tehsilId).filter(Boolean) } },
+    { district: 1 },
+  );
+  for (const t of sellerTehsils) districtOfTehsil.set(String(t._id), t.district);
+
   const items = page.map((counterparty) => {
     const buyer = buyerByCounterparty.get(String(counterparty._id));
-    const ownerId = buyer ? ownerByBuyer.get(String(buyer._id)) : undefined;
+    const seller =
+      counterparty.kind === 'seller'
+        ? sellerByCounterparty.get(String(counterparty._id))
+        : undefined;
+    const ownerId = seller
+      ? ownerBySeller.get(String(seller._id))
+      : buyer
+        ? ownerByBuyer.get(String(buyer._id))
+        : undefined;
+    const tehsilId = seller?.tehsilId ?? buyer?.tehsilId;
     return {
       registrationId: (counterparty._id as Types.ObjectId).toString(),
       firm: counterparty.firm ?? undefined,
@@ -569,7 +671,7 @@ export async function listRegistrations(
       createdAt: counterparty.createdAt as Date,
       staffAssisted: counterparty.staffAssisted ?? false,
       assignedTo: ownerId ? (ownerName.get(ownerId) ?? null) : null,
-      district: buyer?.tehsilId ? (districtOfTehsil.get(String(buyer.tehsilId)) ?? null) : null,
+      district: tehsilId ? (districtOfTehsil.get(String(tehsilId)) ?? null) : null,
     };
   });
 
@@ -587,6 +689,16 @@ interface ApproveSellerInput {
   dispatchCutoffTime: string;
   trustTier?: 'New' | 'Verified' | 'Trusted' | 'Committed';
   seedReason?: string;
+  // Phase 4 — his own location (required if the registration has none) and
+  // who he is assigned to (required, DEC-062).
+  location?: {
+    address: string;
+    pincode?: string;
+    stateId: string;
+    districtId: string;
+    tehsilId: string;
+  };
+  assignedToEmployeeId: string;
 }
 
 const TRUST_TIER_ORDER = ['New', 'Verified', 'Trusted', 'Committed'];
@@ -595,7 +707,7 @@ const TRUST_TIER_ORDER = ['New', 'Verified', 'Trusted', 'Committed'];
 export async function approveSeller(
   registrationId: string,
   input: ApproveSellerInput,
-  actor: StaffActor,
+  actor: StaffActor & { permissions: string[] },
 ): Promise<void> {
   const tehsils = await Tehsil.find({ _id: { $in: input.tehsilIds } });
   if (tehsils.length !== input.tehsilIds.length) {
@@ -620,12 +732,24 @@ export async function approveSeller(
     });
   }
 
-  assertStaffAssistedOtpConfirmed(counterparty);
+  // DEC-056 — the OTP wait is off unless REQUIRE_REGISTRATION_OTP is on.
+  if (env.requireRegistrationOtp) assertStaffAssistedOtpConfirmed(counterparty);
 
   const seller = await Seller.findOne({ counterpartyId: counterparty._id });
   if (!seller) {
     throw new AppError({ code: 'NOT_FOUND', messageEn: 'Seller profile not found.' });
   }
+  // Phase 4 — a Purchase Leader for his team or the Queue, or Admin.
+  await assertCallerMayDecideSeller(seller._id as Types.ObjectId, actor);
+  await assertMayAssign('purchase', actor, input.assignedToEmployeeId);
+  if (!input.location && !seller.tehsilId) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: "Pick the seller's own location before approving him.",
+      field: 'location.tehsilId',
+    });
+  }
+  const place = input.location ? await assertLocationChain(input.location) : null;
 
   // BR-246 — monotonic: a seed can only ever move the tier forward, never back.
   if (input.trustTier) {
@@ -652,6 +776,30 @@ export async function approveSeller(
     );
 
     seller.dispatchCutoffTime = input.dispatchCutoffTime;
+    if (input.location && place) {
+      seller.tehsilId = place.tehsilId;
+      seller.address = input.location.address;
+      seller.pincode = input.location.pincode ?? null;
+      if (input.location.pincode) {
+        await recordPincodeIfUnknown(
+          { pincode: input.location.pincode, tehsilId: input.location.tehsilId },
+          actor,
+          session,
+        );
+      }
+    }
+    await SellerAssignment.findOneAndUpdate(
+      { sellerId: seller._id },
+      {
+        $set: {
+          ownerEmployeeId: input.assignedToEmployeeId,
+          assignedAt: new Date(),
+          assignedBy: actor.employeeId,
+          reason: 'Assigned at approval.',
+        },
+      },
+      { upsert: true, session },
+    );
     if (input.trustTier && input.trustTier !== seller.trustTier) {
       seller.trustTier = input.trustTier;
       seller.tierSeededBy = actor.employeeId as unknown as Types.ObjectId;
@@ -686,6 +834,30 @@ export async function approveSeller(
       session,
     );
   });
+}
+
+/**
+ * Phase 4 — approve or reject a seller registration: a Purchase Leader for a
+ * seller in his team or the Queue, or Admin (SELLER_APPROVE is checked on
+ * the route).
+ */
+export async function assertCallerMayDecideSeller(
+  sellerId: Types.ObjectId | string,
+  caller: StaffCaller,
+): Promise<void> {
+  const current = await SellerAssignment.findOne({ sellerId });
+  const covered = await callerCovers(
+    'purchase',
+    caller,
+    current ? String(current.ownerEmployeeId) : null,
+    { queueAllowed: true },
+  );
+  if (!covered) {
+    throw new AppError({
+      code: 'PERMISSION_DENIED',
+      messageEn: "Only the Purchase Leader of this seller's team, or Admin, can decide on him.",
+    });
+  }
 }
 
 /** API-015. */

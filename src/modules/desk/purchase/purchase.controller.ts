@@ -1,3 +1,4 @@
+import { listAssignable } from '../../../shared/team.js';
 import type { Request, Response } from 'express';
 import * as purchaseService from './purchase.service.js';
 import * as catalogService from '../../catalog/catalog.service.js';
@@ -265,4 +266,15 @@ export async function postDraftSku(req: Request, res: Response): Promise<void> {
   const input = draftSkuSchema.parse(req.body);
   const result = await catalogService.createSkuDraft(input, req.auth!.employeeId!);
   ok(res, req, result, 201);
+}
+
+export async function getAssignees(req: Request, res: Response): Promise<void> {
+  ok(
+    res,
+    req,
+    await listAssignable('purchase', {
+      employeeId: req.auth!.employeeId!,
+      permissions: req.auth!.permissions,
+    }),
+  );
 }

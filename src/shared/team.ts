@@ -5,71 +5,100 @@ import { PERMISSIONS } from '../config/permissions.js';
 import { AppError } from './errors.js';
 
 /**
- * Phase 3 — who is in whose team, and who may assign a buyer to whom
- * (DEC-059, DEC-062). Read from the database, never the access token, so a
- * team change applies at once. Phase 5's visibility rules build on the same
- * helpers.
+ * Phase 3–4 — who is in whose team, and who may assign a lead to whom
+ * (DEC-059, DEC-062), on both sides: buyers (Sales) and sellers (Purchase).
+ * Read from the database, never the access token, so a team change applies
+ * at once. Phase 5's visibility rules build on the same helpers.
  *
- * A Sales Leader's team is everyone whose `reportsToSalesLeaderId` is him,
- * plus himself.
+ * A leader's team is everyone whose reports-to for that side is him, plus
+ * himself. Every Sales Leader is also his own team's Purchase Executive, so
+ * he appears on the Purchase side through his PURCHASE_EXEC position.
  */
 export interface StaffCaller {
   employeeId: string;
   permissions: string[];
 }
 
+export type Side = 'sales' | 'purchase';
+
+const SIDE = {
+  sales: {
+    leader: 'SALES_LEADER',
+    exec: 'SALES_EXEC',
+    reportsTo: 'reportsToSalesLeaderId',
+    role: 'sales',
+    admin: PERMISSIONS.BUYER_ADMIN,
+    label: 'Sales',
+    lead: 'buyer',
+  },
+  purchase: {
+    leader: 'PURCHASE_LEADER',
+    exec: 'PURCHASE_EXEC',
+    reportsTo: 'reportsToPurchaseLeaderId',
+    role: 'purchase',
+    admin: PERMISSIONS.SELLER_ADMIN,
+    label: 'Purchase',
+    lead: 'seller',
+  },
+} as const;
+
 const id = (value: unknown): string => String(value);
 
-export async function salesTeamOf(leaderId: string): Promise<string[]> {
+export async function teamOf(side: Side, leaderId: string): Promise<string[]> {
   const members = await Employee.find(
-    { reportsToSalesLeaderId: leaderId, active: true },
+    { [SIDE[side].reportsTo]: leaderId, active: true },
     { _id: 1 },
   );
   return [...new Set([leaderId, ...members.map((m) => id(m._id))])];
 }
 
-export async function isSalesLeader(employeeId: string): Promise<boolean> {
+export async function isLeaderOf(side: Side, employeeId: string): Promise<boolean> {
   return Boolean(
-    await Employee.exists({ _id: employeeId, active: true, positions: 'SALES_LEADER' }),
+    await Employee.exists({ _id: employeeId, active: true, positions: SIDE[side].leader }),
   );
 }
 
-/** The Sales Leader of the team this person sits in (himself, for a leader). */
-export async function salesLeaderOf(employeeId: string): Promise<string | null> {
-  const employee = await Employee.findById(employeeId, { positions: 1, reportsToSalesLeaderId: 1 });
+/** The leader of the team this person sits in on that side (himself, for a leader). */
+export async function leaderOf(side: Side, employeeId: string): Promise<string | null> {
+  const employee = await Employee.findById(employeeId, {
+    positions: 1,
+    reportsToSalesLeaderId: 1,
+    reportsToPurchaseLeaderId: 1,
+  });
   if (!employee) return null;
-  if (employee.positions.includes('SALES_LEADER')) return employeeId;
-  return employee.reportsToSalesLeaderId ? id(employee.reportsToSalesLeaderId) : null;
+  if (employee.positions.includes(SIDE[side].leader)) return employeeId;
+  const reportsTo = employee[SIDE[side].reportsTo];
+  return reportsTo ? id(reportsTo) : null;
+}
+
+async function sideFilter(side: Side) {
+  const role = await Role.findOne({ key: SIDE[side].role }, { _id: 1 });
+  return {
+    active: true,
+    $or: [
+      { positions: { $in: [SIDE[side].exec, SIDE[side].leader] } },
+      ...(role ? [{ roleIds: role._id }] : []),
+    ],
+  };
 }
 
 /**
- * Someone a buyer can be assigned to: active and on the Sales side — a
- * Sales Executive or Sales Leader by position, or (for staff created before
- * positions existed) anyone holding the Sales role.
+ * Someone a lead can be assigned to: active and on that side — an executive
+ * or leader by position, or (for staff created before positions existed)
+ * anyone holding the side's role.
  */
-async function assertAssignableSalesPerson(employeeId: string, field: string) {
-  const employee = await Employee.findById(employeeId);
-  if (!employee || !employee.active) {
+async function assertAssignable(side: Side, employeeId: string, field: string) {
+  const employee = await Employee.findOne({ _id: employeeId, ...(await sideFilter(side)) });
+  if (!employee) {
+    const exists = await Employee.findById(employeeId, { person: 1, active: 1 });
     throw new AppError({
       code: 'VALIDATION_FAILED',
-      messageEn: 'Pick an active Sales person from the list.',
+      messageEn:
+        exists && exists.active
+          ? `${exists.person} is not on the ${SIDE[side].label} side — pick a ${SIDE[side].label} person.`
+          : `Pick an active ${SIDE[side].label} person from the list.`,
       field,
     });
-  }
-  const onSalesSide =
-    employee.positions.includes('SALES_EXEC') || employee.positions.includes('SALES_LEADER');
-  if (!onSalesSide) {
-    const salesRole = await Role.findOne({ key: 'sales' }, { _id: 1 });
-    const hasSalesRole = Boolean(
-      salesRole && employee.roleIds.some((r) => id(r) === id(salesRole._id)),
-    );
-    if (!hasSalesRole) {
-      throw new AppError({
-        code: 'VALIDATION_FAILED',
-        messageEn: `${employee.person} is not on the Sales side — pick a Sales person.`,
-        field,
-      });
-    }
   }
   return employee;
 }
@@ -77,20 +106,20 @@ async function assertAssignableSalesPerson(employeeId: string, field: string) {
 /**
  * The assign rule (prompt Phase 3, DEC-062): an executive may assign only to
  * himself (or leave the lead in the Queue); a leader to anyone in his team;
- * Admin to anyone active on the Sales side. `null` means the Queue.
+ * Admin to anyone active on that side. `null` means the Queue.
  */
-export async function assertMayAssignBuyer(
+export async function assertMayAssign(
+  side: Side,
   caller: StaffCaller,
   targetEmployeeId: string | null,
   field = 'assignedToEmployeeId',
 ): Promise<void> {
   if (!targetEmployeeId) return;
-  const target = await assertAssignableSalesPerson(targetEmployeeId, field);
-  if (caller.permissions.includes(PERMISSIONS.BUYER_ADMIN)) return;
+  const target = await assertAssignable(side, targetEmployeeId, field);
+  if (caller.permissions.includes(SIDE[side].admin)) return;
   if (targetEmployeeId === caller.employeeId) return;
-  if (await isSalesLeader(caller.employeeId)) {
-    const team = await salesTeamOf(caller.employeeId);
-    if (team.includes(targetEmployeeId)) return;
+  if (await isLeaderOf(side, caller.employeeId)) {
+    if ((await teamOf(side, caller.employeeId)).includes(targetEmployeeId)) return;
     throw new AppError({
       code: 'VALIDATION_FAILED',
       messageEn: `${target.person} is not in your team.`,
@@ -99,15 +128,15 @@ export async function assertMayAssignBuyer(
   }
   throw new AppError({
     code: 'VALIDATION_FAILED',
-    messageEn: 'You can assign a buyer only to yourself, or leave him in the Queue.',
+    messageEn: `You can assign a ${SIDE[side].lead} only to yourself, or leave him in the Queue.`,
     field,
   });
 }
 
-/** Who a new lead defaults to: the person raising it, if he is on the Sales side. */
-export async function defaultAssigneeFor(employeeId: string): Promise<string | null> {
+/** Who a new lead defaults to: the person raising it, if he is on that side. */
+export async function defaultAssignee(side: Side, employeeId: string): Promise<string | null> {
   try {
-    await assertAssignableSalesPerson(employeeId, 'assignedToEmployeeId');
+    await assertAssignable(side, employeeId, 'assignedToEmployeeId');
     return employeeId;
   } catch {
     return null;
@@ -115,48 +144,41 @@ export async function defaultAssigneeFor(employeeId: string): Promise<string | n
 }
 
 /**
- * Whether this caller may act on a buyer assigned to `ownerId` (null =
- * Queue) as an approver or editor: Admin anywhere; a leader for his team and
- * the Queue; anyone else only for his own.
+ * Whether this caller may act on a lead assigned to `ownerId` (null =
+ * Queue) as an approver or editor: Admin anywhere; a leader for his team
+ * (and the Queue, where allowed); anyone else only for his own.
  */
-export async function callerCoversBuyer(
+export async function callerCovers(
+  side: Side,
   caller: StaffCaller,
   ownerId: string | null,
   options: { queueAllowed: boolean },
 ): Promise<boolean> {
-  if (caller.permissions.includes(PERMISSIONS.BUYER_ADMIN)) return true;
+  if (caller.permissions.includes(SIDE[side].admin)) return true;
   if (ownerId === caller.employeeId) return true;
-  if (await isSalesLeader(caller.employeeId)) {
+  if (await isLeaderOf(side, caller.employeeId)) {
     if (!ownerId) return options.queueAllowed;
-    return (await salesTeamOf(caller.employeeId)).includes(ownerId);
+    return (await teamOf(side, caller.employeeId)).includes(ownerId);
   }
   return false;
 }
 
 /**
- * Phase 3 — who this caller may assign a buyer to, for the "Assigned to"
- * picker: himself as an executive; his team as a Sales Leader; every active
- * Sales person for Admin. Mirrors `assertMayAssignBuyer`.
+ * For the "Assigned to" picker: himself as an executive; his team as a
+ * leader; everyone active on that side for Admin. Mirrors `assertMayAssign`.
  */
-export async function listAssignableSalesPeople(
+export async function listAssignable(
+  side: Side,
   caller: StaffCaller,
 ): Promise<Array<{ employeeId: string; person: string; isSelf: boolean }>> {
-  const salesRole = await Role.findOne({ key: 'sales' }, { _id: 1 });
-  const onSalesSide = {
-    active: true,
-    $or: [
-      { positions: { $in: ['SALES_EXEC', 'SALES_LEADER'] } },
-      ...(salesRole ? [{ roleIds: salesRole._id }] : []),
-    ],
-  };
   let ids: string[] | null = null;
-  if (!caller.permissions.includes(PERMISSIONS.BUYER_ADMIN)) {
-    ids = (await isSalesLeader(caller.employeeId))
-      ? await salesTeamOf(caller.employeeId)
+  if (!caller.permissions.includes(SIDE[side].admin)) {
+    ids = (await isLeaderOf(side, caller.employeeId))
+      ? await teamOf(side, caller.employeeId)
       : [caller.employeeId];
   }
   const people = await Employee.find(
-    { ...onSalesSide, ...(ids ? { _id: { $in: ids } } : {}) },
+    { ...(await sideFilter(side)), ...(ids ? { _id: { $in: ids } } : {}) },
     { person: 1 },
   ).sort({ person: 1 });
   return people.map((p) => ({
@@ -165,5 +187,23 @@ export async function listAssignableSalesPeople(
     isSelf: id(p._id) === caller.employeeId,
   }));
 }
+
+// --- Sales-side names used since Phase 3 ------------------------------------
+
+export const salesTeamOf = (leaderId: string) => teamOf('sales', leaderId);
+export const isSalesLeader = (employeeId: string) => isLeaderOf('sales', employeeId);
+export const salesLeaderOf = (employeeId: string) => leaderOf('sales', employeeId);
+export const assertMayAssignBuyer = (
+  caller: StaffCaller,
+  target: string | null,
+  field = 'assignedToEmployeeId',
+) => assertMayAssign('sales', caller, target, field);
+export const defaultAssigneeFor = (employeeId: string) => defaultAssignee('sales', employeeId);
+export const callerCoversBuyer = (
+  caller: StaffCaller,
+  ownerId: string | null,
+  options: { queueAllowed: boolean },
+) => callerCovers('sales', caller, ownerId, options);
+export const listAssignableSalesPeople = (caller: StaffCaller) => listAssignable('sales', caller);
 
 export type ObjectIdLike = Types.ObjectId | string;

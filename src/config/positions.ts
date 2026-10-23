@@ -41,7 +41,7 @@ export const POSITION_ROLE: Record<Position, 'sales' | 'purchase'> = {
 // rights they introduce here (approve, assign within the team).
 export const POSITION_PERMISSIONS: Record<Position, PermissionKey[]> = {
   SALES_LEADER: [PERMISSIONS.LOCATION_MASTER_WRITE, PERMISSIONS.BUYER_APPROVE],
-  PURCHASE_LEADER: [PERMISSIONS.LOCATION_MASTER_WRITE],
+  PURCHASE_LEADER: [PERMISSIONS.LOCATION_MASTER_WRITE, PERMISSIONS.SELLER_APPROVE],
   SALES_EXEC: [],
   PURCHASE_EXEC: [],
 };

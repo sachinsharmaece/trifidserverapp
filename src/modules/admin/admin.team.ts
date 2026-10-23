@@ -16,6 +16,7 @@ import { Lane } from '../../models/Lane.js';
 import { LaneAllocation } from '../../models/LaneAllocation.js';
 import { AuthSession } from '../../models/AuthSession.js';
 import { BookAssignment } from '../../models/BookAssignment.js';
+import { SellerAssignment } from '../../models/SellerAssignment.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { assertValidObjectId } from '../../shared/objectId.js';
@@ -646,18 +647,21 @@ export interface DeactivationImpactDto {
 
 async function impactOf(employee: HydratedDocument<EmployeeDocument>) {
   const employeeId = employee._id as Types.ObjectId;
-  const [buyersOwned, lanes, salesReports, purchaseReports, servedBy] = await Promise.all([
-    BookAssignment.countDocuments({ ownerEmployeeId: employeeId }),
-    LaneAllocation.find({ employeeId }),
-    Employee.find({ reportsToSalesLeaderId: employeeId, _id: { $ne: employeeId } }, { person: 1 }),
-    Employee.find(
-      { reportsToPurchaseLeaderId: employeeId, _id: { $ne: employeeId } },
-      { person: 1 },
-    ),
-    Employee.countDocuments({ worksForTeamLeaderIds: employeeId }),
-  ]);
-  // Phase 4 adds seller ownership; until then nobody owns a seller.
-  const sellersOwned = 0;
+  const [buyersOwned, sellersOwned, lanes, salesReports, purchaseReports, servedBy] =
+    await Promise.all([
+      BookAssignment.countDocuments({ ownerEmployeeId: employeeId }),
+      SellerAssignment.countDocuments({ ownerEmployeeId: employeeId }),
+      LaneAllocation.find({ employeeId }),
+      Employee.find(
+        { reportsToSalesLeaderId: employeeId, _id: { $ne: employeeId } },
+        { person: 1 },
+      ),
+      Employee.find(
+        { reportsToPurchaseLeaderId: employeeId, _id: { $ne: employeeId } },
+        { person: 1 },
+      ),
+      Employee.countDocuments({ worksForTeamLeaderIds: employeeId }),
+    ]);
   const directReports = [
     ...salesReports.map((r) => ({
       employeeId: id(r._id),
@@ -777,6 +781,19 @@ export async function deactivateEmployee(
         'His Purchase team needs another Purchase Leader to report to.',
       );
     }
+    if (impact.sellersOwned > 0) {
+      const purchaseRole = await Role.findOne({ key: 'purchase' }, { _id: 1 });
+      const onPurchaseSide =
+        target.positions.includes('PURCHASE_EXEC') ||
+        target.positions.includes('PURCHASE_LEADER') ||
+        Boolean(purchaseRole && target.roleIds.some((r) => id(r) === id(purchaseRole._id)));
+      if (!onPurchaseSide) {
+        throw fieldError(
+          'reassignToEmployeeId',
+          'He has sellers assigned to him — hand them to someone on the Purchase side.',
+        );
+      }
+    }
     if (impact.teamMembersServed > 0 && !target.positions.includes('SALES_LEADER')) {
       throw fieldError(
         'reassignToEmployeeId',
@@ -790,6 +807,18 @@ export async function deactivateEmployee(
   await withTransaction(async (session: ClientSession) => {
     if (to) {
       await BookAssignment.updateMany(
+        { ownerEmployeeId: from },
+        {
+          $set: {
+            ownerEmployeeId: to,
+            assignedAt: new Date(),
+            assignedBy: actor.employeeId,
+            reason: `Reassigned from ${employee.person} on deactivation.`,
+          },
+        },
+        { session },
+      );
+      await SellerAssignment.updateMany(
         { ownerEmployeeId: from },
         {
           $set: {
@@ -849,6 +878,7 @@ export async function deactivateEmployee(
           active: false,
           reassignedTo: to ? id(to) : null,
           buyers: impact.buyersOwned,
+          sellers: impact.sellersOwned,
           lanes: impact.laneKeys,
           reports: impact.directReports.map((r) => r.employeeId),
         },

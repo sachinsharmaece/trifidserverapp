@@ -3,6 +3,8 @@ import { Counterparty } from '../../models/Counterparty.js';
 import { AppError } from '../../shared/errors.js';
 import * as onboardingService from './onboarding.service.js';
 import * as buyers from './buyer.registration.js';
+import * as sellers from './seller.registration.js';
+import { Seller } from '../../models/Seller.js';
 import { PERMISSIONS } from '../../config/permissions.js';
 import { Buyer } from '../../models/Buyer.js';
 import { approveBuyerSchema, approveSellerSchema } from './onboarding.validation.js';
@@ -73,12 +75,10 @@ export async function postStaffRegisterBuyer(req: Request, res: Response): Promi
 }
 
 export async function postStaffRegisterSeller(req: Request, res: Response): Promise<void> {
-  const { callNote, ...input } = req.body as z.infer<typeof staffRegisterSellerSchema>;
-  const result = await onboardingService.registerSeller(input, {
-    employeeId: req.auth!.employeeId!,
-    callNote,
-    correlationId: req.correlationId,
-  });
+  const result = await sellers.registerSellerByStaff(
+    req.body as z.infer<typeof staffRegisterSellerSchema>,
+    callerOf(req),
+  );
   ok(res, req, result, 201);
 }
 
@@ -117,12 +117,11 @@ export async function postApprove(req: Request, res: Response): Promise<void> {
     throw new AppError({ code: 'NOT_FOUND', messageEn: 'Registration not found.' });
   }
 
-  const actor = { employeeId: req.auth!.employeeId!, correlationId: req.correlationId };
   assertMayDecide(req, counterparty.kind);
 
   if (counterparty.kind === 'seller') {
     const input = approveSellerSchema.parse(req.body);
-    await onboardingService.approveSeller(registrationId, input, actor);
+    await onboardingService.approveSeller(registrationId, input, callerOf(req));
   } else {
     const input = approveBuyerSchema.parse(req.body);
     await buyers.approveBuyer(registrationId, input, callerOf(req));
@@ -138,7 +137,10 @@ export async function postReject(req: Request, res: Response): Promise<void> {
     throw new AppError({ code: 'NOT_FOUND', messageEn: 'Registration not found.' });
   }
   assertMayDecide(req, counterparty.kind);
-  if (counterparty.kind !== 'seller') {
+  if (counterparty.kind === 'seller') {
+    const seller = await Seller.findOne({ counterpartyId: counterparty._id }, { _id: 1 });
+    if (seller) await onboardingService.assertCallerMayDecideSeller(seller._id, callerOf(req));
+  } else {
     const buyer = await Buyer.findOne({ counterpartyId: counterparty._id }, { _id: 1 });
     if (buyer) await buyers.assertCallerMayDecideBuyer(buyer._id, callerOf(req));
   }
@@ -195,6 +197,35 @@ export async function putBuyerProfile(req: Request, res: Response): Promise<void
     await buyers.updateBuyerProfile(
       req.params.buyerId as string,
       req.body as buyers.UpdateBuyerInput,
+      callerOf(req),
+    ),
+  );
+}
+
+/** Phase 4 — the seller profile behind a registration (approval prefill). */
+export async function getRegistrationSellerProfile(req: Request, res: Response): Promise<void> {
+  ok(
+    res,
+    req,
+    await sellers.getSellerProfile({ counterpartyId: req.params.id as string }, callerOf(req)),
+  );
+}
+
+export async function getSellerProfile(req: Request, res: Response): Promise<void> {
+  ok(
+    res,
+    req,
+    await sellers.getSellerProfile({ sellerId: req.params.sellerId as string }, callerOf(req)),
+  );
+}
+
+export async function putSellerProfile(req: Request, res: Response): Promise<void> {
+  ok(
+    res,
+    req,
+    await sellers.updateSellerProfile(
+      req.params.sellerId as string,
+      req.body as sellers.UpdateSellerInput,
       callerOf(req),
     ),
   );

@@ -250,9 +250,32 @@ export const updateBuyerSchema = z
   .strict()
   .superRefine(refineGstinOrPan);
 
+// Phase 4 — the staff "Add a seller" form: everything the seller app asks,
+// plus his location (mandatory), Assigned to, Marg party code, and the
+// proprietor-agreed tick that replaces the OTP wait (DEC-056). GSTIN stays
+// mandatory for a seller — TriFid buys on a GST invoice.
 export const staffRegisterSellerSchema = registerSellerSchema.extend({
   callNote: z.string().min(1, 'A call note is required for a staff-assisted registration.'),
+  location: locationSchema,
+  margPartyCode: optionalMargCode,
+  assignedToEmployeeId: objectId('the Purchase person').nullable().optional(),
+  proprietorAgreed: z.literal(true, {
+    message: 'Tick that the proprietor agreed to register this number.',
+  }),
 });
+
+/** Phase 4 — Edit on the seller profile. GSTIN stays mandatory; only Admin changes it. */
+export const updateSellerSchema = z
+  .object({
+    firm: z.string().trim().min(1, 'Enter the firm name.'),
+    ownerName: z.string().trim().min(1, 'Enter the proprietor name.'),
+    contactMobile: contactMobileSchema,
+    gstin: gstinSchema,
+    licenceNo: licenceNoSchema,
+    location: locationSchema,
+    margPartyCode: optionalMargCode,
+  })
+  .strict();
 
 export const listRegistrationsQuerySchema = z
   .object({
@@ -281,6 +304,11 @@ export const approveSellerSchema = z
       .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Enter a cut-off time as HH:MM, 24-hour.'),
     trustTier: z.enum(['New', 'Verified', 'Trusted', 'Committed']).optional(),
     seedReason: z.string().optional(),
+    // Phase 4 — the approver may change his location (required when the
+    // registration came without one, e.g. from the seller app) and must name
+    // who he is assigned to (DEC-062).
+    location: locationSchema.optional(),
+    assignedToEmployeeId: objectId('the Purchase person this seller is assigned to'),
   })
   .strict();
 

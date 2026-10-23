@@ -9,7 +9,7 @@ import { Tehsil } from '../src/models/Tehsil.js';
 import { Counterparty } from '../src/models/Counterparty.js';
 import { Buyer } from '../src/models/Buyer.js';
 import { loginStaff, mfaSecretFor, randomEmail, randomGstin, randomMobile } from './helpers.js';
-import { locationFor, salesLeader } from './buyerHelpers.js';
+import { locationFor, purchaseLeader, salesLeader } from './buyerHelpers.js';
 
 const app = createApp();
 
@@ -170,14 +170,31 @@ describe('Registration approval gates (BR-081, BR-083)', () => {
     expect(registerRes.status).toBe(201);
     const registrationId = registerRes.body.data.registrationId;
 
+    // Phase 4 — sellers are decided by a Purchase Leader; a plain Purchase
+    // user is refused before the body is even read.
     const token = await staffToken('purchase');
-    const approveRes = await request(app)
+    const byExec = await request(app)
       .post(`/api/v1/staff/registrations/${registrationId}/approve`)
       .set('Idempotency-Key', `decide-${Date.now()}-${Math.random()}`)
       .set('Authorization', `Bearer ${token}`)
       .send({ tehsilIds: [], dispatchCutoffTime: '16:00' });
+    expect(byExec.status).toBe(403);
+
+    const leader = await purchaseLeader(app);
+    const approveRes = await request(app)
+      .post(`/api/v1/staff/registrations/${registrationId}/approve`)
+      .set('Idempotency-Key', `decide-${Date.now()}-${Math.random()}`)
+      .set('Authorization', `Bearer ${leader.token}`)
+      .send({
+        tehsilIds: [],
+        dispatchCutoffTime: '16:00',
+        assignedToEmployeeId: leader.employeeId,
+      });
 
     expect(approveRes.status).toBe(400);
+    expect(approveRes.body.error.fieldErrors).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: 'tehsilIds' })]),
+    );
   });
 
   // Regression — B-50: the approval panel showed neither a firm name nor a

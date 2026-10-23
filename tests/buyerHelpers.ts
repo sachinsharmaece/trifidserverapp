@@ -88,3 +88,60 @@ export async function approveBuyerRegistration(
       assignedToEmployeeId: leader.employeeId,
     });
 }
+
+let purchaseApprover: Promise<{ token: string; employeeId: string }> | null = null;
+
+/**
+ * Phase 4 — one Purchase Leader per test file. SELLER_APPROVE comes with
+ * the position; he reports to himself as his own Purchase Executive.
+ */
+export function purchaseLeader(app: Express): Promise<{ token: string; employeeId: string }> {
+  purchaseApprover ??= (async () => {
+    const roles = await Role.find({ key: 'purchase' });
+    const password = 'CorrectHorse123';
+    const email = randomEmail();
+    const leader = await Employee.create({
+      person: 'Test Purchase Leader',
+      email,
+      mobile: randomMobile(),
+      passwordHash: await bcrypt.hash(password, 10),
+      roleIds: roles.map((r) => r._id),
+      positions: ['PURCHASE_LEADER', 'PURCHASE_EXEC'],
+      active: true,
+    });
+    leader.reportsToPurchaseLeaderId = leader._id as never;
+    await leader.save();
+    return { token: await loginStaff(app, email, password), employeeId: String(leader._id) };
+  })();
+  return purchaseApprover;
+}
+
+/**
+ * Approves a pending seller registration as the file's Purchase Leader,
+ * assigned to him, with his own location at the first area tehsil (a seller
+ * from the app comes without one).
+ */
+export async function approveSellerRegistration(
+  app: Express,
+  registrationId: string,
+  opts: {
+    tehsilIds: string[];
+    dispatchCutoffTime?: string;
+    trustTier?: string;
+    seedReason?: string;
+  },
+): Promise<request.Response> {
+  const leader = await purchaseLeader(app);
+  return request(app)
+    .post(`/api/v1/staff/registrations/${registrationId}/approve`)
+    .set('Authorization', `Bearer ${leader.token}`)
+    .set('Idempotency-Key', `approve-${registrationId}-${Date.now()}-${Math.random()}`)
+    .send({
+      tehsilIds: opts.tehsilIds,
+      dispatchCutoffTime: opts.dispatchCutoffTime ?? '16:00',
+      ...(opts.trustTier ? { trustTier: opts.trustTier } : {}),
+      ...(opts.seedReason ? { seedReason: opts.seedReason } : {}),
+      location: opts.tehsilIds[0] ? await locationFor(opts.tehsilIds[0]) : undefined,
+      assignedToEmployeeId: leader.employeeId,
+    });
+}

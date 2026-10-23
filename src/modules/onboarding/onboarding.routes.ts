@@ -14,6 +14,7 @@ import {
   staffRegisterBuyerSchema,
   staffRegisterSellerSchema,
   updateBuyerSchema,
+  updateSellerSchema,
 } from './onboarding.validation.js';
 
 export const onboardingRouter = Router();
@@ -46,6 +47,7 @@ onboardingRouter.post(
   '/staff/registrations/seller',
   authenticate,
   requirePermission(PERMISSIONS.ONBOARDING_STAFF_ASSIST_SELLER),
+  requireIdempotencyKey(),
   validateBody(staffRegisterSellerSchema),
   controller.postStaffRegisterSeller,
 );
@@ -101,6 +103,28 @@ onboardingRouter.put(
   requireIdempotencyKey(),
   validateBody(updateBuyerSchema),
   controller.putBuyerProfile,
+);
+
+// Phase 4 — the seller profile, the Purchase-side twin of the buyer profile.
+onboardingRouter.get(
+  '/staff/registrations/:id/seller-profile',
+  authenticate,
+  requireAnyPermission(PERMISSIONS.SELLER_APPROVE, PERMISSIONS.PROXY_SELLER_CALL),
+  controller.getRegistrationSellerProfile,
+);
+onboardingRouter.get(
+  '/staff/sellers/:sellerId/profile',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_SELLER_CALL),
+  controller.getSellerProfile,
+);
+onboardingRouter.put(
+  '/staff/sellers/:sellerId/profile',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_SELLER_CALL),
+  requireIdempotencyKey(),
+  validateBody(updateSellerSchema),
+  controller.putSellerProfile,
 );
 
 // New — not in the original API_CONTRACT.md, added for BR-017 (see

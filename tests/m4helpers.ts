@@ -9,7 +9,11 @@ import { Product } from '../src/models/Product.js';
 import { Sku } from '../src/models/Sku.js';
 import { MarginMatrix } from '../src/models/MarginMatrix.js';
 import { loginStaff, mfaSecretFor, randomEmail, randomGstin, randomMobile } from './helpers.js';
-import { approveBuyerRegistration, categoryFromPosition } from './buyerHelpers.js';
+import {
+  approveBuyerRegistration,
+  approveSellerRegistration,
+  categoryFromPosition,
+} from './buyerHelpers.js';
 
 export async function staffToken(
   app: Express,
@@ -124,14 +128,11 @@ export async function createApprovedSeller(app: Express, purchaseToken: string):
     state: 'MP',
   });
 
-  const approveRes = await request(app)
-    .post(`/api/v1/staff/registrations/${registrationId}/approve`)
-    .set('Idempotency-Key', `decide-${Date.now()}-${Math.random()}`)
-    .set('Authorization', `Bearer ${purchaseToken}`)
-    .send({
-      tehsilIds: [(tehsil._id as unknown as string).toString()],
-      dispatchCutoffTime: '16:00',
-    });
+  // Phase 4 — approval is a Purchase Leader's (buyerHelpers).
+  void purchaseToken;
+  const approveRes = await approveSellerRegistration(app, registrationId, {
+    tehsilIds: [(tehsil._id as unknown as string).toString()],
+  });
   if (approveRes.status !== 200) {
     throw new Error(`Seller approval failed: ${JSON.stringify(approveRes.body)}`);
   }

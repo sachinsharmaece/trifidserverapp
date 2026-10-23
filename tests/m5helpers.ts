@@ -2,7 +2,11 @@ import request from 'supertest';
 import type { Express } from 'express';
 import { Tehsil } from '../src/models/Tehsil.js';
 import { randomGstin, randomMobile } from './helpers.js';
-import { approveBuyerRegistration, categoryFromPosition } from './buyerHelpers.js';
+import {
+  approveBuyerRegistration,
+  approveSellerRegistration,
+  categoryFromPosition,
+} from './buyerHelpers.js';
 
 function bankDetail() {
   return {
@@ -93,11 +97,9 @@ export async function createApprovedSellerAtTehsils(
     });
   const registrationId = registerRes.body.data.registrationId as string;
 
-  const approveRes = await request(app)
-    .post(`/api/v1/staff/registrations/${registrationId}/approve`)
-    .set('Idempotency-Key', `decide-${Date.now()}-${Math.random()}`)
-    .set('Authorization', `Bearer ${purchaseToken}`)
-    .send({ tehsilIds, dispatchCutoffTime: '16:00' });
+  // Phase 4 — approval is a Purchase Leader's (buyerHelpers).
+  void purchaseToken;
+  const approveRes = await approveSellerRegistration(app, registrationId, { tehsilIds });
   if (approveRes.status !== 200) {
     throw new Error(`Seller approval failed: ${JSON.stringify(approveRes.body)}`);
   }

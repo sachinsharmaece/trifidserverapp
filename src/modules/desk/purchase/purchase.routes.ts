@@ -299,6 +299,13 @@ purchaseRouter.get(
 );
 // Phase 3 — the company list is also the buyer form's "Companies he deals
 // in" picker, so Sales reads it too (names only; nothing commercial).
+// Phase 4 — the seller "Assigned to" picker: who this caller may assign a seller to.
+purchaseRouter.get(
+  '/staff/purchase/assignees',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_SELLER_CALL),
+  controller.getAssignees,
+);
 purchaseRouter.get(
   '/staff/purchase/masters/manufacturers',
   authenticate,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
+import { env } from '../src/config/env.js';
 import { Ask } from '../src/models/Ask.js';
 import { ListingLine } from '../src/models/ListingLine.js';
 import { Po } from '../src/models/Po.js';
@@ -17,7 +18,7 @@ import {
   seedMarginCell,
 } from './m4helpers.js';
 import { randomMobile, randomGstin } from './helpers.js';
-import { locationFor, salesLeader } from './buyerHelpers.js';
+import { approveSellerRegistration, locationFor, salesLeader } from './buyerHelpers.js';
 import { findWallViolations, type Identity } from './wallSweepRules.js';
 
 const app = createApp();
@@ -58,12 +59,19 @@ async function identityOf(kind: 'buyer' | 'seller', docId: string): Promise<Iden
 describe('Staff-assisted registration — the OTP gate (client decision A)', () => {
   // Buyer is carved out of this gate temporarily — see the dedicated test
   // below and onboarding.service.ts's approveBuyer (TEMP, 2026-09-28).
-  it('seller cannot be approved without a completed OTP confirmation, even with every other field correct', async () => {
+  // Phase 4 (DEC-056) — a staff-added seller needs no OTP: the proprietor-
+  // agreed tick is the record. The old gate stays behind
+  // REQUIRE_REGISTRATION_OTP, and is exercised with it switched on.
+  async function addSellerOnACall(mobile: string) {
     const purchase = await staffToken(app, 'purchase');
-    const mobile = randomMobile();
-
-    const registerRes = await request(app)
+    const home = await Tehsil.create({
+      name: `Seller Home ${Date.now()}-${Math.random()}`,
+      district: 'D',
+      state: 'MP',
+    });
+    return request(app)
       .post('/api/v1/staff/registrations/seller')
+      .set('Idempotency-Key', `seller-${Date.now()}-${Math.random()}`)
       .set('Authorization', `Bearer ${purchase.token}`)
       .send({
         mobile,
@@ -88,55 +96,65 @@ describe('Staff-assisted registration — the OTP gate (client decision A)', () 
         bankDetail: bankDetail(),
         consent: consent(),
         callNote: 'Called in asking to register, quoted GSTIN over the phone.',
+        location: await locationFor(String(home._id)),
+        proprietorAgreed: true,
+        // Into the Queue, so the file's Purchase Leader may decide on him.
+        assignedToEmployeeId: null,
       });
+  }
+
+  it('seller: saved with the proprietor-agreed tick, approvable at once with no OTP', async () => {
+    const registerRes = await addSellerOnACall(randomMobile());
     expect(registerRes.status).toBe(201);
     const { registrationId } = registerRes.body.data as { registrationId: string };
-
     const counterparty = await Counterparty.findById(registrationId);
     expect(counterparty!.staffAssisted).toBe(true);
-    expect(counterparty!.staffAssistedCallNote).toContain('quoted GSTIN');
+    expect(counterparty!.proprietorAgreedAt).toBeTruthy();
+    expect(counterparty!.staffAssistedOtpVerifiedAt).toBeFalsy();
 
-    const tehsil = await Tehsil.create({
-      name: `Tehsil ${Date.now()}-${Math.random()}`,
-      district: 'D',
-      state: 'MP',
+    const area = await Tehsil.create({ name: `Area ${Date.now()}`, district: 'D', state: 'MP' });
+    const res = await approveSellerRegistration(app, registrationId, {
+      tehsilIds: [String(area._id)],
+      dispatchCutoffTime: '18:00',
     });
+    expect(res.status).toBe(200);
+  });
 
-    // Every field correct — area and dispatch cutoff set — but no OTP yet.
-    const approveBeforeOtp = await request(app)
-      .post(`/api/v1/staff/registrations/${registrationId}/approve`)
-      .set('Idempotency-Key', `decide-${Date.now()}-${Math.random()}`)
-      .set('Authorization', `Bearer ${purchase.token}`)
-      .send({
-        tehsilIds: [(tehsil._id as unknown as string).toString()],
-        dispatchCutoffTime: '18:00',
+  it('seller: with REQUIRE_REGISTRATION_OTP on, the old gate holds until his first OTP sign-in', async () => {
+    const before = env.requireRegistrationOtp;
+    env.requireRegistrationOtp = true;
+    try {
+      const mobile = randomMobile();
+      const registerRes = await addSellerOnACall(mobile);
+      const { registrationId } = registerRes.body.data as { registrationId: string };
+      const area = await Tehsil.create({
+        name: `Area ${Date.now()}-b`,
+        district: 'D',
+        state: 'MP',
       });
-    expect(approveBeforeOtp.status).toBe(409);
-    expect(approveBeforeOtp.body.error.code).toBe('OTP_CONFIRMATION_REQUIRED');
-
-    // The same, unmodified OTP mechanism confirms the real phone number.
-    const otpRequestRes = await request(app).post('/api/v1/auth/otp/request').send({ mobile });
-    const { requestId, devCode } = otpRequestRes.body.data as {
-      requestId: string;
-      devCode: string;
-    };
-    const otpVerifyRes = await request(app)
-      .post('/api/v1/auth/otp/verify')
-      .send({ requestId, code: devCode, deviceFingerprint: 'device-registration-confirm' });
-    expect(otpVerifyRes.status).toBe(200);
-
-    const confirmed = await Counterparty.findById(registrationId);
-    expect(confirmed!.staffAssistedOtpVerifiedAt).toBeTruthy();
-
-    const approveAfterOtp = await request(app)
-      .post(`/api/v1/staff/registrations/${registrationId}/approve`)
-      .set('Idempotency-Key', `decide-${Date.now()}-${Math.random()}`)
-      .set('Authorization', `Bearer ${purchase.token}`)
-      .send({
-        tehsilIds: [(tehsil._id as unknown as string).toString()],
-        dispatchCutoffTime: '18:00',
+      const blocked = await approveSellerRegistration(app, registrationId, {
+        tehsilIds: [String(area._id)],
       });
-    expect(approveAfterOtp.status).toBe(200);
+      expect(blocked.status).toBe(409);
+      expect(blocked.body.error.code).toBe('OTP_CONFIRMATION_REQUIRED');
+
+      const otpRequestRes = await request(app).post('/api/v1/auth/otp/request').send({ mobile });
+      const { requestId, devCode } = otpRequestRes.body.data as {
+        requestId: string;
+        devCode: string;
+      };
+      const otpVerifyRes = await request(app)
+        .post('/api/v1/auth/otp/verify')
+        .send({ requestId, code: devCode, deviceFingerprint: 'device-registration-confirm' });
+      expect(otpVerifyRes.status).toBe(200);
+
+      const approved = await approveSellerRegistration(app, registrationId, {
+        tehsilIds: [String(area._id)],
+      });
+      expect(approved.status).toBe(200);
+    } finally {
+      env.requireRegistrationOtp = before;
+    }
   });
 
   // Phase 3 (DEC-056) — no OTP on a staff-assisted buyer: the staff member
