@@ -40,7 +40,7 @@ export const POSITION_ROLE: Record<Position, 'sales' | 'purchase'> = {
 // Leaders add the location masters (BR-350). Later phases add the leader
 // rights they introduce here (approve, assign within the team).
 export const POSITION_PERMISSIONS: Record<Position, PermissionKey[]> = {
-  SALES_LEADER: [PERMISSIONS.LOCATION_MASTER_WRITE],
+  SALES_LEADER: [PERMISSIONS.LOCATION_MASTER_WRITE, PERMISSIONS.BUYER_APPROVE],
   PURCHASE_LEADER: [PERMISSIONS.LOCATION_MASTER_WRITE],
   SALES_EXEC: [],
   PURCHASE_EXEC: [],

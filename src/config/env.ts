@@ -58,6 +58,14 @@ export const env = {
   // either back to 'true' to restore it, no code changes needed. Unset/false
   // by default (off). See CHANGELOG.md's 2026-10-02 entry.
   enquiryFlowEnabled: process.env.ENQUIRY_FLOW_ENABLED === 'true',
+  // Phase 3 (DEC-056) — staff-assisted registrations no longer wait on the
+  // buyer's/seller's first OTP sign-in before they can be approved. The OTP
+  // gate is kept, off; 'true' restores it.
+  requireRegistrationOtp: process.env.REQUIRE_REGISTRATION_OTP === 'true',
+  // Phase 3 (DEC-062) — "Assigned to" is set at approval, so a Queue buyer's
+  // first order no longer hands him to the least-busy Sales person (BR-276).
+  // 'true' restores the old automatic assignment.
+  firstOrderAutoAssign: process.env.FIRST_ORDER_AUTO_ASSIGN === 'true',
   chainStageTrackingEnabled: process.env.CHAIN_STAGE_TRACKING_ENABLED === 'true',
 
   staffPasswordMinLength: optionalNumber('STAFF_PASSWORD_MIN_LENGTH', 12),

@@ -72,6 +72,19 @@ function gstinFor(stateCode: string, pan: string): string {
   return `${first14}${computeGstinChecksum(first14)}`;
 }
 
+/** Dev seed only — what an approval sets, without the approval's leader/assignee rules. */
+async function activateDemoBuyer(
+  registrationId: string,
+  tehsilId: unknown,
+  category: 'Retailer' | 'Dealer' | 'Distributor' | 'Trader',
+): Promise<void> {
+  await Buyer.updateOne(
+    { counterpartyId: registrationId },
+    { $set: { tehsilId, category, classified: true } },
+  );
+  await Counterparty.updateOne({ _id: registrationId }, { $set: { status: 'active' } });
+}
+
 async function seed(): Promise<void> {
   await connectToDatabase(env.mongodbUri);
 
@@ -175,15 +188,9 @@ async function seed(): Promise<void> {
       },
       consent: { noticeVersion: 'v1', marketingOptIn: false },
     });
-    await onboardingService.approveBuyer(
-      registrationId,
-      {
-        tehsilId: (tehsil!._id as { toString(): string }).toString(),
-        tradePosition: 'dealer',
-        isTrader: false,
-      },
-      actor,
-    );
+    // Phase 3 — approval is now a Sales Leader's, with an assignee; this dev
+    // seed activates its demo buyers directly instead.
+    await activateDemoBuyer(registrationId, tehsil!._id, 'Dealer');
     buyerCounterparty = await Counterparty.findOne({ mobile: BUYER_MOBILE });
     console.log(`Buyer registered and approved: ${BUYER_MOBILE} (Dealer)`);
   } else {
@@ -324,15 +331,9 @@ async function seed(): Promise<void> {
       },
       consent: { noticeVersion: 'v1', marketingOptIn: false },
     });
-    await onboardingService.approveBuyer(
-      registrationId,
-      {
-        tehsilId: (tehsil!._id as { toString(): string }).toString(),
-        tradePosition: 'retailer',
-        isTrader: false,
-      },
-      actor,
-    );
+    // Phase 3 — approval is now a Sales Leader's, with an assignee; this dev
+    // seed activates its demo buyers directly instead.
+    await activateDemoBuyer(registrationId, tehsil!._id, 'Retailer');
     buyer2Counterparty = await Counterparty.findOne({ mobile: BUYER2_MOBILE });
     console.log(`Buyer registered and approved: ${BUYER2_MOBILE} (Retailer)`);
   } else {

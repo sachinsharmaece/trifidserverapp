@@ -119,6 +119,16 @@ export const PERMISSIONS = {
   // Admin only (Admin holds every permission; no other role is given it).
   // Every reveal is audited.
   EMPLOYEE_PII_REVEAL: 'employee:pii_reveal',
+  // Phase 3 — approving a registration is per side (fixes F1: both desks held
+  // the one onboarding:approve and the server never checked the kind).
+  // BUYER_APPROVE: Sales Leaders (by position, for their team or the Queue)
+  // and Admin. SELLER_APPROVE: the Purchase role for now; Phase 4 moves it
+  // to Purchase Leaders.
+  BUYER_APPROVE: 'onboarding:approve_buyer',
+  SELLER_APPROVE: 'onboarding:approve_seller',
+  // Phase 3 — Admin's whole-company rights over buyers: assign to anyone,
+  // edit any buyer, change GSTIN/PAN. Leaders act within their team.
+  BUYER_ADMIN: 'buyer:admin',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -155,6 +165,9 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.DISPUTE_RECOVERY_READ,
       // M8 — BR-275, Purchase is measured on leaks closed.
       PERMISSIONS.FUNNEL_READ,
+      // Phase 3 — interim: every Purchase user approves sellers until Phase 4
+      // narrows it to Purchase Leaders.
+      PERMISSIONS.SELLER_APPROVE,
       // Staff-assisted enquiries — Purchase proxies for a seller only.
       PERMISSIONS.ONBOARDING_STAFF_ASSIST_SELLER,
       PERMISSIONS.PROXY_SELLER_CALL,

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
-import { requirePermission } from '../../middleware/requirePermission.js';
+import { requireAnyPermission, requirePermission } from '../../middleware/requirePermission.js';
+import { requireIdempotencyKey } from '../../middleware/idempotency.js';
 import { validateBody, validateQuery } from '../../middleware/validate.js';
 import { PERMISSIONS } from '../../config/permissions.js';
 import * as controller from './onboarding.controller.js';
@@ -12,6 +13,7 @@ import {
   rejectRegistrationSchema,
   staffRegisterBuyerSchema,
   staffRegisterSellerSchema,
+  updateBuyerSchema,
 } from './onboarding.validation.js';
 
 export const onboardingRouter = Router();
@@ -36,6 +38,7 @@ onboardingRouter.post(
   '/staff/registrations/buyer',
   authenticate,
   requirePermission(PERMISSIONS.ONBOARDING_STAFF_ASSIST_BUYER),
+  requireIdempotencyKey(),
   validateBody(staffRegisterBuyerSchema),
   controller.postStaffRegisterBuyer,
 );
@@ -58,18 +61,46 @@ onboardingRouter.get(
   validateQuery(listRegistrationsQuerySchema),
   controller.getRegistrations,
 );
+// Phase 3 (F1) - each side decides its own: the controller checks
+// BUYER_APPROVE for a buyer, SELLER_APPROVE for a seller.
 onboardingRouter.post(
   '/staff/registrations/:id/approve',
   authenticate,
-  requirePermission(PERMISSIONS.ONBOARDING_APPROVE),
+  requireAnyPermission(PERMISSIONS.BUYER_APPROVE, PERMISSIONS.SELLER_APPROVE),
+  requireIdempotencyKey(),
   controller.postApprove,
 );
 onboardingRouter.post(
   '/staff/registrations/:id/reject',
   authenticate,
-  requirePermission(PERMISSIONS.ONBOARDING_APPROVE),
+  requireAnyPermission(PERMISSIONS.BUYER_APPROVE, PERMISSIONS.SELLER_APPROVE),
+  requireIdempotencyKey(),
   validateBody(rejectRegistrationSchema),
   controller.postReject,
+);
+
+// Phase 3 - the buyer profile: prefill for approval (by registration id) and
+// the profile's own read and Edit. Who may edit what is decided in the
+// service (buyer.registration.ts).
+onboardingRouter.get(
+  '/staff/registrations/:id/buyer-profile',
+  authenticate,
+  requireAnyPermission(PERMISSIONS.BUYER_APPROVE, PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getRegistrationBuyerProfile,
+);
+onboardingRouter.get(
+  '/staff/buyers/:buyerId/profile',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getBuyerProfile,
+);
+onboardingRouter.put(
+  '/staff/buyers/:buyerId/profile',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  requireIdempotencyKey(),
+  validateBody(updateBuyerSchema),
+  controller.putBuyerProfile,
 );
 
 // New — not in the original API_CONTRACT.md, added for BR-017 (see

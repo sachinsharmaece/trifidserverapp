@@ -11,9 +11,21 @@ import { Schema, model, type InferSchemaType } from 'mongoose';
 const counterpartySchema = new Schema(
   {
     gstin: { type: String, unique: true, sparse: true },
+    // Phase 3 (DEC-054) — the holder's PAN. With a GSTIN it is GSTIN
+    // characters 3–12; a buyer without a GSTIN is identified by it (unique
+    // among GSTIN-less buyers, checked in the service — a partial index
+    // cannot say "no GSTIN").
+    pan: { type: String, default: null },
     firm: { type: String },
+    // The proprietor (UI label "Proprietor name"; the field keeps its name).
     ownerName: { type: String },
-    mobile: { type: String, required: true, unique: true },
+    // The OTP login key. Phase 3 (DEC-055): unique, but may be empty — a
+    // second firm on a number another firm already logs in with gets no
+    // login of its own, only `contactMobile`.
+    mobile: { type: String, default: null },
+    // Phase 3 (DEC-055) — the number to call; may repeat across firms (one
+    // proprietor, several firms).
+    contactMobile: { type: String, default: null },
     licenceNo: { type: String },
     kind: { type: String, enum: ['buyer', 'seller', 'both'], required: true },
     status: {
@@ -46,10 +58,26 @@ const counterpartySchema = new Schema(
     staffAssistedByEmployeeId: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },
     staffAssistedCallNote: { type: String, default: null },
     staffAssistedOtpVerifiedAt: { type: Date, default: null },
+    // Phase 3 (DEC-056) — with no OTP on a staff registration, the staff
+    // member's tick that the proprietor agreed to register this number.
+    proprietorAgreedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );
 
+// Unique login mobile — partial, so firms with no login of their own (a
+// shared number) do not collide on null. Replaces the old non-partial
+// `mobile_1`; `npm run migrate:buyerIdentity` swaps it on an existing DB.
+counterpartySchema.index(
+  { mobile: 1 },
+  {
+    unique: true,
+    name: 'mobile_login_unique',
+    partialFilterExpression: { mobile: { $type: 'string' } },
+  },
+);
+counterpartySchema.index({ pan: 1 });
+counterpartySchema.index({ contactMobile: 1 });
 counterpartySchema.index({ status: 1 });
 counterpartySchema.index({ kind: 1, status: 1 });
 

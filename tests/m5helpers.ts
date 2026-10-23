@@ -2,6 +2,7 @@ import request from 'supertest';
 import type { Express } from 'express';
 import { Tehsil } from '../src/models/Tehsil.js';
 import { randomGstin, randomMobile } from './helpers.js';
+import { approveBuyerRegistration, categoryFromPosition } from './buyerHelpers.js';
 
 function bankDetail() {
   return {
@@ -44,10 +45,12 @@ export async function createApprovedBuyerAtTehsil(
     });
   const registrationId = registerRes.body.data.registrationId as string;
 
-  const approveRes = await request(app)
-    .post(`/api/v1/staff/registrations/${registrationId}/approve`)
-    .set('Authorization', `Bearer ${salesToken}`)
-    .send({ tehsilId, tradePosition, isTrader: false });
+  // Phase 3 — approval is a Sales Leader's (buyerHelpers).
+  void salesToken;
+  const approveRes = await approveBuyerRegistration(app, registrationId, {
+    tehsilId,
+    category: categoryFromPosition(tradePosition),
+  });
   if (approveRes.status !== 200) {
     throw new Error(`Buyer approval failed: ${JSON.stringify(approveRes.body)}`);
   }
@@ -92,6 +95,7 @@ export async function createApprovedSellerAtTehsils(
 
   const approveRes = await request(app)
     .post(`/api/v1/staff/registrations/${registrationId}/approve`)
+    .set('Idempotency-Key', `decide-${Date.now()}-${Math.random()}`)
     .set('Authorization', `Bearer ${purchaseToken}`)
     .send({ tehsilIds, dispatchCutoffTime: '16:00' });
   if (approveRes.status !== 200) {

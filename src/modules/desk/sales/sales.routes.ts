@@ -89,6 +89,13 @@ salesRouter.get(
   requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
   controller.getPool,
 );
+// Phase 3 — the "Assigned to" picker: who this caller may assign a buyer to.
+salesRouter.get(
+  '/staff/sales/assignees',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getAssignees,
+);
 salesRouter.get(
   '/staff/sales/buyers',
   authenticate,

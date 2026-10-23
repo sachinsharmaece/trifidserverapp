@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../../../middleware/auth.js';
-import { requirePermission } from '../../../middleware/requirePermission.js';
+import { requireAnyPermission, requirePermission } from '../../../middleware/requirePermission.js';
 import { validateBody } from '../../../middleware/validate.js';
 import { requireIdempotencyKey } from '../../../middleware/idempotency.js';
 import { PERMISSIONS } from '../../../config/permissions.js';
@@ -297,10 +297,12 @@ purchaseRouter.get(
   requirePermission(PERMISSIONS.DEMAND_READ),
   controller.getDraftMasters,
 );
+// Phase 3 — the company list is also the buyer form's "Companies he deals
+// in" picker, so Sales reads it too (names only; nothing commercial).
 purchaseRouter.get(
   '/staff/purchase/masters/manufacturers',
   authenticate,
-  requirePermission(PERMISSIONS.DEMAND_READ),
+  requireAnyPermission(PERMISSIONS.DEMAND_READ, PERMISSIONS.SALES_WORKLIST_READ),
   controller.getMastersManufacturers,
 );
 purchaseRouter.get(

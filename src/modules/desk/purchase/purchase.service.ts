@@ -1535,7 +1535,7 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
     firm: counterparty.firm ?? '—',
     gstin: counterparty.gstin ?? '—',
     ownerName: counterparty.ownerName ?? '—',
-    mobile: counterparty.mobile,
+    mobile: counterparty.mobile ?? counterparty.contactMobile ?? '—',
     licenceNo: counterparty.licenceNo ?? '—',
     trustTier: seller.trustTier,
     dispatchCutoffTime: seller.dispatchCutoffTime,

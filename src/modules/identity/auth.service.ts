@@ -142,7 +142,8 @@ function buildCounterpartyMeDto(counterparty: HydratedDocument<CounterpartyDocum
   const base = {
     actorType: 'counterparty' as const,
     counterpartyId: (counterparty._id as Types.ObjectId).toString(),
-    mobile: counterparty.mobile,
+    // Only a firm with a login mobile can be signed in to reach this.
+    mobile: counterparty.mobile ?? '',
     status: counterparty.status,
   };
   if (counterparty.kind === 'buyer') return { ...base, kind: 'buyer' } satisfies BuyerMeDto;

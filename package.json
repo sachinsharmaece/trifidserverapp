@@ -21,6 +21,7 @@
     "backfill:catalogMasters": "tsx src/scripts/backfillCatalogMasters.ts",
     "backfill:sellerDealerships": "tsx src/scripts/backfillSellerDealerships.ts",
     "migrate:locationMasters": "tsx src/scripts/migrateLocationMasters.ts",
+    "migrate:buyerIdentity": "tsx src/scripts/migrateBuyerIdentity.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

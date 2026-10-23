@@ -122,7 +122,10 @@ async function sendOneWhatsApp(row: OutboxRow, now: Date): Promise<void> {
   }
 
   const counterparty = await Counterparty.findById(row.counterpartyId);
-  const toMobile = counterparty ? toWhatsAppNumber(counterparty.mobile) : null;
+  // Phase 3 (DEC-055) — a firm with no login of its own (a shared number) is
+  // messaged on its contact number.
+  const number = counterparty?.mobile ?? counterparty?.contactMobile ?? null;
+  const toMobile = number ? toWhatsAppNumber(number) : null;
   if (!toMobile) {
     await markFirstAttempt(
       row,

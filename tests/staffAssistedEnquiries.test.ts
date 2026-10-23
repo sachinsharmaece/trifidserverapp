@@ -17,6 +17,7 @@ import {
   seedMarginCell,
 } from './m4helpers.js';
 import { randomMobile, randomGstin } from './helpers.js';
+import { locationFor, salesLeader } from './buyerHelpers.js';
 import { findWallViolations, type Identity } from './wallSweepRules.js';
 
 const app = createApp();
@@ -104,6 +105,7 @@ describe('Staff-assisted registration — the OTP gate (client decision A)', () 
     // Every field correct — area and dispatch cutoff set — but no OTP yet.
     const approveBeforeOtp = await request(app)
       .post(`/api/v1/staff/registrations/${registrationId}/approve`)
+      .set('Idempotency-Key', `decide-${Date.now()}-${Math.random()}`)
       .set('Authorization', `Bearer ${purchase.token}`)
       .send({
         tehsilIds: [(tehsil._id as unknown as string).toString()],
@@ -128,6 +130,7 @@ describe('Staff-assisted registration — the OTP gate (client decision A)', () 
 
     const approveAfterOtp = await request(app)
       .post(`/api/v1/staff/registrations/${registrationId}/approve`)
+      .set('Idempotency-Key', `decide-${Date.now()}-${Math.random()}`)
       .set('Authorization', `Bearer ${purchase.token}`)
       .send({
         tehsilIds: [(tehsil._id as unknown as string).toString()],
@@ -136,49 +139,80 @@ describe('Staff-assisted registration — the OTP gate (client decision A)', () 
     expect(approveAfterOtp.status).toBe(200);
   });
 
-  // TEMP (2026-09-28): buyer's OTP gate is disabled at product's request — see
-  // onboarding.service.ts's approveBuyer. This test asserts the current,
-  // temporary behaviour, and should fail loudly (reminding to update it) once
-  // the gate is restored.
-  it('buyer approves fine without an OTP confirmation, while the gate is temporarily off', async () => {
+  // Phase 3 (DEC-056) — no OTP on a staff-assisted buyer: the staff member
+  // ticks that the proprietor agreed, and a Sales Leader can approve at once.
+  // The OTP gate is kept behind REQUIRE_REGISTRATION_OTP (off).
+  it('buyer: saved with the proprietor-agreed tick, approvable at once with no OTP', async () => {
     const sales = await staffToken(app, 'sales');
     const mobile = randomMobile();
+    const tehsil = await Tehsil.create({
+      name: `Tehsil ${Date.now()}-${Math.random()}`,
+      district: 'D',
+      state: 'MP',
+    });
+    const location = await locationFor((tehsil._id as unknown as string).toString());
 
     const registerRes = await request(app)
       .post('/api/v1/staff/registrations/buyer')
       .set('Authorization', `Bearer ${sales.token}`)
+      .set('Idempotency-Key', `reg-${Date.now()}-${Math.random()}`)
       .send({
         mobile,
         firm: 'Phone Firm',
         gstin: await randomGstin(),
         ownerName: 'Owner',
-        licenceNo: 'LIC-9',
-        gstPpobAddress: 'Address',
-        bankDetail: bankDetail(),
+        category: 'Retailer',
+        location,
         consent: consent(),
         callNote: 'Called in asking to register, quoted GSTIN over the phone.',
+        proprietorAgreed: true,
+        // Into the Queue — a leader decides on his own team and the Queue.
+        assignedToEmployeeId: null,
       });
     expect(registerRes.status).toBe(201);
     const { registrationId } = registerRes.body.data as { registrationId: string };
 
     const counterparty = await Counterparty.findById(registrationId);
     expect(counterparty!.staffAssistedOtpVerifiedAt).toBeFalsy();
+    expect(counterparty!.proprietorAgreedAt).toBeTruthy();
 
+    const leader = await salesLeader(app);
+    const approveRes = await request(app)
+      .post(`/api/v1/staff/registrations/${registrationId}/approve`)
+      .set('Idempotency-Key', `decide-${Date.now()}-${Math.random()}`)
+      .set('Authorization', `Bearer ${leader.token}`)
+      .send({ category: 'Retailer', location, assignedToEmployeeId: leader.employeeId });
+    expect(approveRes.status).toBe(200);
+  });
+
+  it('buyer: the proprietor-agreed tick is required', async () => {
+    const sales = await staffToken(app, 'sales');
     const tehsil = await Tehsil.create({
       name: `Tehsil ${Date.now()}-${Math.random()}`,
       district: 'D',
       state: 'MP',
     });
-
-    const approveBeforeOtp = await request(app)
-      .post(`/api/v1/staff/registrations/${registrationId}/approve`)
+    const res = await request(app)
+      .post('/api/v1/staff/registrations/buyer')
       .set('Authorization', `Bearer ${sales.token}`)
+      .set('Idempotency-Key', `reg-${Date.now()}-${Math.random()}`)
       .send({
-        tehsilId: (tehsil._id as unknown as string).toString(),
-        tradePosition: 'dealer',
-        isTrader: false,
+        mobile: randomMobile(),
+        firm: 'No Tick Firm',
+        gstin: await randomGstin(),
+        category: 'Retailer',
+        location: await locationFor((tehsil._id as unknown as string).toString()),
+        consent: consent(),
       });
-    expect(approveBeforeOtp.status).toBe(200);
+    expect(res.status).toBe(400);
+    expect(res.body.error.fieldErrors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          field: 'proprietorAgreed',
+          message: expect.stringMatching(/proprietor agreed/),
+        }),
+      ]),
+    );
   });
 
   it('desk boundary — Purchase cannot raise a staff-assisted buyer registration', async () => {

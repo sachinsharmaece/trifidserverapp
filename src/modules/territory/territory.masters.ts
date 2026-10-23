@@ -175,8 +175,17 @@ export async function ensureDistrict(
   const name = toTitleCase(rawName);
   const existing = await District.findOne({ stateId, name }).collation(CASE_INSENSITIVE);
   if (existing) return { districtId: id(existing._id), name: existing.name, created: false };
-  const district = await District.create({ name, stateId });
-  return { districtId: id(district._id), name, created: true };
+  try {
+    const district = await District.create({ name, stateId });
+    return { districtId: id(district._id), name, created: true };
+  } catch (error) {
+    // Two callers creating the same district at once: the unique index lets
+    // one through; the other reads what it wrote.
+    if ((error as { code?: number }).code !== 11000) throw error;
+    const winner = await District.findOne({ stateId, name }).collation(CASE_INSENSITIVE);
+    if (!winner) throw error;
+    return { districtId: id(winner._id), name: winner.name, created: false };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -512,4 +521,42 @@ export async function recordPincodeIfUnknown(
     session,
   );
   return { status: 'created' };
+}
+
+/**
+ * Phase 3 — checks a LocationBlock's State → District → Tehsil hang
+ * together (a stale pick after changing the state would otherwise save a
+ * tehsil from somewhere else). Field names are the form's own, under
+ * `location.`.
+ */
+export async function assertLocationChain(location: {
+  stateId: string;
+  districtId: string;
+  tehsilId: string;
+}): Promise<{
+  tehsilId: Types.ObjectId;
+  tehsilName: string;
+  districtName: string;
+  stateName: string;
+}> {
+  const [state, district, tehsil] = await Promise.all([
+    State.findById(location.stateId),
+    District.findById(location.districtId),
+    Tehsil.findById(location.tehsilId),
+  ]);
+  const fail = (field: string, messageEn: string) =>
+    new AppError({ code: 'VALIDATION_FAILED', messageEn, field: `location.${field}` });
+  if (!state) throw fail('stateId', 'Pick a state from the list.');
+  if (!district || String(district.stateId) !== String(state._id)) {
+    throw fail('districtId', `Pick a district of ${state.name}.`);
+  }
+  if (!tehsil || String(tehsil.districtId) !== String(district._id)) {
+    throw fail('tehsilId', `Pick a tehsil of ${district.name}.`);
+  }
+  return {
+    tehsilId: tehsil._id as Types.ObjectId,
+    tehsilName: tehsil.name,
+    districtName: district.name,
+    stateName: state.name,
+  };
 }

@@ -2,15 +2,52 @@ import type { Request, Response } from 'express';
 import { Counterparty } from '../../models/Counterparty.js';
 import { AppError } from '../../shared/errors.js';
 import * as onboardingService from './onboarding.service.js';
+import * as buyers from './buyer.registration.js';
+import { PERMISSIONS } from '../../config/permissions.js';
+import { Buyer } from '../../models/Buyer.js';
 import { approveBuyerSchema, approveSellerSchema } from './onboarding.validation.js';
-import type {
-  staffRegisterBuyerSchema,
-  staffRegisterSellerSchema,
-} from './onboarding.validation.js';
+import type { staffRegisterSellerSchema } from './onboarding.validation.js';
 import type { z } from 'zod';
 
 function ok(res: Response, req: Request, data: unknown, status = 200): void {
   res.status(status).json({ data, meta: { correlationId: req.correlationId } });
+}
+
+function callerOf(req: Request) {
+  return {
+    employeeId: req.auth!.employeeId!,
+    permissions: req.auth!.permissions,
+    correlationId: req.correlationId,
+  };
+}
+
+// F1 - a registration is decided by its own side: a buyer by BUYER_APPROVE
+// (Sales Leaders, Admin), a seller by SELLER_APPROVE (Purchase).
+function assertMayDecide(req: Request, kind: string): void {
+  const needed = kind === 'seller' ? PERMISSIONS.SELLER_APPROVE : PERMISSIONS.BUYER_APPROVE;
+  if (!req.auth!.permissions.includes(needed)) {
+    throw new AppError({
+      code: 'PERMISSION_DENIED',
+      messageEn:
+        kind === 'seller'
+          ? 'Only Purchase can approve or reject a seller.'
+          : "Only the buyer's Sales Leader, or Admin, can approve or reject a buyer.",
+    });
+  }
+}
+
+/** The sides of the Registrations list this caller may see (F1). */
+function registrationKindsFor(req: Request): Array<'buyer' | 'seller'> | undefined {
+  const p = req.auth!.permissions;
+  if (p.includes(PERMISSIONS.CHAIN_READ_FULL)) return undefined; // the full view
+  const kinds: Array<'buyer' | 'seller'> = [];
+  if (p.includes(PERMISSIONS.SALES_WORKLIST_READ) || p.includes(PERMISSIONS.BUYER_APPROVE)) {
+    kinds.push('buyer');
+  }
+  if (p.includes(PERMISSIONS.PROXY_SELLER_CALL) || p.includes(PERMISSIONS.SELLER_APPROVE)) {
+    kinds.push('seller');
+  }
+  return kinds;
 }
 
 export async function postRegisterBuyer(req: Request, res: Response): Promise<void> {
@@ -28,12 +65,10 @@ export async function postRegisterSeller(req: Request, res: Response): Promise<v
 // on the route); calls the exact same registerBuyer used by API-010, plus
 // the mandatory call note.
 export async function postStaffRegisterBuyer(req: Request, res: Response): Promise<void> {
-  const { callNote, ...input } = req.body as z.infer<typeof staffRegisterBuyerSchema>;
-  const result = await onboardingService.registerBuyer(input, {
-    employeeId: req.auth!.employeeId!,
-    callNote: callNote ?? '',
-    correlationId: req.correlationId,
-  });
+  const result = await buyers.registerBuyerByStaff(
+    req.body as buyers.StaffBuyerInput,
+    callerOf(req),
+  );
   ok(res, req, result, 201);
 }
 
@@ -63,7 +98,9 @@ export async function getRegistrations(req: Request, res: Response): Promise<voi
     cursor?: string;
     limit?: number;
   };
-  const result = await onboardingService.listRegistrations(stage, cursor, limit ?? 25);
+  const result = await onboardingService.listRegistrations(stage, cursor, limit ?? 25, {
+    kinds: registrationKindsFor(req),
+  });
   res.status(200).json({
     data: result.items,
     meta: { correlationId: req.correlationId, nextCursor: result.nextCursor },
@@ -81,13 +118,14 @@ export async function postApprove(req: Request, res: Response): Promise<void> {
   }
 
   const actor = { employeeId: req.auth!.employeeId!, correlationId: req.correlationId };
+  assertMayDecide(req, counterparty.kind);
 
   if (counterparty.kind === 'seller') {
     const input = approveSellerSchema.parse(req.body);
     await onboardingService.approveSeller(registrationId, input, actor);
   } else {
     const input = approveBuyerSchema.parse(req.body);
-    await onboardingService.approveBuyer(registrationId, input, actor);
+    await buyers.approveBuyer(registrationId, input, callerOf(req));
   }
 
   ok(res, req, { approved: true });
@@ -95,6 +133,15 @@ export async function postApprove(req: Request, res: Response): Promise<void> {
 
 export async function postReject(req: Request, res: Response): Promise<void> {
   const { reason } = req.body as { reason: string };
+  const counterparty = await Counterparty.findById(req.params.id as string);
+  if (!counterparty) {
+    throw new AppError({ code: 'NOT_FOUND', messageEn: 'Registration not found.' });
+  }
+  assertMayDecide(req, counterparty.kind);
+  if (counterparty.kind !== 'seller') {
+    const buyer = await Buyer.findOne({ counterpartyId: counterparty._id }, { _id: 1 });
+    if (buyer) await buyers.assertCallerMayDecideBuyer(buyer._id, callerOf(req));
+  }
   await onboardingService.rejectRegistration(req.params.id as string, reason, {
     employeeId: req.auth!.employeeId!,
     correlationId: req.correlationId,
@@ -122,4 +169,33 @@ export async function postBankDetailCallback(req: Request, res: Response): Promi
     correlationId: req.correlationId,
   });
   ok(res, req, result);
+}
+
+/** Phase 3 - the buyer profile behind a registration (approval prefill). */
+export async function getRegistrationBuyerProfile(req: Request, res: Response): Promise<void> {
+  ok(
+    res,
+    req,
+    await buyers.getBuyerProfile({ counterpartyId: req.params.id as string }, callerOf(req)),
+  );
+}
+
+export async function getBuyerProfile(req: Request, res: Response): Promise<void> {
+  ok(
+    res,
+    req,
+    await buyers.getBuyerProfile({ buyerId: req.params.buyerId as string }, callerOf(req)),
+  );
+}
+
+export async function putBuyerProfile(req: Request, res: Response): Promise<void> {
+  ok(
+    res,
+    req,
+    await buyers.updateBuyerProfile(
+      req.params.buyerId as string,
+      req.body as buyers.UpdateBuyerInput,
+      callerOf(req),
+    ),
+  );
 }

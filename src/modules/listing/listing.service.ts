@@ -615,7 +615,7 @@ export async function listPricedLinesVisibleToBuyerDoc(
   const visible = await findVisibleLines(
     (buyer.tehsilId as Types.ObjectId).toString(),
     (buyer.counterpartyId as Types.ObjectId).toString(),
-    counterparty?.gstin ?? '',
+    counterparty?.gstin ?? counterparty?.pan ?? '',
   );
   return priceForBuyer(buyer, visible);
 }
@@ -658,7 +658,7 @@ export async function getBuyerFeed(
   const visible = await findVisibleLines(
     (buyer.tehsilId as Types.ObjectId).toString(),
     buyerCounterpartyId,
-    counterparty.gstin ?? '',
+    counterparty.gstin ?? counterparty.pan ?? '',
   );
   const priced = await priceForBuyer(buyer, visible);
 
@@ -726,7 +726,7 @@ export async function getProductOffers(
   const visible = await findVisibleLines(
     (buyer.tehsilId as Types.ObjectId).toString(),
     buyerCounterpartyId,
-    counterparty.gstin ?? '',
+    counterparty.gstin ?? counterparty.pan ?? '',
   );
   const priced = await priceForBuyer(
     buyer,
@@ -791,7 +791,8 @@ export async function getListingLineForBuy(
       frozenTehsilIds: listing.frozenTehsilIds.map((id) => id.toString()),
     },
     {
-      gstin: counterparty.gstin ?? '',
+      // Phase 3 — GSTIN, or PAN for a buyer without one (exclusions use the same key).
+      gstin: counterparty.gstin ?? counterparty.pan ?? '',
       tehsilId: (buyer.tehsilId as Types.ObjectId).toString(),
       counterpartyId: buyerCounterpartyId,
     },
@@ -860,7 +861,8 @@ export async function createPileRequest(
       frozenTehsilIds: listing.frozenTehsilIds.map((id) => id.toString()),
     },
     {
-      gstin: counterparty.gstin ?? '',
+      // Phase 3 — GSTIN, or PAN for a buyer without one (exclusions use the same key).
+      gstin: counterparty.gstin ?? counterparty.pan ?? '',
       tehsilId: (buyer.tehsilId as Types.ObjectId).toString(),
       counterpartyId: buyerCounterpartyId,
     },
