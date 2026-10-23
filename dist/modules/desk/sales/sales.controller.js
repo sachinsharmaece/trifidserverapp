@@ -1,3 +1,4 @@
+import { listAssignableSalesPeople } from '../../../shared/team.js';
 import * as salesService from './sales.service.js';
 import * as salesCallsService from './sales.calls.js';
 import * as salesBoardService from './sales.board.js';
@@ -104,9 +105,15 @@ export async function getPool(req, res) {
 }
 // Sales desk v2 — buyers.
 export async function getBuyers(req, res) {
-    const q = req.query.q;
-    const tab = req.query.tab;
-    ok(res, req, await salesBuyersService.listBuyers({ q, tab }));
+    const str = (key) => typeof req.query[key] === 'string' && req.query[key] ? req.query[key] : undefined;
+    const tab = str('tab');
+    ok(res, req, await salesBuyersService.listBuyers({
+        q: str('q'),
+        tab,
+        category: str('category'),
+        districtId: str('districtId'),
+        assignedTo: str('assignedTo'),
+    }));
 }
 export async function getBuyerBoard(req, res) {
     ok(res, req, await salesBoardService.getBoardForBuyer(req.params.buyerId));
@@ -149,4 +156,10 @@ export async function postMspResponse(req, res) {
         correlationId: req.correlationId,
     });
     ok(res, req, { done: true });
+}
+export async function getAssignees(req, res) {
+    ok(res, req, await listAssignableSalesPeople({
+        employeeId: req.auth.employeeId,
+        permissions: req.auth.permissions,
+    }));
 }

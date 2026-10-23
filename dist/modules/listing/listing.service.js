@@ -465,7 +465,7 @@ export async function listPricedLinesVisibleToBuyerDoc(buyerDocId) {
     if (!buyer.tehsilId)
         return [];
     const counterparty = await Counterparty.findById(buyer.counterpartyId);
-    const visible = await findVisibleLines(buyer.tehsilId.toString(), buyer.counterpartyId.toString(), counterparty?.gstin ?? '');
+    const visible = await findVisibleLines(buyer.tehsilId.toString(), buyer.counterpartyId.toString(), counterparty?.gstin ?? counterparty?.pan ?? '');
     return priceForBuyer(buyer, visible);
 }
 function toConditionTags(line) {
@@ -480,7 +480,7 @@ function toConditionTags(line) {
 /** API-030. BR-110 — one card per product, cheapest first, newest groups first. */
 export async function getBuyerFeed(buyerCounterpartyId, cursor, limit) {
     const { buyer, counterparty } = await requireActiveBuyer(buyerCounterpartyId);
-    const visible = await findVisibleLines(buyer.tehsilId.toString(), buyerCounterpartyId, counterparty.gstin ?? '');
+    const visible = await findVisibleLines(buyer.tehsilId.toString(), buyerCounterpartyId, counterparty.gstin ?? counterparty.pan ?? '');
     const priced = await priceForBuyer(buyer, visible);
     const productIds = [
         ...new Set(priced.map((v) => v.listing.productId.toString())),
@@ -522,7 +522,7 @@ export async function getBuyerFeed(buyerCounterpartyId, cursor, limit) {
 /** API-031. Every rate on a product, cheapest first, plus pools on that product. */
 export async function getProductOffers(buyerCounterpartyId, productId) {
     const { buyer, counterparty } = await requireActiveBuyer(buyerCounterpartyId);
-    const visible = await findVisibleLines(buyer.tehsilId.toString(), buyerCounterpartyId, counterparty.gstin ?? '');
+    const visible = await findVisibleLines(buyer.tehsilId.toString(), buyerCounterpartyId, counterparty.gstin ?? counterparty.pan ?? '');
     const priced = await priceForBuyer(buyer, visible.filter((v) => v.listing.productId.toString() === productId));
     priced.sort((a, b) => a.buyerRatePaise - b.buyerRatePaise);
     const skuIds = [...new Set(priced.map((v) => v.line.skuId.toString()))];
@@ -558,7 +558,8 @@ export async function getListingLineForBuy(buyerCounterpartyId, listingLineId) {
         sellerId: seller.counterpartyId.toString(),
         frozenTehsilIds: listing.frozenTehsilIds.map((id) => id.toString()),
     }, {
-        gstin: counterparty.gstin ?? '',
+        // Phase 3 — GSTIN, or PAN for a buyer without one (exclusions use the same key).
+        gstin: counterparty.gstin ?? counterparty.pan ?? '',
         tehsilId: buyer.tehsilId.toString(),
         counterpartyId: buyerCounterpartyId,
     }, blockLookup);
@@ -611,7 +612,8 @@ export async function createPileRequest(buyerCounterpartyId, listingLineId, inpu
         sellerId: seller.counterpartyId.toString(),
         frozenTehsilIds: listing.frozenTehsilIds.map((id) => id.toString()),
     }, {
-        gstin: counterparty.gstin ?? '',
+        // Phase 3 — GSTIN, or PAN for a buyer without one (exclusions use the same key).
+        gstin: counterparty.gstin ?? counterparty.pan ?? '',
         tehsilId: buyer.tehsilId.toString(),
         counterpartyId: buyerCounterpartyId,
     }, blockLookup);

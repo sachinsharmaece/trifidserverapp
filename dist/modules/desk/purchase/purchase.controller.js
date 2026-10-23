@@ -1,3 +1,4 @@
+import { listAssignable } from '../../../shared/team.js';
 import * as purchaseService from './purchase.service.js';
 import * as catalogService from '../../catalog/catalog.service.js';
 import { getFunnelReport as getFunnelReportFromService } from './purchase.funnel.js';
@@ -176,4 +177,10 @@ export async function postDraftSku(req, res) {
     const input = draftSkuSchema.parse(req.body);
     const result = await catalogService.createSkuDraft(input, req.auth.employeeId);
     ok(res, req, result, 201);
+}
+export async function getAssignees(req, res) {
+    ok(res, req, await listAssignable('purchase', {
+        employeeId: req.auth.employeeId,
+        permissions: req.auth.permissions,
+    }));
 }

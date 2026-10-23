@@ -1,3 +1,5 @@
+import { Tehsil } from '../src/models/Tehsil.js';
+import { locationFor } from './buyerHelpers.js';
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { Types } from 'mongoose';
@@ -50,6 +52,19 @@ async function baseSellerRegistrationBody(
     },
     consent: { noticeVersion: 'v1', marketingOptIn: false },
     callNote: 'Called on 27 Sep, confirmed everything.',
+    // Phase 4 — the staff form's own location and the proprietor-agreed tick.
+    location: await locationFor(
+      String(
+        (
+          await Tehsil.create({
+            name: `Seller Home ${Date.now()}-${Math.random()}`,
+            district: 'D',
+            state: 'MP',
+          })
+        )._id,
+      ),
+    ),
+    proprietorAgreed: true,
     ...overrides,
   };
 }
@@ -59,6 +74,7 @@ describe('QA fixes — parity audit, 2026-09-27', () => {
     const purchase = await staffToken(app, 'purchase');
     const res = await request(app)
       .post('/api/v1/staff/registrations/seller')
+      .set('Idempotency-Key', `seller-${Date.now()}-${Math.random()}`)
       .set('Authorization', `Bearer ${purchase.token}`)
       .send(
         await baseSellerRegistrationBody({
@@ -81,6 +97,7 @@ describe('QA fixes — parity audit, 2026-09-27', () => {
     const purchase = await staffToken(app, 'purchase');
     const badRes = await request(app)
       .post('/api/v1/staff/registrations/seller')
+      .set('Idempotency-Key', `seller-${Date.now()}-${Math.random()}`)
       .set('Authorization', `Bearer ${purchase.token}`)
       .send(await baseSellerRegistrationBody({ licenceNo: 'LIC' }));
     expect(badRes.status).toBe(400);
@@ -90,6 +107,7 @@ describe('QA fixes — parity audit, 2026-09-27', () => {
 
     const goodRes = await request(app)
       .post('/api/v1/staff/registrations/seller')
+      .set('Idempotency-Key', `seller-${Date.now()}-${Math.random()}`)
       .set('Authorization', `Bearer ${purchase.token}`)
       .send(await baseSellerRegistrationBody());
     expect(goodRes.status).toBe(201);
@@ -99,6 +117,7 @@ describe('QA fixes — parity audit, 2026-09-27', () => {
     const purchase = await staffToken(app, 'purchase');
     const res = await request(app)
       .post('/api/v1/staff/registrations/seller')
+      .set('Idempotency-Key', `seller-${Date.now()}-${Math.random()}`)
       .set('Authorization', `Bearer ${purchase.token}`)
       .send(
         await baseSellerRegistrationBody({
@@ -120,6 +139,7 @@ describe('QA fixes — parity audit, 2026-09-27', () => {
     const purchase = await staffToken(app, 'purchase');
     const res = await request(app)
       .post('/api/v1/staff/registrations/seller')
+      .set('Idempotency-Key', `seller-${Date.now()}-${Math.random()}`)
       .set('Authorization', `Bearer ${purchase.token}`)
       .send(
         await baseSellerRegistrationBody({

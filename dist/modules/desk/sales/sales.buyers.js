@@ -25,11 +25,38 @@ import { listOrders } from './sales.orders.js';
 function capitalizeTradePosition(tradePosition) {
     return tradePosition.charAt(0).toUpperCase() + tradePosition.slice(1);
 }
-/** GET /staff/sales/buyers?q=&tab=book|queue */
+// Phase 3 (DEC-058) — the category, or for a buyer not yet migrated the old
+// position/trader flag; blank when he was never classified.
+function categoryOf(buyer) {
+    if (buyer.category)
+        return buyer.category;
+    if (buyer.isTrader)
+        return 'Trader';
+    return buyer.tradePosition ? capitalizeTradePosition(buyer.tradePosition) : null;
+}
+/**
+ * GET /staff/sales/buyers?q=&tab=book|queue&category=&districtId=&assignedTo=
+ * Phase 3 — filters by category, district and Assigned to (an employee id,
+ * or `queue`).
+ */
 export async function listBuyers(filters) {
     const assignments = await BookAssignment.find({});
     const ownerEmployeeIdByBuyer = new Map(assignments.map((a) => [a.buyerId.toString(), a.ownerEmployeeId]));
-    let buyers = await Buyer.find({}).sort({ createdAt: -1 });
+    const buyerQuery = {};
+    if (filters.category)
+        buyerQuery.category = filters.category;
+    if (filters.districtId) {
+        const inDistrict = await Tehsil.find({ districtId: filters.districtId }, { _id: 1 });
+        buyerQuery.tehsilId = { $in: inDistrict.map((t) => t._id) };
+    }
+    let buyers = await Buyer.find(buyerQuery).sort({ createdAt: -1 });
+    if (filters.assignedTo === 'queue') {
+        buyers = buyers.filter((b) => !ownerEmployeeIdByBuyer.has(b._id.toString()));
+    }
+    else if (filters.assignedTo) {
+        buyers = buyers.filter((b) => ownerEmployeeIdByBuyer.get(b._id.toString())?.toString() ===
+            filters.assignedTo);
+    }
     if (filters.tab === 'book') {
         buyers = buyers.filter((b) => ownerEmployeeIdByBuyer.has(b._id.toString()));
     }
@@ -49,8 +76,10 @@ export async function listBuyers(filters) {
             const inTehsil = Boolean(b.tehsilId) && matchingTehsilIds.has(b.tehsilId.toString());
             return Boolean(cp?.firm?.toLowerCase().includes(q) ||
                 cp?.gstin?.toLowerCase().includes(q) ||
+                cp?.pan?.toLowerCase().includes(q) ||
                 cp?.ownerName?.toLowerCase().includes(q) ||
                 cp?.mobile?.toLowerCase().includes(q) ||
+                cp?.contactMobile?.toLowerCase().includes(q) ||
                 inTehsil);
         });
     }
@@ -59,6 +88,7 @@ export async function listBuyers(filters) {
     ];
     const tehsils = await Tehsil.find({ _id: { $in: tehsilIds } });
     const tehsilNameById = new Map(tehsils.map((t) => [t._id.toString(), t.name]));
+    const districtByTehsilId = new Map(tehsils.map((t) => [t._id.toString(), t.district]));
     const employees = await Employee.find({ _id: { $in: [...ownerEmployeeIdByBuyer.values()] } });
     const employeeNameById = new Map(employees.map((e) => [e._id.toString(), e.person]));
     const sos = await So.find({ buyerId: { $in: buyers.map((b) => b._id) } })
@@ -83,16 +113,17 @@ export async function listBuyers(filters) {
             buyerId: idStr,
             firm: cp?.firm ?? '',
             gstin: cp?.gstin ?? null,
+            pan: cp?.pan ?? null,
             contactName: cp?.ownerName ?? null,
-            mobile: cp?.mobile ?? null,
+            mobile: cp?.contactMobile ?? cp?.mobile ?? null,
             tehsil: b.tehsilId
                 ? (tehsilNameById.get(b.tehsilId.toString()) ?? null)
                 : null,
-            tier: b.isTrader
-                ? 'Trader'
-                : b.tradePosition
-                    ? capitalizeTradePosition(b.tradePosition)
-                    : null,
+            district: b.tehsilId
+                ? (districtByTehsilId.get(b.tehsilId.toString()) ?? null)
+                : null,
+            tier: categoryOf(b),
+            assignedToEmployeeId: ownerEmployeeId ? ownerEmployeeId.toString() : null,
             orderCount: stats?.count ?? 0,
             lastOrderAt: stats?.lastOrderAt ? stats.lastOrderAt.toISOString() : null,
             rateViews: b.rateViews,
@@ -296,13 +327,9 @@ export async function getBuyerFile(buyerId) {
         counterpartyId: buyer.counterpartyId.toString(),
         firm: counterparty?.firm ?? '',
         gstin: counterparty?.gstin ?? null,
-        mobile: counterparty?.mobile ?? '',
+        mobile: counterparty?.contactMobile ?? counterparty?.mobile ?? '',
         tehsil: tehsil?.name ?? null,
-        tier: buyer.isTrader
-            ? 'Trader'
-            : buyer.tradePosition
-                ? capitalizeTradePosition(buyer.tradePosition)
-                : null,
+        tier: categoryOf(buyer),
         classified: buyer.classified,
         rateViews: buyer.rateViews,
         ownerName: owner?.person ?? null,

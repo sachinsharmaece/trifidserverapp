@@ -39,6 +39,7 @@ describe('POST /admin/book-assignments (BR-261, BR-276)', () => {
     const res = await request(app)
       .post('/api/v1/admin/book-assignments')
       .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', `book-${Math.random()}`)
       .send({
         buyerId: (buyer._id as unknown as string).toString(),
         ownerEmployeeId: (salesEmployee._id as unknown as string).toString(),
@@ -66,6 +67,7 @@ describe('POST /admin/book-assignments (BR-261, BR-276)', () => {
     const res = await request(app)
       .post('/api/v1/admin/book-assignments')
       .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', `book-${Math.random()}`)
       .send({ buyerId: '6a9e187e70030e7ede2070b0', ownerEmployeeId: '6a9e187e70030e7ede2070b0' });
 
     expect(res.status).toBe(400);

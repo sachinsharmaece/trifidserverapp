@@ -19,6 +19,7 @@ import { env } from '../src/config/env.js';
 import { staffToken, createTestSku, seedMarginCell } from './m4helpers.js';
 import { createTehsil, createApprovedSellerAtTehsils } from './m5helpers.js';
 import { randomGstin, randomMobile } from './helpers.js';
+import { approveBuyerRegistration } from './buyerHelpers.js';
 
 /**
  * "Asks reaching the desks" — the client's My-view items 13, 14 and 16.
@@ -68,10 +69,9 @@ async function registerApproveAndLogIn(
   expect(registerRes.status).toBe(201);
   const registrationId = registerRes.body.data.registrationId as string;
 
-  const approveRes = await request(app)
-    .post(`/api/v1/staff/registrations/${registrationId}/approve`)
-    .set('Authorization', `Bearer ${salesToken}`)
-    .send({ tehsilId, tradePosition: 'dealer', isTrader: false });
+  // Phase 3 — approval is the Sales Leader's (buyerHelpers).
+  void salesToken;
+  const approveRes = await approveBuyerRegistration(app, registrationId, { tehsilId });
   expect(approveRes.status).toBe(200);
 
   const buyer = await Buyer.findOne({ counterpartyId: registrationId });
@@ -281,14 +281,15 @@ async function runDeskReadChecks(trustedSeller: boolean, otpLogin: boolean): Pro
       expect(row?.inq).toBe(2);
       expect(row?.openBoxes).toBe(12);
 
-      // Sales — the new buyer is in the Queue, not any Book; the Book tab does not show him.
-      const queue = await getAs(w.sales.token, '/staff/sales/buyers?tab=queue');
-      const queueRow = (queue.body.data as Array<{ buyerId: string }>).find(
+      // Sales — DEC-062: approval assigns the buyer, so he is in a Book (the
+      // approving leader's), not the Queue.
+      const book = await getAs(w.sales.token, '/staff/sales/buyers?tab=book');
+      const bookRow = (book.body.data as Array<{ buyerId: string }>).find(
         (b) => b.buyerId === w.buyer.buyerDocId,
       );
-      expect(queueRow).toBeDefined();
-      const book = await getAs(w.sales.token, '/staff/sales/buyers?tab=book');
-      expect((book.body.data as Array<{ buyerId: string }>).map((b) => b.buyerId)).not.toContain(
+      expect(bookRow).toBeDefined();
+      const queue = await getAs(w.sales.token, '/staff/sales/buyers?tab=queue');
+      expect((queue.body.data as Array<{ buyerId: string }>).map((b) => b.buyerId)).not.toContain(
         w.buyer.buyerDocId,
       );
 
@@ -470,7 +471,8 @@ describe('14 — the Sales call workspace (B-43, B-44, item 16)', () => {
   it('the buyer id the workspace screen receives is Buyer._id, and the proxy wants the counterpartyId', async () => {
     const w = await seedWorld({ trustedSeller: false });
 
-    const list = (await getAs(w.sales.token, '/staff/sales/buyers?tab=queue')).body.data as Array<{
+    // DEC-062 — an approved buyer is assigned, so he lists under the Book tab.
+    const list = (await getAs(w.sales.token, '/staff/sales/buyers?tab=book')).body.data as Array<{
       buyerId: string;
     }>;
     const row = list.find((b) => b.buyerId === w.buyer.buyerDocId);
@@ -510,15 +512,23 @@ describe('14 — the Sales call workspace (B-43, B-44, item 16)', () => {
     const queueBuyer = w.buyer;
     const bookBuyer = await registerApproveAndLogIn(w.sales.token, w.tehsilT);
     const zeroOrderBuyer = await registerApproveAndLogIn(w.sales.token, w.tehsilT);
-    // Put two of them in a Book by hand (the API for it is an admin route; the assignment is the same row).
+    // DEC-062 — approval assigns every buyer; take the first back to the Queue
+    // and put the other two in this Sales person's Book (the same row the
+    // admin route writes).
+    await BookAssignment.deleteOne({ buyerId: queueBuyer.buyerDocId });
     for (const b of [bookBuyer, zeroOrderBuyer]) {
-      await BookAssignment.create({
-        buyerId: b.buyerDocId,
-        ownerEmployeeId: w.sales.employeeId,
-        assignedAt: new Date(),
-        assignedBy: w.sales.employeeId,
-        reason: 'test',
-      });
+      await BookAssignment.updateOne(
+        { buyerId: b.buyerDocId },
+        {
+          $set: {
+            ownerEmployeeId: w.sales.employeeId,
+            assignedAt: new Date(),
+            assignedBy: w.sales.employeeId,
+            reason: 'test',
+          },
+        },
+        { upsert: true },
+      );
     }
 
     for (const b of [queueBuyer, bookBuyer, zeroOrderBuyer]) {

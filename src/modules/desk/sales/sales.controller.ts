@@ -1,3 +1,4 @@
+import { listAssignableSalesPeople } from '../../../shared/team.js';
 import type { Request, Response } from 'express';
 import * as salesService from './sales.service.js';
 import type { ComplaintDestination } from './sales.service.js';
@@ -175,9 +176,20 @@ export async function getPool(req: Request, res: Response): Promise<void> {
 
 // Sales desk v2 — buyers.
 export async function getBuyers(req: Request, res: Response): Promise<void> {
-  const q = req.query.q as string | undefined;
-  const tab = req.query.tab as 'book' | 'queue' | undefined;
-  ok(res, req, await salesBuyersService.listBuyers({ q, tab }));
+  const str = (key: string) =>
+    typeof req.query[key] === 'string' && req.query[key] ? (req.query[key] as string) : undefined;
+  const tab = str('tab') as 'book' | 'queue' | undefined;
+  ok(
+    res,
+    req,
+    await salesBuyersService.listBuyers({
+      q: str('q'),
+      tab,
+      category: str('category'),
+      districtId: str('districtId'),
+      assignedTo: str('assignedTo'),
+    }),
+  );
 }
 export async function getBuyerBoard(req: Request, res: Response): Promise<void> {
   ok(res, req, await salesBoardService.getBoardForBuyer(req.params.buyerId as string));
@@ -224,4 +236,15 @@ export async function postMspResponse(req: Request, res: Response): Promise<void
     correlationId: req.correlationId,
   });
   ok(res, req, { done: true });
+}
+
+export async function getAssignees(req: Request, res: Response): Promise<void> {
+  ok(
+    res,
+    req,
+    await listAssignableSalesPeople({
+      employeeId: req.auth!.employeeId!,
+      permissions: req.auth!.permissions,
+    }),
+  );
 }

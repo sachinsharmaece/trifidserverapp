@@ -22,11 +22,8 @@ const DEFAULT_TIER = 'Retailer';
  * rather than reimplementing the margin lookup for a "no buyer" case.
  */
 function buyerShapedForTier(tier) {
-    const isTrader = tier === 'Trader';
-    const tradePosition = isTrader
-        ? null
-        : tier.toLowerCase();
-    return { isTrader, tradePosition };
+    // Phase 3 — the category is the tier (DEC-058).
+    return { category: tier, isTrader: false, tradePosition: null };
 }
 async function rateForTierOrBuyer(skuId, sellerNetPaise, opts) {
     if (opts.buyerId) {

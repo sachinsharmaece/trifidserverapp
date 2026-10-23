@@ -14,6 +14,8 @@ import { SellerDebit } from '../../../models/SellerDebit.js';
 import { SellerCatalogueEntry } from '../../../models/SellerCatalogueEntry.js';
 import { SellerDealership } from '../../../models/SellerDealership.js';
 import { Tehsil } from '../../../models/Tehsil.js';
+import { Employee } from '../../../models/Employee.js';
+import { SellerAssignment } from '../../../models/SellerAssignment.js';
 import { Pile } from '../../../models/Pile.js';
 import { PileRequest } from '../../../models/PileRequest.js';
 import { Movement } from '../../../models/Movement.js';
@@ -970,6 +972,10 @@ export interface SupplyMatrixSellerRow {
   sellerId: string;
   firm: string;
   trustTier: string;
+  /** Phase 4 — his own district, and who he is assigned to (null = the Queue). */
+  district: string | null;
+  assignedTo: string | null;
+  assignedToEmployeeId: string | null;
   carryCount: number;
   listedCount: number;
   manufacturerNames: string[];
@@ -984,6 +990,19 @@ export async function getSupplyMatrixBySeller(): Promise<SupplyMatrixSellerRow[]
     counterparties.map((c) => [(c._id as Types.ObjectId).toString(), c]),
   );
   const { entriesBySeller, listedProductIdsBySeller } = await computeSellerCatalogueCoverage();
+  const sellerAssignments = await SellerAssignment.find({
+    sellerId: { $in: sellers.map((x) => x._id) },
+  });
+  const ownerBySeller = new Map(
+    sellerAssignments.map((a) => [String(a.sellerId), String(a.ownerEmployeeId)]),
+  );
+  const owners = await Employee.find({ _id: { $in: [...ownerBySeller.values()] } }, { person: 1 });
+  const ownerName = new Map(owners.map((e) => [String(e._id), e.person]));
+  const homeTehsils = await Tehsil.find(
+    { _id: { $in: sellers.map((x) => x.tehsilId).filter(Boolean) } },
+    { district: 1 },
+  );
+  const districtOf = new Map(homeTehsils.map((t) => [String(t._id), t.district]));
   const allEntries = [...entriesBySeller.values()].flat();
   const products = await Product.find({ _id: { $in: allEntries.map((e) => e.productId) } });
   const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
@@ -1025,6 +1044,9 @@ export async function getSupplyMatrixBySeller(): Promise<SupplyMatrixSellerRow[]
       sellerId: key,
       firm: counterpartyById.get((s.counterpartyId as Types.ObjectId).toString())?.firm ?? '—',
       trustTier: s.trustTier,
+      district: s.tehsilId ? (districtOf.get(String(s.tehsilId)) ?? null) : null,
+      assignedTo: ownerBySeller.has(key) ? (ownerName.get(ownerBySeller.get(key)!) ?? null) : null,
+      assignedToEmployeeId: ownerBySeller.get(key) ?? null,
       carryCount: myEntries.length,
       listedCount: myEntries.filter((e) =>
         myListedProductIds.has((e.productId as Types.ObjectId).toString()),
@@ -1535,7 +1557,7 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
     firm: counterparty.firm ?? '—',
     gstin: counterparty.gstin ?? '—',
     ownerName: counterparty.ownerName ?? '—',
-    mobile: counterparty.mobile,
+    mobile: counterparty.mobile ?? counterparty.contactMobile ?? '—',
     licenceNo: counterparty.licenceNo ?? '—',
     trustTier: seller.trustTier,
     dispatchCutoffTime: seller.dispatchCutoffTime,

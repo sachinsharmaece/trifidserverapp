@@ -5,6 +5,7 @@ import { env, isProduction } from '../../config/env.js';
 import { MFA_REQUIRED_ROLE_KEYS } from '../../config/permissions.js';
 import { AuthOtp, type AuthOtpDocument } from '../../models/AuthOtp.js';
 import { AuthSession } from '../../models/AuthSession.js';
+import { permissionsForPositions } from '../../config/positions.js';
 import { Counterparty, type CounterpartyDocument } from '../../models/Counterparty.js';
 import { Employee, type EmployeeDocument } from '../../models/Employee.js';
 import { Role } from '../../models/Role.js';
@@ -141,7 +142,8 @@ function buildCounterpartyMeDto(counterparty: HydratedDocument<CounterpartyDocum
   const base = {
     actorType: 'counterparty' as const,
     counterpartyId: (counterparty._id as Types.ObjectId).toString(),
-    mobile: counterparty.mobile,
+    // Only a firm with a login mobile can be signed in to reach this.
+    mobile: counterparty.mobile ?? '',
     status: counterparty.status,
   };
   if (counterparty.kind === 'buyer') return { ...base, kind: 'buyer' } satisfies BuyerMeDto;
@@ -319,7 +321,14 @@ async function loadEmployeeRoles(
 ): Promise<{ roleKeys: string[]; permissionKeys: string[] }> {
   const roles = await Role.find({ _id: { $in: employee.roleIds } });
   const roleKeys = roles.map((role) => role.key);
-  const permissionKeys = [...new Set(roles.flatMap((role) => role.permissionKeys))];
+  // Phase 2 — a position grants a few leader permissions of its own
+  // (config/positions.ts), on top of what the roles grant.
+  const permissionKeys = [
+    ...new Set([
+      ...roles.flatMap((role) => role.permissionKeys),
+      ...permissionsForPositions(employee.positions ?? []),
+    ]),
+  ];
   return { roleKeys, permissionKeys };
 }
 
@@ -558,6 +567,10 @@ export async function refreshSession(presentedToken: string): Promise<RefreshRes
         code: 'SESSION_REPLACED',
         messageEn: 'Session expired. Sign in again.',
       });
+    }
+    // Phase 2 — a switched-off employee could keep refreshing before this.
+    if (!employee.active) {
+      throw new AppError({ code: 'ACCOUNT_NOT_ACTIVE', messageEn: 'This account is not active.' });
     }
     const { roleKeys, permissionKeys } = await loadEmployeeRoles(employee);
     claims = {

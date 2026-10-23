@@ -29,11 +29,10 @@ const DEFAULT_TIER: RateTier = 'Retailer';
  * rather than reimplementing the margin lookup for a "no buyer" case.
  */
 function buyerShapedForTier(tier: RateTier): InstanceType<typeof Buyer> {
-  const isTrader = tier === 'Trader';
-  const tradePosition = isTrader
-    ? null
-    : (tier.toLowerCase() as 'distributor' | 'dealer' | 'retailer');
-  return { isTrader, tradePosition } as unknown as InstanceType<typeof Buyer>;
+  // Phase 3 — the category is the tier (DEC-058).
+  return { category: tier, isTrader: false, tradePosition: null } as unknown as InstanceType<
+    typeof Buyer
+  >;
 }
 
 async function rateForTierOrBuyer(
