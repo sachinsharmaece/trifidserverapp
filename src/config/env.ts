@@ -92,6 +92,16 @@ export const env = {
     'C5AaiVbyfQH2zjw2fCPmUnvU9MebeT13CUFfsuCka4c=',
   ),
 
+  // Phase 2 (DEC-061) — employee PAN and Aadhaar, encrypted at rest. A key of
+  // its own, never the bank-detail key, so one leak or rotation does not
+  // touch the other. 32 raw bytes, base64. **No fallback in production**: the
+  // server refuses to start without it there. Outside production a fixed
+  // throwaway key is used so local runs and tests work.
+  piiEncryptionKey:
+    process.env.NODE_ENV === 'production'
+      ? required('PII_ENCRYPTION_KEY')
+      : required('PII_ENCRYPTION_KEY', 'dGVzdC1vbmx5LXBpaS1rZXktbm90LWZvci1wcm9kISE='),
+
   queueUrl: process.env.QUEUE_URL ?? '',
   workerHeartbeatSeconds: optionalNumber('WORKER_HEARTBEAT_SECONDS', 60),
 

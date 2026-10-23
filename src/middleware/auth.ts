@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { AppError } from '../shared/errors.js';
 import { verifyAccessToken, type AccessTokenClaims } from '../shared/tokens.js';
+import { isStaffActive } from '../shared/staffActive.js';
 
 declare module 'express-serve-static-core' {
   interface Request {
@@ -20,7 +21,11 @@ function extractBearerToken(req: Request): string | null {
  * claims to the request. This is layer 1 of the wall (CH §17.4): every
  * downstream guard reads `req.auth`, never a client-supplied ID.
  */
-export function authenticate(req: Request, _res: Response, next: NextFunction): void {
+export async function authenticate(
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+): Promise<void> {
   const token = extractBearerToken(req);
   if (!token) {
     throw new AppError({ code: 'REAUTH_REQUIRED', messageEn: 'Sign in to continue.' });
@@ -35,6 +40,14 @@ export function authenticate(req: Request, _res: Response, next: NextFunction): 
       });
     }
     throw new AppError({ code: 'REAUTH_REQUIRED', messageEn: 'Invalid session. Sign in again.' });
+  }
+  // Phase 2 — a switched-off employee's token stops working within 30 s
+  // (shared/staffActive.ts), not when it expires.
+  if (req.auth.actorType === 'staff' && req.auth.employeeId) {
+    if (!(await isStaffActive(req.auth.employeeId))) {
+      req.auth = undefined;
+      throw new AppError({ code: 'ACCOUNT_NOT_ACTIVE', messageEn: 'This account is not active.' });
+    }
   }
   next();
 }

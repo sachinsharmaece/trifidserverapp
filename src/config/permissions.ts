@@ -115,6 +115,10 @@ export const PERMISSIONS = {
   // Phase 1 — editing an unverified pincode's tehsil and marking it verified.
   // Admin only.
   PINCODE_VERIFY: 'location:pincode_verify',
+  // Phase 2 (DEC-061, DEC-063) — showing an employee's full PAN or Aadhaar.
+  // Admin only (Admin holds every permission; no other role is given it).
+  // Every reveal is audited.
+  EMPLOYEE_PII_REVEAL: 'employee:pii_reveal',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
