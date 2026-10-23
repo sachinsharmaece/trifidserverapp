@@ -20,7 +20,9 @@ import { computeGstinChecksum } from '../src/shared/validators.js';
 import mongoose from 'mongoose';
 import { loginStaff, randomEmail, randomGstin, randomMobile } from './helpers.js';
 import { locationFor, type TestLocation } from './buyerHelpers.js';
-import { staffToken } from './m4helpers.js';
+import { createTestSku, seedMarginCell, staffToken } from './m4helpers.js';
+import { computeBuyerFacingRatePaise } from '../src/modules/listing/listing.service.js';
+import { computeBuyerInclusiveRatePaise } from '../src/shared/pricing.js';
 
 const app = createApp();
 const PASSWORD = 'CorrectHorse123';
@@ -393,6 +395,40 @@ describe('Category is the margin column (check 16)', () => {
     expect(
       await mongoose.connection.collection(BUYER_BACKUP_COLLECTION).countDocuments(),
     ).toBeGreaterThan(0);
+  });
+});
+
+describe('A buyer is rated from his category column (check 16, end to end)', () => {
+  it('two buyers on the same line get the rate of their own category, not each other’s', async () => {
+    const admin = await staffToken(app, 'admin');
+    const skuId = await createTestSku('Low');
+    await seedMarginCell('Low', 'Dealer', 4, admin.employeeId);
+    await seedMarginCell('Low', 'Retailer', 9, admin.employeeId);
+    const make = async (category: 'Dealer' | 'Retailer') => {
+      const cp = await Counterparty.create({
+        mobile: randomMobile(),
+        kind: 'buyer',
+        status: 'active',
+        gstin: await randomGstin(),
+      });
+      // isTrader / tradePosition say Trader — the category must win (DEC-058).
+      return Buyer.create({
+        counterpartyId: cp._id,
+        category,
+        isTrader: true,
+        tradePosition: 'dealer',
+      });
+    };
+    const sellerNet = 100_000 as never;
+    const dealerRate = await computeBuyerFacingRatePaise(await make('Dealer'), skuId, sellerNet);
+    const retailerRate = await computeBuyerFacingRatePaise(
+      await make('Retailer'),
+      skuId,
+      sellerNet,
+    );
+    expect(dealerRate).toBe(computeBuyerInclusiveRatePaise(sellerNet, 4));
+    expect(retailerRate).toBe(computeBuyerInclusiveRatePaise(sellerNet, 9));
+    expect(retailerRate).not.toBe(dealerRate);
   });
 });
 

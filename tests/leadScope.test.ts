@@ -426,12 +426,14 @@ describe('Phase 5 — Change owner', () => {
     const take = await request(app)
       .post('/api/v1/admin/book-assignments')
       .set('Authorization', `Bearer ${execA.token}`)
+      .set('Idempotency-Key', `book-${Math.random()}`)
       .send({ buyerId: free.profileId, ownerEmployeeId: execA.employeeId });
     expect(take.status).toBe(201);
 
     const steal = await request(app)
       .post('/api/v1/admin/book-assignments')
       .set('Authorization', `Bearer ${execA.token}`)
+      .set('Idempotency-Key', `book-${Math.random()}`)
       .send({ buyerId: ofB.profileId, ownerEmployeeId: execA.employeeId });
     expect(steal.status).toBe(403);
     expect(steal.body.error.code).toBe('OUT_OF_SCOPE');

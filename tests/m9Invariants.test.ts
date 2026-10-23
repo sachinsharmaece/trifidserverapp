@@ -472,6 +472,7 @@ describe('INV-23 — every classified account has exactly one owner', () => {
       request(app)
         .post('/api/v1/admin/book-assignments')
         .set('Authorization', `Bearer ${admin.token}`)
+        .set('Idempotency-Key', `book-${Math.random()}`)
         .send({ buyerId, ownerEmployeeId });
 
     expect((await assign(first.employeeId)).status).toBe(201);

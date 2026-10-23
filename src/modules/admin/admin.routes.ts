@@ -134,6 +134,7 @@ adminRouter.post(
   '/admin/book-assignments',
   authenticate,
   requirePermission(PERMISSIONS.BOOK_ASSIGN),
+  requireIdempotencyKey(),
   validateBody(assignBookSchema),
   controller.postBookAssignment,
 );
