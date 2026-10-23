@@ -53,4 +53,11 @@ export const LEAD_SCOPE_EXEMPT: Record<string, string> = {
   '/staff/lookup':
     'DEC-060 exact lookup — answers firm, side and leader only (the file only when in scope); rate-limited and audited.',
   '/staff/notifications/worklist': 'Notification delivery failures, read by Admin for support.',
+  '/staff/sales/pushes':
+    "Pushed to Purchase — filtered in the service by the pusher's team (an executive his own, a leader his team's).",
+  '/staff/purchase/pushes':
+    "From Sales — filtered in the service by the receiver's team (the receiver his own, a Purchase Leader his team's).",
+  '/staff/purchase/pushes/:pushId':
+    'One push — the service lets in only the receiver, his Purchase Leader, or Admin; it carries no buyer trade.',
+  '/staff/notices': "The caller's own in-app notices only.",
 };

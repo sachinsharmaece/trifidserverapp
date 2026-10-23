@@ -36,6 +36,21 @@ const sellerSchema = new Schema(
     // Phase 4 — his party code in Marg, a separate Marg ledger from any buyer
     // ledger of the same firm. Unique among sellers.
     margPartyCode: { type: String, default: null },
+    // Phase 6 (DEC-064) — set when he came from Push to Purchase: the buyer
+    // profile he was pushed from (same counterparty) and the Sales executive
+    // who pushed him. Never change.
+    pushedFromBuyerId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Buyer',
+      default: null,
+      immutable: true,
+    },
+    sourcedByEmployeeId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Employee',
+      default: null,
+      immutable: true,
+    },
   },
   { timestamps: true },
 );

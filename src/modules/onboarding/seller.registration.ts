@@ -3,6 +3,7 @@ import { withTransaction } from '../../db/transaction.js';
 import { PERMISSIONS } from '../../config/permissions.js';
 import { Counterparty } from '../../models/Counterparty.js';
 import { Seller } from '../../models/Seller.js';
+import { Buyer } from '../../models/Buyer.js';
 import { SellerAssignment } from '../../models/SellerAssignment.js';
 import { Employee } from '../../models/Employee.js';
 import { Tehsil } from '../../models/Tehsil.js';
@@ -32,7 +33,11 @@ import type { Location } from './buyer.registration.js';
 type Caller = StaffCaller & { correlationId: string };
 const id = (value: unknown): string => String(value);
 
-async function assertGstinState(gstin: string, stateId: string, field: string): Promise<void> {
+export async function assertGstinState(
+  gstin: string,
+  stateId: string,
+  field: string,
+): Promise<void> {
   const state = await State.findById(stateId);
   if (state && !gstinMatchesStateCode(gstin, state.gstStateCode)) {
     throw new AppError({
@@ -43,7 +48,7 @@ async function assertGstinState(gstin: string, stateId: string, field: string): 
   }
 }
 
-async function assertSellerMargCodeFree(code: string | undefined, exceptSellerId?: string) {
+export async function assertSellerMargCodeFree(code: string | undefined, exceptSellerId?: string) {
   if (!code) return;
   const clash = await Seller.findOne({
     margPartyCode: code,
@@ -56,6 +61,28 @@ async function assertSellerMargCodeFree(code: string | undefined, exceptSellerId
       messageEn: `Marg party code ${code} already belongs to ${cp?.firm ?? 'another seller'}.`,
       field: 'margPartyCode',
       meta: { existingCounterpartyId: id(clash.counterpartyId), existingFirm: cp?.firm ?? '' },
+    });
+  }
+}
+
+/**
+ * Phase 6 (BR-366) — a firm that is already a buyer becomes a seller only
+ * through Push to Purchase, which adds the seller side to his own record.
+ * Saying so beats the generic "an account already exists".
+ */
+async function assertNotAlreadyABuyer(gstin: string): Promise<void> {
+  const existing = await Counterparty.findOne({ gstin, deletedAt: null }, { firm: 1 });
+  if (!existing) return;
+  const [buyer, seller] = await Promise.all([
+    Buyer.findOne({ counterpartyId: existing._id }, { _id: 1 }),
+    Seller.exists({ counterpartyId: existing._id }),
+  ]);
+  if (buyer && !seller) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: `${existing.firm ?? 'This firm'} is already a buyer. Ask Sales to use Push to Purchase on his buyer file — one firm, one record.`,
+      field: 'gstin',
+      meta: { existingCounterpartyId: id(existing._id), existingBuyerId: id(buyer._id) },
     });
   }
 }
@@ -81,6 +108,7 @@ export async function registerSellerByStaff(
   input: StaffSellerInput,
   caller: Caller,
 ): Promise<{ registrationId: string; accountNameWarning: string | null }> {
+  await assertNotAlreadyABuyer(input.gstin);
   await assertGstinState(input.gstin, input.location.stateId, 'gstin');
   const place = await assertLocationChain(input.location);
   await assertSellerMargCodeFree(input.margPartyCode);

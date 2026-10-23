@@ -9,7 +9,9 @@ import {
   panFromGstin,
 } from '../../shared/validators.js';
 
-const mobileSchema = z.string().regex(/^[6-9]\d{9}$/, 'Enter a valid 10-digit mobile number.');
+export const mobileSchema = z
+  .string()
+  .regex(/^[6-9]\d{9}$/, 'Enter a valid 10-digit mobile number.');
 // B-48 — this used to be shape+checksum via `isValidGstin` (same pattern as
 // `isValidHsn` elsewhere); somewhere it was pared back to a bare length
 // check, which is how a 15-character but checksum-invalid GSTIN got past
@@ -17,12 +19,12 @@ const mobileSchema = z.string().regex(/^[6-9]\d{9}$/, 'Enter a valid 10-digit mo
 // one — `assertGstinAndMobileAreFree` in onboarding.service.ts still ran
 // the real check below this layer, so this was defense-in-depth lost, not
 // the only gate.
-const gstinSchema = z
+export const gstinSchema = z
   .string()
   .length(15, 'GSTIN must be 15 characters.')
   .refine(isValidGstin, { message: 'That GSTIN does not check out.' });
 const ifscSchema = z.string().length(11, 'IFSC must be 11 characters.');
-const licenceNoSchema = z
+export const licenceNoSchema = z
   .string()
   .min(1, 'Enter the insecticide licence number.')
   .refine(isValidLicenceNo, { message: 'Enter a valid licence number (at least 4 characters).' });
@@ -32,7 +34,7 @@ const licenceNoSchema = z
 // >=1 characters") straight to a user instead of a field-level message like
 // every other field in this file already carries. Restoring one per field
 // rather than leaving the raw library output visible.
-const bankDetailInputSchema = z
+export const bankDetailInputSchema = z
   .object({
     accountNumber: z.string().min(4, 'Enter the bank account number.').max(34),
     ifsc: ifscSchema,
@@ -180,7 +182,7 @@ const optionalLicence = z.preprocess(
     .optional(),
 );
 
-const optionalMargCode = z.preprocess(
+export const optionalMargCode = z.preprocess(
   (value) => (typeof value === 'string' ? blankToUndefined(value.trim().toUpperCase()) : value),
   z.string().max(30, 'A Marg party code is at most 30 characters.').optional(),
 );
