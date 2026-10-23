@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { env } from '../config/env.js';
 import { connectToDatabase, disconnectFromDatabase } from '../db/connect.js';
 import {
@@ -50,6 +51,13 @@ function print(report: LocationMigrationReport): void {
 async function run(): Promise<void> {
   const apply = process.argv.includes('--apply');
   const rollback = process.argv.includes('--rollback');
+  if (!apply && !rollback) {
+    // A dry run must not write anything — and merely connecting with these
+    // models loaded makes Mongoose build their indexes and create the new
+    // collections (state, district, pincode). Both are switched off here.
+    mongoose.set('autoIndex', false);
+    mongoose.set('autoCreate', false);
+  }
   await connectToDatabase(env.mongodbUri);
   if (rollback) {
     const { restored } = await rollbackLocationMigration();

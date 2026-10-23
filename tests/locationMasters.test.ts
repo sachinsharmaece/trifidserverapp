@@ -258,6 +258,8 @@ describe('Migration: free-text tehsils onto the masters (check 1, suspected dupl
       { name: 'Tarana', district: 'Ujjain', state: 'Madhya Pradesh' },
       { name: 'Tarana', district: 'ujjain', state: 'MP' }, // same place twice
       { name: 'Somewhere', district: 'Nowhere', state: 'Atlantis' },
+      { name: 'barnagar', district: 'ujjain', state: 'MP' },
+      { name: 'MP Nagar', district: 'Bhopal', state: 'MP' },
     ]);
 
     const dry = await migrateLocationMasters({ apply: false });
@@ -265,17 +267,22 @@ describe('Migration: free-text tehsils onto the masters (check 1, suspected dupl
     expect(await District.countDocuments()).toBe(0);
     expect(await Tehsil.countDocuments({ districtId: { $ne: null } })).toBe(0);
     expect(dry.districtsCreated.sort()).toEqual([
+      'Bhopal, Madhya Pradesh',
       'Damoh, Madhya Pradesh',
       'Ujjain, Madhya Pradesh',
     ]);
-    expect(dry.linked).toHaveLength(5);
+    expect(dry.linked).toHaveLength(7);
 
     const applied = await migrateLocationMasters({ apply: true });
-    expect(applied.linked).toHaveLength(5);
-    expect(await District.countDocuments()).toBe(2);
+    expect(applied.linked).toHaveLength(7);
+    expect(await District.countDocuments()).toBe(3);
+    // An all-lowercase name is capitalised; a name with capitals is left as typed.
+    expect(await Tehsil.exists({ name: 'Barnagar', district: 'Ujjain' })).not.toBeNull();
+    expect(await Tehsil.exists({ name: 'MP Nagar', district: 'Bhopal' })).not.toBeNull();
     expect(await Tehsil.countDocuments({ state: { $in: ['MP', 'mp', 'M.P.'] } })).toBe(1); // the conflicting Tarana, left as it was
     const ujjainTehsils = await Tehsil.find({ district: 'Ujjain', districtId: { $ne: null } });
     expect(ujjainTehsils.map((t) => t.name).sort()).toEqual([
+      'Barnagar',
       'Mahidpur',
       'Mehidpur',
       'Tarana',
@@ -294,10 +301,11 @@ describe('Migration: free-text tehsils onto the masters (check 1, suspected dupl
     const again = await migrateLocationMasters({ apply: true });
     expect(again.linked).toHaveLength(0);
     expect(again.districtsCreated).toHaveLength(0);
-    expect(again.alreadyLinked).toBe(5);
+    expect(again.alreadyLinked).toBe(7);
 
     const { restored } = await rollbackLocationMigration();
-    expect(restored).toBe(5);
+    expect(restored).toBe(7);
+    expect(await Tehsil.exists({ name: 'barnagar' })).not.toBeNull();
     expect(await Tehsil.countDocuments({ districtId: { $ne: null } })).toBe(0);
     expect(await Tehsil.findOne({ name: 'Mahidpur' })).toMatchObject({
       district: 'Ujjain ',

@@ -15,7 +15,7 @@ import { toTitleCase } from './territory.masters.js';
  *   case-insensitively within that state; a district not in the master yet
  *   is created.
  * - The tehsil gets `districtId`, and its `district`/`state` text becomes the
- *   master's names.
+ *   master's names. An all-lowercase tehsil name is capitalised.
  * - **Nothing is deleted or merged.** Two tehsils that would land on the
  *   same name in the same district are a *conflict*: one is linked, the
  *   other is left as it was and reported. Look-alike names (Mahidpur /
@@ -57,13 +57,16 @@ function levenshtein(a: string, b: string): number {
 }
 
 // Names a person should look at side by side: the same letters once
-// punctuation and spaces are ignored, or one or two letters apart.
+// punctuation and spaces are ignored, or one letter apart. Two letters was
+// tried against the real MP master and flagged distinct places (Harda /
+// Handia, Katni / Satna); one letter keeps the real suspects (Mahidpur /
+// Mehidpur, barnagar / Badnagar).
 function looksAlike(a: string, b: string): string | null {
   const la = lettersOnly(a);
   const lb = lettersOnly(b);
   if (la === lb) return 'the same letters, written differently';
-  if (Math.min(la.length, lb.length) >= 5 && levenshtein(la, lb) <= 2) {
-    return 'spelled one or two letters apart';
+  if (Math.min(la.length, lb.length) >= 5 && levenshtein(la, lb) <= 1) {
+    return 'spelled one letter apart';
   }
   return null;
 }
@@ -142,6 +145,9 @@ export async function migrateLocationMasters(options: {
     stateName: string;
     districtKey: string;
     districtName: string;
+    // An all-lowercase name ("barnagar") is capitalised, as a new tehsil
+    // would be; any name with a capital in it is left exactly as typed.
+    tehsilName: string;
   };
   const plans: Plan[] = [];
   for (const tehsil of tehsils) {
@@ -162,6 +168,8 @@ export async function migrateLocationMasters(options: {
       stateName: state.name,
       districtKey,
       districtName: districtByKey.get(districtKey)?.name ?? districtName,
+      tehsilName:
+        tehsil.name === tehsil.name.toLowerCase() ? toTitleCase(tehsil.name) : tehsil.name,
     });
   }
 
@@ -176,7 +184,11 @@ export async function migrateLocationMasters(options: {
   for (const group of groups.values()) {
     const score = (p: Plan) =>
       (p.tehsil.districtId ? 2 : 0) +
-      (p.tehsil.district === p.districtName && p.tehsil.state === p.stateName ? 1 : 0);
+      (p.tehsil.district === p.districtName &&
+      p.tehsil.state === p.stateName &&
+      p.tehsil.name === p.tehsilName
+        ? 1
+        : 0);
     const ordered = [...group].sort((a, b) => score(b) - score(a));
     const [keep, ...rest] = ordered;
     winners.push(keep!);
@@ -237,13 +249,14 @@ export async function migrateLocationMasters(options: {
       district.id !== null &&
       String(tehsil.districtId) === String(district.id) &&
       tehsil.district === district.name &&
-      tehsil.state === plan.stateName;
+      tehsil.state === plan.stateName &&
+      tehsil.name === plan.tehsilName;
     if (unchanged) {
       report.alreadyLinked += 1;
       continue;
     }
     report.linked.push({
-      tehsil: tehsil.name,
+      tehsil: tehsil.name === plan.tehsilName ? tehsil.name : `${tehsil.name} → ${plan.tehsilName}`,
       from: `${tehsil.district}, ${tehsil.state}`,
       to: `${district.name}, ${plan.stateName}`,
     });
@@ -253,6 +266,7 @@ export async function migrateLocationMasters(options: {
       {
         $setOnInsert: {
           tehsilId: tehsil._id,
+          name: tehsil.name,
           district: tehsil.district,
           state: tehsil.state,
           districtId: tehsil.districtId ?? null,
@@ -263,7 +277,14 @@ export async function migrateLocationMasters(options: {
     );
     await Tehsil.updateOne(
       { _id: tehsil._id },
-      { $set: { districtId: district.id, district: district.name, state: plan.stateName } },
+      {
+        $set: {
+          name: plan.tehsilName,
+          districtId: district.id,
+          district: district.name,
+          state: plan.stateName,
+        },
+      },
     );
   }
 
@@ -282,7 +303,14 @@ export async function rollbackLocationMigration(): Promise<{ restored: number }>
   for (const row of rows) {
     await Tehsil.updateOne(
       { _id: row.tehsilId },
-      { $set: { district: row.district, state: row.state, districtId: row.districtId ?? null } },
+      {
+        $set: {
+          ...(row.name ? { name: row.name } : {}),
+          district: row.district,
+          state: row.state,
+          districtId: row.districtId ?? null,
+        },
+      },
     );
   }
   await backup.deleteMany({});
