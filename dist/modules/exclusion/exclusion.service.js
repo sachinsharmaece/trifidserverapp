@@ -30,7 +30,14 @@ export async function lookupGstin(gstin, sellerCounterpartyId, ip) {
         logger.warn({ msg: 'exclusion lookup burst', sellerCounterpartyId, ip, perSeller, perIp });
         throw new AppError({ code: 'RATE_LIMITED', messageEn: 'Too many lookups. Try again later.' });
     }
-    const counterparty = await Counterparty.findOne({ gstin, deletedAt: null });
+    // A 10-character key is a PAN: a buyer without a GSTIN (DEC-054).
+    const counterparty = gstin.length === 10
+        ? await Counterparty.findOne({
+            pan: gstin,
+            $or: [{ gstin: null }, { gstin: { $exists: false } }],
+            deletedAt: null,
+        })
+        : await Counterparty.findOne({ gstin, deletedAt: null });
     if (!counterparty || !counterparty.firm) {
         return { exists: false };
     }

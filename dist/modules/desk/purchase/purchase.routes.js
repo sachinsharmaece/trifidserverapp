@@ -1,6 +1,8 @@
+import { bySellerId, field, param, requireInScope, scopeList } from '../../../shared/scope.js';
+import { sellerOfPile, sellerOfPo } from '../../../shared/scopeResolvers.js';
 import { Router } from 'express';
 import { authenticate } from '../../../middleware/auth.js';
-import { requirePermission } from '../../../middleware/requirePermission.js';
+import { requireAnyPermission, requirePermission } from '../../../middleware/requirePermission.js';
 import { validateBody } from '../../../middleware/validate.js';
 import { requireIdempotencyKey } from '../../../middleware/idempotency.js';
 import { PERMISSIONS } from '../../../config/permissions.js';
@@ -10,13 +12,13 @@ export const purchaseRouter = Router();
 // New — M6. 🏢 Purchase. BR-069 — every response below carries no buyer
 // identity and no rupee figure; see purchase.service.ts's own DTOs.
 purchaseRouter.get('/staff/purchase/demand', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getActiveDemandList);
-purchaseRouter.get('/staff/purchase/asks/:askId/quote-gaps', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getQuoteGaps);
+purchaseRouter.get('/staff/purchase/asks/:askId/quote-gaps', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), scopeList('purchase', bySellerId), controller.getQuoteGaps);
 // Purchase-desk v2 — per-ask seller states in the prototype's own vocabulary.
-purchaseRouter.get('/staff/purchase/asks/:askId/seller-states', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getAskSellerStates);
+purchaseRouter.get('/staff/purchase/asks/:askId/seller-states', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), scopeList('purchase', bySellerId), controller.getAskSellerStates);
 purchaseRouter.post('/staff/purchase/asks/:askId/chase', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), validateBody(askChaseSchema), controller.postAskChase);
 purchaseRouter.get('/staff/purchase/coverage-map', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getCoverageMap);
 purchaseRouter.get('/staff/purchase/products/:productId/analysis', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getProductAnalysis);
-purchaseRouter.get('/staff/purchase/products/:productId/sellers', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getProductSellers);
+purchaseRouter.get('/staff/purchase/products/:productId/sellers', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), scopeList('purchase', bySellerId), controller.getProductSellers);
 // IC-06 — the response never carries the cap or the two source rates.
 purchaseRouter.get('/staff/purchase/absorption', authenticate, requirePermission(PERMISSIONS.ABSORPTION_READ), controller.getAbsorptionQueue);
 purchaseRouter.post('/staff/purchase/non-order-reasons', authenticate, requirePermission(PERMISSIONS.NON_ORDER_REASON_RECORD), controller.postNonOrderReason);
@@ -26,7 +28,7 @@ purchaseRouter.get('/staff/purchase/return-notes/ageing', authenticate, requireP
 purchaseRouter.get('/staff/purchase/funnel', authenticate, requirePermission(PERMISSIONS.FUNNEL_READ), controller.getFunnelReport);
 // New — M7, BR-206. The seller-recovery half of a Controller-decided
 // dispute — never the buyer, never the buyer's note (see purchase.service.ts).
-purchaseRouter.get('/staff/purchase/dispute-recovery', authenticate, requirePermission(PERMISSIONS.DISPUTE_RECOVERY_READ), controller.getSellerRecoveryQueue);
+purchaseRouter.get('/staff/purchase/dispute-recovery', authenticate, requirePermission(PERMISSIONS.DISPUTE_RECOVERY_READ), scopeList('purchase', bySellerId), controller.getSellerRecoveryQueue);
 // ---------------------------------------------------------------------------
 // Purchase-desk v2.
 // ---------------------------------------------------------------------------
@@ -34,44 +36,44 @@ purchaseRouter.get('/staff/purchase/dispute-recovery', authenticate, requirePerm
 // (same boundary as the rest of this desk's reads); PO_EDIT-adjacent writes
 // stay on the desk's own write permission, DEMAND_READ, since there is no
 // money and no board visibility in a catalogue entry (see purchase.service.ts).
-purchaseRouter.get('/staff/purchase/sellers/:sellerId/catalogue', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getSellerCatalogue);
-purchaseRouter.post('/staff/purchase/catalogue', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), validateBody(sellerCatalogueEntrySchema), controller.postSellerCatalogueEntry);
+purchaseRouter.get('/staff/purchase/sellers/:sellerId/catalogue', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), requireInScope('purchase', param('sellerId')), controller.getSellerCatalogue);
+purchaseRouter.post('/staff/purchase/catalogue', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), requireInScope('purchase', field('body', 'sellerId', 'profile')), validateBody(sellerCatalogueEntrySchema), controller.postSellerCatalogueEntry);
 // The companies a seller deals in — every product of a ticked company counts
 // as carried (see purchase.catalogue.ts). Same boundary as the catalogue.
-purchaseRouter.get('/staff/purchase/sellers/:sellerId/dealerships', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getSellerDealerships);
-purchaseRouter.put('/staff/purchase/sellers/:sellerId/dealerships', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), validateBody(sellerDealershipsSchema), controller.putSellerDealerships);
-purchaseRouter.get('/staff/purchase/sellers/:sellerId/file', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getSellerFile);
+purchaseRouter.get('/staff/purchase/sellers/:sellerId/dealerships', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), requireInScope('purchase', param('sellerId')), controller.getSellerDealerships);
+purchaseRouter.put('/staff/purchase/sellers/:sellerId/dealerships', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), requireInScope('purchase', param('sellerId')), validateBody(sellerDealershipsSchema), controller.putSellerDealerships);
+purchaseRouter.get('/staff/purchase/sellers/:sellerId/file', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), requireInScope('purchase', param('sellerId')), controller.getSellerFile);
 // The seller file's funnel: where each of his orders sits, stage by stage.
-purchaseRouter.get('/staff/purchase/sellers/:sellerId/funnel', authenticate, requirePermission(PERMISSIONS.PO_EDIT), controller.getSellerStageFunnelRoute);
+purchaseRouter.get('/staff/purchase/sellers/:sellerId/funnel', authenticate, requirePermission(PERMISSIONS.PO_EDIT), requireInScope('purchase', param('sellerId')), controller.getSellerStageFunnelRoute);
 // Supply matrix — computed from the catalogue + live listings.
 purchaseRouter.get('/staff/purchase/matrix/by-product', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getSupplyMatrixByProduct);
-purchaseRouter.get('/staff/purchase/matrix/by-seller', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getSupplyMatrixBySeller);
-purchaseRouter.get('/staff/purchase/matrix/by-product/:productId/call-list', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getSupplyMatrixCallList);
+purchaseRouter.get('/staff/purchase/matrix/by-seller', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), scopeList('purchase', bySellerId), controller.getSupplyMatrixBySeller);
+purchaseRouter.get('/staff/purchase/matrix/by-product/:productId/call-list', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), scopeList('purchase', bySellerId), controller.getSupplyMatrixCallList);
 // Today — the desk-wide roll-up of `seller-states`' "listed, not quoted" (BR-275).
 purchaseRouter.get('/staff/purchase/demand/on-board-not-quoted', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getOnBoardNotQuotedQueue);
 // Confirmations — piles waiting on a seller's decision.
-purchaseRouter.get('/staff/purchase/piles', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getPilesAwaitingDecision);
-purchaseRouter.post('/staff/purchase/piles/:pileId/chase', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.postPileChase);
+purchaseRouter.get('/staff/purchase/piles', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), scopeList('purchase', bySellerId), controller.getPilesAwaitingDecision);
+purchaseRouter.post('/staff/purchase/piles/:pileId/chase', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), requireInScope('purchase', sellerOfPile()), controller.postPileChase);
 // Stock → PO → Billed. Reads and the hand-over use `po:edit` like Dispatch; recording what the
 // seller said on a call (hold, invoice) uses the seller-call permission, with a call note.
-purchaseRouter.get('/staff/purchase/stock', authenticate, requirePermission(PERMISSIONS.PO_EDIT), controller.getStockQueue);
+purchaseRouter.get('/staff/purchase/stock', authenticate, requirePermission(PERMISSIONS.PO_EDIT), scopeList('purchase', bySellerId), controller.getStockQueue);
 purchaseRouter.post('/staff/purchase/stock/:soId/hold', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), controller.postStockHold);
 purchaseRouter.post('/staff/purchase/stock/:soId/hold/adjust', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), controller.postAdjustStockHold);
 purchaseRouter.post('/staff/purchase/stock/:soId/hold/confirm', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), controller.postConfirmStockHold);
-purchaseRouter.get('/staff/purchase/pos', authenticate, requirePermission(PERMISSIONS.PO_EDIT), controller.getPoQueue);
-purchaseRouter.post('/staff/purchase/pos/:poId/invoice', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), controller.postSellerInvoice);
+purchaseRouter.get('/staff/purchase/pos', authenticate, requirePermission(PERMISSIONS.PO_EDIT), scopeList('purchase', bySellerId), controller.getPoQueue);
+purchaseRouter.post('/staff/purchase/pos/:poId/invoice', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), requireInScope('purchase', sellerOfPo()), controller.postSellerInvoice);
 // Leg 1 reported by the seller on a call — idempotent like every stage-moving POST.
-purchaseRouter.post('/staff/purchase/pos/:poId/seller-dispatched', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), requireIdempotencyKey(), controller.postSellerDispatched);
-purchaseRouter.get('/staff/purchase/billed', authenticate, requirePermission(PERMISSIONS.PO_EDIT), controller.getBilledQueue);
-purchaseRouter.post('/staff/purchase/pos/:poId/hand-to-dispatch', authenticate, requirePermission(PERMISSIONS.PO_EDIT), controller.postHandToDispatch);
+purchaseRouter.post('/staff/purchase/pos/:poId/seller-dispatched', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), requireInScope('purchase', sellerOfPo()), requireIdempotencyKey(), controller.postSellerDispatched);
+purchaseRouter.get('/staff/purchase/billed', authenticate, requirePermission(PERMISSIONS.PO_EDIT), scopeList('purchase', bySellerId), controller.getBilledQueue);
+purchaseRouter.post('/staff/purchase/pos/:poId/hand-to-dispatch', authenticate, requirePermission(PERMISSIONS.PO_EDIT), requireInScope('purchase', sellerOfPo()), controller.postHandToDispatch);
 // Dispatch — Purchase's own pre-leg-1 chase queue. `po:edit` (already held —
 // see chain.service.ts's dispatch-clock fields) since logging a chase touches the PO.
-purchaseRouter.get('/staff/purchase/dispatch', authenticate, requirePermission(PERMISSIONS.PO_EDIT), controller.getDispatchChaseQueue);
-purchaseRouter.post('/staff/purchase/dispatch/:poId/chase', authenticate, requirePermission(PERMISSIONS.PO_EDIT), controller.postDispatchChase);
+purchaseRouter.get('/staff/purchase/dispatch', authenticate, requirePermission(PERMISSIONS.PO_EDIT), scopeList('purchase', bySellerId), controller.getDispatchChaseQueue);
+purchaseRouter.post('/staff/purchase/dispatch/:poId/chase', authenticate, requirePermission(PERMISSIONS.PO_EDIT), requireInScope('purchase', sellerOfPo()), controller.postDispatchChase);
 // Recovery — dock findings still waiting on Purchase's own apply act.
 // Applying itself is the pre-existing `POST /staff/pos/:poId/inspections/apply`
 // (`modules/dock`) — this only reads the queue.
-purchaseRouter.get('/staff/purchase/inspections/pending-apply', authenticate, requirePermission(PERMISSIONS.PO_EDIT), controller.getInspectionsPendingApply);
+purchaseRouter.get('/staff/purchase/inspections/pending-apply', authenticate, requirePermission(PERMISSIONS.PO_EDIT), scopeList('purchase', bySellerId), controller.getInspectionsPendingApply);
 // Products → Analysis, every row in one call.
 purchaseRouter.get('/staff/purchase/products/analysis', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getProductAnalysisAll);
 purchaseRouter.get('/staff/purchase/products/funnel', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getProductFunnelAll);
@@ -79,9 +81,13 @@ purchaseRouter.get('/staff/purchase/products/funnel', authenticate, requirePermi
 // seller's catalogue at once, cannot back a live listing until Admin confirms
 // them via the pre-existing CATALOG_WRITE PATCHes in modules/catalog.
 purchaseRouter.get('/staff/purchase/masters/drafts', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getDraftMasters);
-purchaseRouter.get('/staff/purchase/masters/manufacturers', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getMastersManufacturers);
+// Phase 3 — the company list is also the buyer form's "Companies he deals
+// in" picker, so Sales reads it too (names only; nothing commercial).
+// Phase 4 — the seller "Assigned to" picker: who this caller may assign a seller to.
+purchaseRouter.get('/staff/purchase/assignees', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), controller.getAssignees);
+purchaseRouter.get('/staff/purchase/masters/manufacturers', authenticate, requireAnyPermission(PERMISSIONS.DEMAND_READ, PERMISSIONS.SALES_WORKLIST_READ), controller.getMastersManufacturers);
 purchaseRouter.get('/staff/purchase/masters/products', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getMastersProducts);
-purchaseRouter.get('/staff/purchase/debits', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getOpenSellerDebits);
+purchaseRouter.get('/staff/purchase/debits', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), scopeList('purchase', bySellerId), controller.getOpenSellerDebits);
 purchaseRouter.post('/staff/purchase/masters/manufacturers', authenticate, requirePermission(PERMISSIONS.CATALOG_DRAFT_CREATE), validateBody(draftManufacturerSchema), controller.postDraftManufacturer);
 purchaseRouter.post('/staff/purchase/masters/products', authenticate, requirePermission(PERMISSIONS.CATALOG_DRAFT_CREATE), validateBody(draftProductSchema), controller.postDraftProduct);
 purchaseRouter.post('/staff/purchase/masters/skus', authenticate, requirePermission(PERMISSIONS.CATALOG_DRAFT_CREATE), validateBody(draftSkuSchema), controller.postDraftSku);

@@ -34,7 +34,7 @@ export async function listNotificationLog(filters) {
             deliveryStatus: row.deliveryStatus,
             outcomeCode: row.outcomeCode,
             toFirm: counterparty?.firm ?? null,
-            toMobileMasked: maskMobile(counterparty?.mobile),
+            toMobileMasked: maskMobile(counterparty?.mobile ?? counterparty?.contactMobile ?? undefined),
             httpStatus: row.response?.httpStatus ?? null,
             providerErrorCode: row.response?.providerErrorCode ?? null,
         };
@@ -68,7 +68,7 @@ export async function getNotificationWorklist() {
             outboxId: row._id.toString(),
             templateKey: row.templateKey,
             toFirm: counterparty?.firm ?? null,
-            toMobileMasked: maskMobile(counterparty?.mobile),
+            toMobileMasked: maskMobile(counterparty?.mobile ?? counterparty?.contactMobile ?? undefined),
             queuedAt: (row.staffQueuedAt ?? row.updatedAt).toISOString(),
         };
     });
