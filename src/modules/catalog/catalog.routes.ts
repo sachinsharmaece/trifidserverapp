@@ -2,9 +2,11 @@ import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
 import { requirePermission } from '../../middleware/requirePermission.js';
 import { validateBody, validateQuery } from '../../middleware/validate.js';
+import { requireIdempotencyKey } from '../../middleware/idempotency.js';
 import { PERMISSIONS } from '../../config/permissions.js';
 import * as controller from './catalog.controller.js';
 import {
+  addPacksSchema,
   createHsnSchema,
   createManufacturerSchema,
   createProductSchema,
@@ -59,6 +61,7 @@ catalogRouter.post(
   '/admin/manufacturers',
   authenticate,
   requirePermission(PERMISSIONS.CATALOG_WRITE),
+  requireIdempotencyKey(),
   validateBody(createManufacturerSchema),
   controller.postManufacturer,
 );
@@ -92,6 +95,7 @@ catalogRouter.post(
   '/admin/products',
   authenticate,
   requirePermission(PERMISSIONS.CATALOG_WRITE),
+  requireIdempotencyKey(),
   validateBody(createProductSchema),
   controller.postProduct,
 );
@@ -99,6 +103,7 @@ catalogRouter.patch(
   '/admin/products/:id',
   authenticate,
   requirePermission(PERMISSIONS.CATALOG_WRITE),
+  requireIdempotencyKey(),
   validateBody(updateProductSchema),
   controller.patchProduct,
 );
@@ -106,14 +111,32 @@ catalogRouter.post(
   '/admin/skus/import',
   authenticate,
   requirePermission(PERMISSIONS.CATALOG_WRITE),
+  requireIdempotencyKey(),
   validateBody(skuImportSchema),
   controller.postSkuImport,
+);
+// 24 Oct — the Manage desk's own pack list (every pack, inactive and draft
+// too) and "Add pack" typed as on create (size + unit, BR-055 conversion).
+catalogRouter.get(
+  '/admin/products/:id/skus',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  controller.getAdminSkus,
+);
+catalogRouter.post(
+  '/admin/products/:id/packs',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  requireIdempotencyKey(),
+  validateBody(addPacksSchema),
+  controller.postProductPacks,
 );
 // New — the Manage desk's own SKU edit.
 catalogRouter.patch(
   '/admin/skus/:id',
   authenticate,
   requirePermission(PERMISSIONS.CATALOG_WRITE),
+  requireIdempotencyKey(),
   validateBody(updateSkuSchema),
   controller.patchSku,
 );
@@ -131,6 +154,7 @@ catalogRouter.post(
   '/admin/technicals',
   authenticate,
   requirePermission(PERMISSIONS.CATALOG_WRITE),
+  requireIdempotencyKey(),
   validateBody(createTechnicalSchema),
   controller.postTechnical,
 );
@@ -144,6 +168,7 @@ catalogRouter.post(
   '/admin/hsn',
   authenticate,
   requirePermission(PERMISSIONS.CATALOG_WRITE),
+  requireIdempotencyKey(),
   validateBody(createHsnSchema),
   controller.postHsn,
 );

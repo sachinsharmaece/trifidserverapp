@@ -121,7 +121,14 @@ export const updateSkuSchema = z
     active: z.boolean().optional(),
     // Purchase-desk v2 — Admin's confirm action, same one-direction shape.
     state: z.literal('live').optional(),
+    // 24 Oct — the unit the pack was entered in; `packSize` is then in it.
+    unit: z.enum(PACK_UNITS).optional(),
   })
+  .strict();
+
+// 24 Oct — "Add pack" on an existing product, typed as on create.
+export const addPacksSchema = z
+  .object({ packs: z.array(productPackSchema).min(1, 'Add at least one pack.').max(50) })
   .strict();
 
 // Deliberately loose on packSize/unitsPerBox/baseUnit here (z.unknown()) —
