@@ -350,6 +350,16 @@ export async function createProduct(input) {
 // action) — never accepted going the other way, same one-direction shape
 // as `updateManufacturer` above.
 export async function updateProduct(productId, updates) {
+    // The same check create makes — an edit may not point at a manufacturer
+    // that does not exist.
+    if (updates.manufacturerId !== undefined &&
+        !(await Manufacturer.exists({ _id: updates.manufacturerId }))) {
+        throw new AppError({
+            code: 'VALIDATION_FAILED',
+            messageEn: 'Manufacturer not found.',
+            field: 'manufacturerId',
+        });
+    }
     const $set = { ...updates };
     if ($set.technical !== undefined)
         $set.technical = await ensureTechnical($set.technical);
@@ -497,6 +507,67 @@ export async function listDraftMasters() {
         }),
     ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 }
+// ---------------------------------------------------------------------------
+// One pack rule for create and edit (24 Oct). A pack is typed as a size in a
+// unit the admin picks — 500 ML — and stored in the base unit (0.5 LTR) with
+// the label keeping what was typed. Create, "Add pack" on an existing
+// product, and editing a pack all go through packToSkuFields / packOf.
+// ---------------------------------------------------------------------------
+/** How a stored pack reads back in the unit it was entered in: 0.5 LTR labelled "500 ML" → 500 ML. */
+export function packOf(sku) {
+    const small = sku.baseUnit === 'LTR' ? 'ML' : sku.baseUnit === 'KG' ? 'GM' : null;
+    const match = small ? new RegExp(`^\\s*([\\d.]+)\\s*${small}\\b`, 'i').exec(sku.packLabel) : null;
+    if (small && match && Math.abs(Number(match[1]) / 1000 - sku.packSize) < 1e-6) {
+        return { unit: small, size: Number(match[1]) };
+    }
+    return { unit: sku.baseUnit, size: sku.packSize };
+}
+const packKey = (row) => `${row.baseUnit}:${Math.round(row.packSize * 1e6)}`;
+/** The Manage desk's pack list: every pack, inactive and draft too (the pickers only show live, active ones). */
+export async function listAdminSkus(productId) {
+    const skus = await Sku.find({ productId, deletedAt: null }).sort({ baseUnit: 1, packSize: 1 });
+    return skus.map((sku) => {
+        const pack = packOf(sku);
+        return {
+            skuId: sku._id.toString(),
+            packLabel: sku.packLabel,
+            packSize: sku.packSize,
+            baseUnit: sku.baseUnit,
+            unitsPerBox: sku.unitsPerBox,
+            active: sku.active,
+            baseUnitsPerBox: sku.baseUnitsPerBox,
+            state: sku.state,
+            unit: pack.unit,
+            displaySize: pack.size,
+        };
+    });
+}
+/** "Add pack" on an existing product — the same rule, and duplicate check, as packs given on create. */
+export async function addProductPacks(productId, packs) {
+    if (!(await Product.exists({ _id: productId }))) {
+        throw new AppError({ code: 'NOT_FOUND', messageEn: 'Product not found.' });
+    }
+    const existing = await Sku.find({ productId, deletedAt: null }, { baseUnit: 1, packSize: 1, packLabel: 1 });
+    const taken = new Map(existing.map((s) => [packKey(s), s.packLabel]));
+    const rows = packs.map(packToSkuFields);
+    for (const row of rows) {
+        const clash = taken.get(packKey(row));
+        if (clash) {
+            throw new AppError({
+                code: 'VALIDATION_FAILED',
+                messageEn: `This product already has the pack "${clash}".`,
+                field: 'packs',
+            });
+        }
+        taken.set(packKey(row), row.packLabel);
+    }
+    const skuIds = [];
+    for (const row of rows) {
+        const sku = await Sku.create({ productId, ...row });
+        skuIds.push(sku._id.toString());
+    }
+    return { skuIds };
+}
 /**
  * New — the Manage desk's own SKU edit. `baseUnit` is deliberately not an
  * accepted field here at all (BR-055, `models/Sku.ts`'s own `immutable:
@@ -520,9 +591,45 @@ export async function updateSku(skuId, updates) {
             field: 'packLabel',
         });
     }
-    if (updates.packLabel !== undefined)
+    // A pack's unit is fixed once it exists (orders, stock and prices hang off
+    // it): change the size in the unit it was entered in, or make it inactive
+    // and add a new pack.
+    if (updates.unit !== undefined) {
+        const current = packOf(sku);
+        if (updates.unit !== current.unit) {
+            throw new AppError({
+                code: 'VALIDATION_FAILED',
+                messageEn: `A pack's unit cannot change (this one is ${current.unit}). Make it inactive and add a new pack.`,
+                field: 'unit',
+            });
+        }
+        if (updates.packSize !== undefined) {
+            const fields = packToSkuFields({
+                packSize: updates.packSize,
+                unit: updates.unit,
+                unitsPerBox: updates.unitsPerBox ?? sku.unitsPerBox,
+            });
+            const clash = await Sku.findOne({
+                productId: sku.productId,
+                _id: { $ne: sku._id },
+                deletedAt: null,
+                baseUnit: fields.baseUnit,
+                packSize: fields.packSize,
+            });
+            if (clash) {
+                throw new AppError({
+                    code: 'VALIDATION_FAILED',
+                    messageEn: `This product already has the pack "${clash.packLabel}".`,
+                    field: 'packSize',
+                });
+            }
+            sku.packSize = fields.packSize;
+            sku.packLabel = fields.packLabel;
+        }
+    }
+    if (updates.packLabel !== undefined && updates.unit === undefined)
         sku.packLabel = updates.packLabel;
-    if (updates.packSize !== undefined)
+    if (updates.packSize !== undefined && updates.unit === undefined)
         sku.packSize = updates.packSize;
     if (updates.unitsPerBox !== undefined)
         sku.unitsPerBox = updates.unitsPerBox;
