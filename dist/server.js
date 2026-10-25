@@ -6,7 +6,9 @@ import { seedLanes } from './db/seedLanes.js';
 import { seedStates } from './db/seedStates.js';
 import { seedNotificationTemplates } from './modules/notification/notification.templates.js';
 import { logger } from './shared/logger.js';
+import { assertEncryptionKeys } from './shared/encryption.js';
 async function startServer() {
+    assertEncryptionKeys();
     await connectToDatabase(env.mongodbUri);
     await seedRolesAndPermissions();
     await seedLanes();

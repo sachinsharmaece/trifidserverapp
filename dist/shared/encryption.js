@@ -61,6 +61,15 @@ export function maskAccountNumber(plainText) {
 function getPiiKey() {
     return keyFrom(env.piiEncryptionKey, 'PII_ENCRYPTION_KEY');
 }
+/**
+ * Checked once at start-up, so a key that is not 32 bytes stops the server
+ * with a clear message instead of failing the first save that encrypts
+ * something (found 24 Oct: a typed value in place of a generated key).
+ */
+export function assertEncryptionKeys() {
+    getKey();
+    getPiiKey();
+}
 export function encryptPii(plainText) {
     return encryptWith(getPiiKey(), plainText);
 }

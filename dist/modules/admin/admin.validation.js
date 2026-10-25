@@ -136,7 +136,9 @@ export const updateEmployeeSchema = z
         .string()
         .transform((value) => (value === '' ? undefined : value))
         .optional(),
-    hr: updateHrSchema,
+    // Left out keeps what is on record — so an employee with no HR details
+    // yet can still be edited. Sent, every field is checked as on create.
+    hr: updateHrSchema.optional(),
 })
     .strict();
 export const deactivateEmployeeSchema = z

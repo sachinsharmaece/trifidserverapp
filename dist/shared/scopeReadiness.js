@@ -27,7 +27,10 @@ export async function scopeReadiness() {
         if (positions.includes('SALES_EXEC') && !e.reportsToSalesLeaderId) {
             noLeader.push(`${e.person} (Sales)`);
         }
-        if (positions.includes('PURCHASE_EXEC') && !e.reportsToPurchaseLeaderId) {
+        // DEC-066 — a Sales Leader reports to Admin on the Purchase side.
+        if (positions.includes('PURCHASE_EXEC') &&
+            !positions.includes('SALES_LEADER') &&
+            !e.reportsToPurchaseLeaderId) {
             noLeader.push(`${e.person} (Purchase)`);
         }
         if ((has(e, 'accounts') || has(e, 'transport_logistics')) &&

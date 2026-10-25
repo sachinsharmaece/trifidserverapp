@@ -24,7 +24,14 @@ const SIDE = {
 };
 const id = (value) => String(value);
 export async function teamOf(side, leaderId) {
-    const members = await Employee.find({ [SIDE[side].reportsTo]: leaderId, active: true }, { _id: 1 });
+    // DEC-066 — a Sales Leader reports to Admin, so no Purchase Leader's team
+    // takes him in, even from an older record that still names one; his
+    // sellers and the pushes he receives are decided by Admin.
+    const members = await Employee.find({
+        [SIDE[side].reportsTo]: leaderId,
+        active: true,
+        ...(side === 'purchase' ? { positions: { $ne: 'SALES_LEADER' } } : {}),
+    }, { _id: 1 });
     return [...new Set([leaderId, ...members.map((m) => id(m._id))])];
 }
 export async function isLeaderOf(side, employeeId) {
