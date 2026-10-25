@@ -68,7 +68,8 @@ export interface TeamInput {
   reportsToPurchaseLeaderId?: ReportsTo;
   worksForTeamLeaderIds?: string[];
   worksForAllTeams?: boolean;
-  hr: HrInput;
+  // Required on create; optional on Edit, where leaving it out keeps what is on record.
+  hr?: HrInput;
 }
 
 function fieldError(field: string, messageEn: string): AppError {
@@ -127,9 +128,15 @@ async function resolveTeam(input: TeamInput, selfId: string | null): Promise<Res
   const reportsToSalesLeaderId = positions.includes('SALES_EXEC')
     ? await resolveLeader('sales', input.reportsToSalesLeaderId, positions, selfId)
     : null;
-  const reportsToPurchaseLeaderId = positions.includes('PURCHASE_EXEC')
-    ? await resolveLeader('purchase', input.reportsToPurchaseLeaderId, positions, selfId)
-    : null;
+  // DEC-066 — a Sales Leader is his team's Purchase Executive (DEC-059) but
+  // reports to Admin, not to a Purchase Leader; unless he is a Purchase
+  // Leader too, his Purchase reports-to stays empty.
+  const reportsToAdmin =
+    positions.includes('SALES_LEADER') && !positions.includes('PURCHASE_LEADER');
+  const reportsToPurchaseLeaderId =
+    positions.includes('PURCHASE_EXEC') && !reportsToAdmin
+      ? await resolveLeader('purchase', input.reportsToPurchaseLeaderId, positions, selfId)
+      : null;
 
   // "Works for team(s)" only means something on the Accounts and Logistics
   // desks; a team is named by its Sales Leader.
@@ -403,7 +410,7 @@ function mfaFor(roleKeys: string[], email: string, existingSecret: string | null
  * still fails if a Purchase lane is unheld elsewhere.
  */
 export async function createEmployee(
-  input: TeamInput & { password: string; laneKeys?: string[] },
+  input: TeamInput & { hr: HrInput; password: string; laneKeys?: string[] },
   actor: AdminActor,
 ): Promise<CreateEmployeeResult> {
   assertPasswordMeetsPolicy(input.password);
@@ -524,7 +531,10 @@ export async function updateEmployee(
   await assertEmailAndMobileFree(input.email, input.mobile, employeeId);
   const team = await resolveTeam(input, employeeId);
   await assertNoOrphans(employeeId, team.positions);
-  const hr = buildHr(input.hr, employee.hr);
+  // An employee created before the Team page (no HR details yet) can be
+  // edited — e.g. given his position — without collecting PAN and Aadhaar
+  // first; the Team page shows "HR details missing" until they are added.
+  const hr = input.hr ? buildHr(input.hr, employee.hr) : employee.hr;
   const email = input.email.toLowerCase();
   const mfa = mfaFor(team.roleKeys, email, employee.mfaSecret ?? null);
   const before = {
@@ -589,8 +599,9 @@ export async function updateEmployee(
             ? id(employee.reportsToPurchaseLeaderId)
             : null,
           passwordChanged: Boolean(input.password),
-          panChanged: Boolean(input.hr.pan),
-          aadhaarChanged: Boolean(input.hr.aadhaar),
+          hrChanged: Boolean(input.hr),
+          panChanged: Boolean(input.hr?.pan),
+          aadhaarChanged: Boolean(input.hr?.aadhaar),
         },
         correlationId: actor.correlationId,
       },

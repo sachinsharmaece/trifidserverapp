@@ -45,8 +45,15 @@ const SIDE = {
 const id = (value: unknown): string => String(value);
 
 export async function teamOf(side: Side, leaderId: string): Promise<string[]> {
+  // DEC-066 — a Sales Leader reports to Admin, so no Purchase Leader's team
+  // takes him in, even from an older record that still names one; his
+  // sellers and the pushes he receives are decided by Admin.
   const members = await Employee.find(
-    { [SIDE[side].reportsTo]: leaderId, active: true },
+    {
+      [SIDE[side].reportsTo]: leaderId,
+      active: true,
+      ...(side === 'purchase' ? { positions: { $ne: 'SALES_LEADER' } } : {}),
+    },
     { _id: 1 },
   );
   return [...new Set([leaderId, ...members.map((m) => id(m._id))])];

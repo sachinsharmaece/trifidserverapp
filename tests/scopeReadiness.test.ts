@@ -32,9 +32,9 @@ describe('Phase 7 — scope readiness', () => {
     const before = await scopeReadiness();
     expect(before.ready).toBe(false);
     expect(before.noPosition).toContain('Bare Sales');
-    expect(before.noLeader).toEqual(
-      expect.arrayContaining(['Orphan Exec (Sales)', 'Ready Leader (Purchase)']),
-    );
+    expect(before.noLeader).toEqual(expect.arrayContaining(['Orphan Exec (Sales)']));
+    // DEC-066 — a Sales Leader reports to Admin on the Purchase side.
+    expect(before.noLeader).not.toContain('Ready Leader (Purchase)');
     expect(before.noTeams).toContain('Teamless Accounts');
 
     bare.positions = ['SALES_EXEC'] as never;

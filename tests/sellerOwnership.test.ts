@@ -277,7 +277,7 @@ describe('Seller profile Edit', () => {
 });
 
 describe('Purchase "Assigned to" picker and switch-off hand-over', () => {
-  it('an executive gets himself; his leader the team (incl. a Sales Leader as Purchase Exec)', async () => {
+  it('an executive gets himself; his leader the team — never a Sales Leader, who reports to Admin (DEC-066)', async () => {
     const names = async (token: string) =>
       (
         (
@@ -289,11 +289,7 @@ describe('Purchase "Assigned to" picker and switch-off hand-over', () => {
         .map((p) => p.person)
         .sort();
     expect(await names(execP.token)).toEqual(['Purchase Exec P']);
-    expect(await names(leaderP.token)).toEqual([
-      'Purchase Exec P',
-      'Purchase Leader P',
-      'Sales Leader S',
-    ]);
+    expect(await names(leaderP.token)).toEqual(['Purchase Exec P', 'Purchase Leader P']);
   });
 
   it('switching an executive off hands his sellers to the picked person', async () => {

@@ -163,21 +163,30 @@ describe('Positions and reporting lines (check 5)', () => {
     expect(res.body.error.field).toBe('reportsToSalesLeaderId');
   });
 
-  it('Sales Leader adds Purchase Exec, which then needs a Purchase Leader; positions add roles', async () => {
-    const missing = await create(body({ positions: ['SALES_LEADER'] }));
-    expect(missing.status).toBe(400);
-    expect(missing.body.error.field).toBe('reportsToPurchaseLeaderId');
-
-    const res = await create(
-      body({ positions: ['SALES_LEADER'], reportsToPurchaseLeaderId: await purchaseLeaderId() }),
-    );
+  it('Sales Leader adds Purchase Exec but reports to Admin, not a Purchase Leader (DEC-066); positions add roles', async () => {
+    const res = await create(body({ positions: ['SALES_LEADER'] }));
     expect(res.status).toBe(201);
     const saved = await request(app)
       .get(`/api/v1/admin/employees/${res.body.data.employeeId}`)
       .set('Authorization', `Bearer ${admin.token}`);
     expect(saved.body.data.positions).toEqual(['SALES_LEADER', 'PURCHASE_EXEC']);
     expect(saved.body.data.roleKeys.sort()).toEqual(['purchase', 'sales']);
-    expect(saved.body.data.reportsToPurchaseLeader.person).toBe('Purchase Head');
+    expect(saved.body.data.reportsToPurchaseLeader).toBeNull();
+
+    // A Purchase Leader sent for him is not kept — he reports to Admin.
+    const named = await create(
+      body({ positions: ['SALES_LEADER'], reportsToPurchaseLeaderId: await purchaseLeaderId() }),
+    );
+    expect(named.status).toBe(201);
+    const namedSaved = await request(app)
+      .get(`/api/v1/admin/employees/${named.body.data.employeeId}`)
+      .set('Authorization', `Bearer ${admin.token}`);
+    expect(namedSaved.body.data.reportsToPurchaseLeader).toBeNull();
+
+    // A plain Purchase Executive still needs his Purchase Leader.
+    const exec = await create(body({ positions: ['PURCHASE_EXEC'] }));
+    expect(exec.status).toBe(400);
+    expect(exec.body.error.field).toBe('reportsToPurchaseLeaderId');
   });
 
   it('a leader may report to himself; an executive may not', async () => {
@@ -277,6 +286,71 @@ describe('Edit (check 7)', () => {
     expect(saved!.person).toBe('Renamed Person');
     expect(saved!.hr!.panLast4).toBe('234F');
     expect(await AuditLog.countDocuments({ entityId: employeeId, field: 'edit' })).toBe(1);
+  });
+
+  it('an employee with no HR details yet (from before the Team page) can be edited without them', async () => {
+    const salesRole = await Role.findOne({ key: 'sales' });
+    const older = await Employee.create({
+      person: 'Older Hire',
+      email: randomEmail(),
+      mobile: randomMobile(),
+      passwordHash: 'x',
+      roleIds: [salesRole!._id],
+      active: true,
+    });
+    const leaderId = await createSalesLeader();
+    const {
+      hr: _hr,
+      password: _pw,
+      ...withoutHr
+    } = body({
+      email: older.email,
+      mobile: older.mobile,
+      roleKeys: ['sales'],
+      positions: ['SALES_EXEC'],
+      reportsToSalesLeaderId: leaderId,
+    });
+    void _hr;
+    void _pw;
+    const res = await update(String(older._id), { ...withoutHr, person: 'Older Hire' });
+    expect(res.status).toBe(200);
+    const saved = await Employee.findById(older._id);
+    expect(saved!.positions).toEqual(['SALES_EXEC']);
+    expect(saved!.hr ?? null).toBeNull();
+    const list = await request(app)
+      .get('/api/v1/admin/employees?limit=100')
+      .set('Authorization', `Bearer ${admin.token}`);
+    const row = (list.body.data as Array<{ employeeId: string; hrComplete: boolean }>).find(
+      (e) => e.employeeId === String(older._id),
+    );
+    expect(row?.hrComplete).toBe(false);
+
+    // Sent, the HR details are checked in full, as on create.
+    const partial = await update(String(older._id), {
+      ...withoutHr,
+      person: 'Older Hire',
+      hr: hr({ pan: undefined, aadhaar: undefined }),
+    });
+    expect(partial.status).toBe(400);
+    expect(partial.body.error.field).toBe('hr.pan');
+  });
+});
+
+describe('Encryption keys (24 Oct fix)', () => {
+  it('a key that is not 32 bytes stops the server at start-up, with the key named', async () => {
+    const { env } = await import('../src/config/env.js');
+    const { assertEncryptionKeys } = await import('../src/shared/encryption.js');
+    expect(() => assertEncryptionKeys()).not.toThrow();
+    const good = env.piiEncryptionKey;
+    try {
+      (env as { piiEncryptionKey: string }).piiEncryptionKey =
+        'a-typed-password-not-a-generated-key-123';
+      expect(() => assertEncryptionKeys()).toThrow(
+        /PII_ENCRYPTION_KEY must decode to exactly 32 bytes/,
+      );
+    } finally {
+      (env as { piiEncryptionKey: string }).piiEncryptionKey = good;
+    }
   });
 });
 

@@ -313,7 +313,7 @@ describe('Phase 6 — Purchase side and the wall (checks 19, 20)', () => {
     ).toBe(200);
     const blocked = await post(
       `/staff/purchase/pushes/${pushId}/approve`,
-      purchaseLeaderP,
+      admin,
       approval(leaderL.employeeId),
     );
     expect(blocked.status).toBe(400);
@@ -337,7 +337,7 @@ describe('Phase 6 — Purchase side and the wall (checks 19, 20)', () => {
     ).toBe(200);
     const ok = await post(
       `/staff/purchase/pushes/${pushId}/approve`,
-      purchaseLeaderP,
+      admin,
       approval(leaderL.employeeId),
     );
     expect(ok.status).toBe(200);
@@ -345,7 +345,7 @@ describe('Phase 6 — Purchase side and the wall (checks 19, 20)', () => {
     expect((await Counterparty.findById(buyer.counterpartyId))!.gstin).toBe(gstin);
   });
 
-  it('only the receiver’s Purchase Leader or Admin decides; the receiver himself cannot', async () => {
+  it('a Sales Leader’s push is decided by Admin only (DEC-066); the receiver himself cannot', async () => {
     const buyer = await activeBuyer('Decide Agro', execA.employeeId);
     const pushId = (
       await post(`/staff/buyers/${buyer.buyerId}/push`, execA, { note: 'Seeds and more' })
@@ -369,8 +369,36 @@ describe('Phase 6 — Purchase side and the wall (checks 19, 20)', () => {
         )
       ).status,
     ).toBe(403);
-    const detail = await get(`/staff/purchase/pushes/${pushId}`, purchaseLeaderP);
+    // DEC-066 — the receiver is a Sales Leader, who reports to Admin: not even
+    // the Purchase Leader he used to report to decides, only Admin.
+    expect(
+      (
+        await post(
+          `/staff/purchase/pushes/${pushId}/approve`,
+          purchaseLeaderP,
+          approval(leaderL.employeeId),
+        )
+      ).status,
+    ).toBe(403);
+    const detail = await get(`/staff/purchase/pushes/${pushId}`, admin);
     expect(detail.body.data.canDecide).toBe(true);
+  });
+
+  it('a push Admin sent to a plain Purchase Executive is decided by his own Purchase Leader', async () => {
+    const buyer = await activeBuyer('Q Team Agro', execA.employeeId);
+    const pushId = (
+      await post(`/staff/buyers/${buyer.buyerId}/push`, admin, {
+        note: 'Send to Q',
+        receiverEmployeeId: purchaseExecQ.employeeId,
+      })
+    ).body.data.pushId as string;
+    await post(`/staff/purchase/pushes/${pushId}/complete`, purchaseExecQ, completion());
+    const res = await post(
+      `/staff/purchase/pushes/${pushId}/approve`,
+      purchaseLeaderQ,
+      approval(purchaseExecQ.employeeId),
+    );
+    expect(res.status).toBe(200);
   });
 });
 
@@ -387,7 +415,7 @@ describe('Phase 6 — approval, notices and the link (checks 20, 21)', () => {
     );
     const res = await post(
       `/staff/purchase/pushes/${pushId}/approve`,
-      purchaseLeaderP,
+      admin,
       approval(leaderL.employeeId),
     );
     expect(res.status).toBe(200);
@@ -439,11 +467,7 @@ describe('Phase 6 — approval, notices and the link (checks 20, 21)', () => {
       await post(`/staff/buyers/${buyer.buyerId}/push`, leaderL, { note: 'Seeds and more' })
     ).body.data.pushId as string;
     await post(`/staff/purchase/pushes/${pushId}/complete`, leaderL, completion());
-    await post(
-      `/staff/purchase/pushes/${pushId}/approve`,
-      purchaseLeaderP,
-      approval(leaderL.employeeId),
-    );
+    await post(`/staff/purchase/pushes/${pushId}/approve`, admin, approval(leaderL.employeeId));
     expect(
       await StaffNotice.countDocuments({ kind: 'push_approved', title: /Self Pushed Agro/ }),
     ).toBe(1);
@@ -453,7 +477,7 @@ describe('Phase 6 — approval, notices and the link (checks 20, 21)', () => {
     const buyer = await activeBuyer('Rejected Agro', execB.employeeId);
     const pushId = (await post(`/staff/buyers/${buyer.buyerId}/push`, execB, { note: 'Maybe' }))
       .body.data.pushId as string;
-    const res = await post(`/staff/purchase/pushes/${pushId}/reject`, purchaseLeaderP, {
+    const res = await post(`/staff/purchase/pushes/${pushId}/reject`, admin, {
       reason: 'No licence for resale',
     });
     expect(res.status).toBe(200);

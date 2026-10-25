@@ -70,6 +70,16 @@ function getPiiKey(): Buffer {
   return keyFrom(env.piiEncryptionKey, 'PII_ENCRYPTION_KEY');
 }
 
+/**
+ * Checked once at start-up, so a key that is not 32 bytes stops the server
+ * with a clear message instead of failing the first save that encrypts
+ * something (found 24 Oct: a typed value in place of a generated key).
+ */
+export function assertEncryptionKeys(): void {
+  getKey();
+  getPiiKey();
+}
+
 export function encryptPii(plainText: string): string {
   return encryptWith(getPiiKey(), plainText);
 }
