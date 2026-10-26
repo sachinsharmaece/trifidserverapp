@@ -376,6 +376,21 @@ export async function listRegistrations(stage, cursor, limit, options = {}) {
         query._id = { $gt: cursor };
     if (options.kinds)
         query.kind = { $in: [...options.kinds, 'both'] };
+    // 26 Oct — the search box: part of the firm name, GSTIN, PAN or mobile.
+    const term = options.q?.trim();
+    if (term) {
+        const pattern = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+        const digits = term.replace(/\D/g, '');
+        query.$or = [
+            { firm: pattern },
+            { ownerName: pattern },
+            { gstin: pattern },
+            { pan: pattern },
+            ...(digits.length >= 4
+                ? [{ mobile: new RegExp(digits) }, { contactMobile: new RegExp(digits) }]
+                : []),
+        ];
+    }
     const registrations = await Counterparty.find(query)
         .sort({ _id: 1 })
         .limit(limit + 1);

@@ -2,7 +2,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { verify as verifyTotp } from 'otplib';
 import { env, isProduction } from '../../config/env.js';
-import { MFA_REQUIRED_ROLE_KEYS } from '../../config/permissions.js';
+import { MFA_REQUIRED_ROLE_KEYS, ROLE_SEED } from '../../config/permissions.js';
 import { AuthOtp } from '../../models/AuthOtp.js';
 import { AuthSession } from '../../models/AuthSession.js';
 import { permissionsForPositions } from '../../config/positions.js';
@@ -241,14 +241,21 @@ export async function verifyOtp(requestId, code, deviceFingerprint, correlationI
     const session = await issueCounterpartySession(counterparty, deviceFingerprint, correlationId);
     return session;
 }
+const SEEDED_ROLE_PERMISSIONS = new Map(ROLE_SEED.map((role) => [role.key, role.permissionKeys]));
 async function loadEmployeeRoles(employee) {
     const roles = await Role.find({ _id: { $in: employee.roleIds } });
     const roleKeys = roles.map((role) => role.key);
-    // Phase 2 — a position grants a few leader permissions of its own
-    // (config/positions.ts), on top of what the roles grant.
+    // 26 Oct — a built-in role's permissions are read from the code (ROLE_SEED),
+    // not from its database row. Roles are not editable in the app, so the two
+    // are meant to match; but every server rewrites those rows when it starts,
+    // and an older server sharing the database (a deployed `develop` beside a
+    // newer branch) put back its own shorter lists — Admin lost the approve
+    // rights this way. Only an unknown role falls back to its stored list.
     const permissionKeys = [
         ...new Set([
-            ...roles.flatMap((role) => role.permissionKeys),
+            ...roles.flatMap((role) => SEEDED_ROLE_PERMISSIONS.get(role.key) ?? role.permissionKeys),
+            // Phase 2 — a position grants a few leader permissions of its own
+            // (config/positions.ts), on top of what the roles grant.
             ...permissionsForPositions(employee.positions ?? []),
         ]),
     ];
