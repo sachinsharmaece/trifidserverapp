@@ -446,8 +446,27 @@ export async function upsertSellerCatalogueEntry(input, actor) {
     const product = await Product.findById(input.productId);
     if (!product)
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Product not found.' });
+    if (!product.active || product.deletedAt) {
+        throw new AppError({
+            code: 'VALIDATION_FAILED',
+            messageEn: 'This product is inactive — Admin has switched it off in Manage → Products.',
+            field: 'productId',
+        });
+    }
     const entry = await SellerCatalogueEntry.findOneAndUpdate({ sellerId: input.sellerId, productId: input.productId }, { $set: { skuIds: input.skuIds ?? [], setBy: actor.employeeId, setAt: new Date() } }, { upsert: true, new: true });
-    return { entryId: entry._id.toString() };
+    const entryId = entry._id.toString();
+    // 25 Oct — "Add to his catalogue" from the listing screen is audited like
+    // every other change a desk makes to a seller's file.
+    await writeAuditLog({
+        actorId: actor.employeeId,
+        actorType: 'staff',
+        entity: 'seller_catalogue_entry',
+        entityId: entryId,
+        field: 'upsert',
+        newValue: { sellerId: input.sellerId, productId: input.productId, skuIds: input.skuIds ?? [] },
+        correlationId: actor.correlationId ?? 'unknown',
+    });
+    return { entryId };
 }
 /**
  * What a seller sells, per the seller-file screen and `EnterListingPage`'s
@@ -463,7 +482,7 @@ export async function getSellerCatalogue(sellerId) {
         _id: { $in: products.map((p) => p.manufacturerId) },
     });
     const manufacturerById = new Map(manufacturers.map((m) => [m._id.toString(), m]));
-    const allSkus = await Sku.find({ productId: { $in: productIds } });
+    const allSkus = await Sku.find({ productId: { $in: productIds }, active: true, deletedAt: null });
     const skusByProduct = new Map();
     for (const sku of allSkus) {
         const key = sku.productId.toString();
@@ -494,6 +513,8 @@ export async function getSellerCatalogue(sellerId) {
             technical: product?.technical ?? '—',
             manufacturerName: manufacturer?.name ?? '—',
             productState: product?.state ?? 'live',
+            manufacturerState: manufacturer?.state ?? 'live',
+            productActive: Boolean(product && product.active && !product.deletedAt),
             packsDetailed: entry.skuIds.length > 0,
             packs: relevantSkus.map((s) => {
                 const skuKey = s._id.toString();

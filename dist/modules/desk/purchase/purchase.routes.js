@@ -37,7 +37,7 @@ purchaseRouter.get('/staff/purchase/dispute-recovery', authenticate, requirePerm
 // stay on the desk's own write permission, DEMAND_READ, since there is no
 // money and no board visibility in a catalogue entry (see purchase.service.ts).
 purchaseRouter.get('/staff/purchase/sellers/:sellerId/catalogue', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), requireInScope('purchase', param('sellerId')), controller.getSellerCatalogue);
-purchaseRouter.post('/staff/purchase/catalogue', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), requireInScope('purchase', field('body', 'sellerId', 'profile')), validateBody(sellerCatalogueEntrySchema), controller.postSellerCatalogueEntry);
+purchaseRouter.post('/staff/purchase/catalogue', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), requireInScope('purchase', field('body', 'sellerId', 'profile')), requireIdempotencyKey(), validateBody(sellerCatalogueEntrySchema), controller.postSellerCatalogueEntry);
 // The companies a seller deals in — every product of a ticked company counts
 // as carried (see purchase.catalogue.ts). Same boundary as the catalogue.
 purchaseRouter.get('/staff/purchase/sellers/:sellerId/dealerships', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), requireInScope('purchase', param('sellerId')), controller.getSellerDealerships);

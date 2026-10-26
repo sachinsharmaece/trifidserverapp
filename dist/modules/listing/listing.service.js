@@ -163,6 +163,14 @@ export async function createListing(sellerCounterpartyId, input, options = {}) {
             field: 'productId',
         });
     }
+    // 25 Oct — a product switched off in Manage cannot back a new listing.
+    if (!product.active || product.deletedAt) {
+        throw new AppError({
+            code: 'VALIDATION_FAILED',
+            messageEn: 'This product is inactive — Admin has switched it off in Manage → Products.',
+            field: 'productId',
+        });
+    }
     const manufacturer = await Manufacturer.findById(product.manufacturerId);
     if (manufacturer?.state === 'draft') {
         throw new AppError({
@@ -186,6 +194,13 @@ export async function createListing(sellerCounterpartyId, input, options = {}) {
             throw new AppError({
                 code: 'VALIDATION_FAILED',
                 messageEn: 'This pack is still a draft — Admin has not confirmed it yet.',
+                field: 'skuId',
+            });
+        }
+        if (!sku.active || sku.deletedAt) {
+            throw new AppError({
+                code: 'VALIDATION_FAILED',
+                messageEn: `The pack ${sku.packLabel} is inactive — Admin has switched it off in Manage → Products.`,
                 field: 'skuId',
             });
         }
