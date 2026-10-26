@@ -124,6 +124,7 @@ purchaseRouter.post(
   authenticate,
   requirePermission(PERMISSIONS.DEMAND_READ),
   requireInScope('purchase', field('body', 'sellerId', 'profile')),
+  requireIdempotencyKey(),
   validateBody(sellerCatalogueEntrySchema),
   controller.postSellerCatalogueEntry,
 );

@@ -285,6 +285,7 @@ describe('Purchase-desk v2 — the seller catalogue', () => {
     const addRes = await request(app)
       .post('/api/v1/staff/purchase/catalogue')
       .set('Authorization', `Bearer ${purchase.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ sellerId, productId: sku!.productId.toString(), skuIds: [skuId] });
     expect(addRes.status).toBe(201);
 
@@ -313,10 +314,12 @@ describe('Purchase-desk v2 — the seller catalogue', () => {
     await request(app)
       .post('/api/v1/staff/purchase/catalogue')
       .set('Authorization', `Bearer ${purchase.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ sellerId, productId, skuIds: [] });
     await request(app)
       .post('/api/v1/staff/purchase/catalogue')
       .set('Authorization', `Bearer ${purchase.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ sellerId, productId, skuIds: [skuId] });
 
     const { SellerCatalogueEntry } = await import('../src/models/SellerCatalogueEntry.js');
@@ -353,6 +356,7 @@ describe('Purchase-desk v2 — draft masters (LOCK-26-style)', () => {
     const catRes = await request(app)
       .post('/api/v1/staff/purchase/catalogue')
       .set('Authorization', `Bearer ${purchase.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ sellerId, productId, skuIds: [skuId] });
     expect(catRes.status).toBe(201);
 

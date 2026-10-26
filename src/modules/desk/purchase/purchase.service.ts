@@ -719,19 +719,38 @@ export interface SellerCatalogueEntryInput {
  * whole "what does he carry" form, product level or pack level. */
 export async function upsertSellerCatalogueEntry(
   input: SellerCatalogueEntryInput,
-  actor: { employeeId: string },
+  actor: { employeeId: string; correlationId?: string },
 ): Promise<{ entryId: string }> {
   const seller = await Seller.findById(input.sellerId);
   if (!seller) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Seller not found.' });
   const product = await Product.findById(input.productId);
   if (!product) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Product not found.' });
+  if (!product.active || product.deletedAt) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'This product is inactive — Admin has switched it off in Manage → Products.',
+      field: 'productId',
+    });
+  }
 
   const entry = await SellerCatalogueEntry.findOneAndUpdate(
     { sellerId: input.sellerId, productId: input.productId },
     { $set: { skuIds: input.skuIds ?? [], setBy: actor.employeeId, setAt: new Date() } },
     { upsert: true, new: true },
   );
-  return { entryId: (entry!._id as Types.ObjectId).toString() };
+  const entryId = (entry!._id as Types.ObjectId).toString();
+  // 25 Oct — "Add to his catalogue" from the listing screen is audited like
+  // every other change a desk makes to a seller's file.
+  await writeAuditLog({
+    actorId: actor.employeeId,
+    actorType: 'staff',
+    entity: 'seller_catalogue_entry',
+    entityId: entryId,
+    field: 'upsert',
+    newValue: { sellerId: input.sellerId, productId: input.productId, skuIds: input.skuIds ?? [] },
+    correlationId: actor.correlationId ?? 'unknown',
+  });
+  return { entryId };
 }
 
 export interface SellerCataloguePackItem {
@@ -752,7 +771,12 @@ export interface SellerCatalogueItem {
   technical: string;
   manufacturerName: string;
   productState: string;
+  /** 25 Oct — a draft company blocks a listing as surely as a draft product. */
+  manufacturerState: string;
+  /** False when Admin switched the product off (only a hand-entered row can carry one). */
+  productActive: boolean;
   packsDetailed: boolean;
+  /** Active packs only — a pack switched off in Manage cannot be listed. */
   packs: SellerCataloguePackItem[];
   setAt: string;
   setBy: string | null;
@@ -776,7 +800,7 @@ export async function getSellerCatalogue(sellerId: string): Promise<SellerCatalo
   const manufacturerById = new Map(
     manufacturers.map((m) => [(m._id as Types.ObjectId).toString(), m]),
   );
-  const allSkus = await Sku.find({ productId: { $in: productIds } });
+  const allSkus = await Sku.find({ productId: { $in: productIds }, active: true, deletedAt: null });
   const skusByProduct = new Map<string, (typeof allSkus)[number][]>();
   for (const sku of allSkus) {
     const key = (sku.productId as Types.ObjectId).toString();
@@ -811,6 +835,8 @@ export async function getSellerCatalogue(sellerId: string): Promise<SellerCatalo
       technical: product?.technical ?? '—',
       manufacturerName: manufacturer?.name ?? '—',
       productState: product?.state ?? 'live',
+      manufacturerState: manufacturer?.state ?? 'live',
+      productActive: Boolean(product && product.active && !product.deletedAt),
       packsDetailed: entry.skuIds.length > 0,
       packs: relevantSkus.map((s) => {
         const skuKey = (s._id as Types.ObjectId).toString();

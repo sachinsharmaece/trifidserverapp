@@ -72,7 +72,6 @@ const WITHOUT_KEY: Record<string, string> = {
   'POST /staff/controller/lifeline/bulk': LEGACY,
   'POST /staff/purchase/asks/:askId/chase': LEGACY,
   'POST /staff/purchase/non-order-reasons': LEGACY,
-  'POST /staff/purchase/catalogue': LEGACY,
   'PUT /staff/purchase/sellers/:sellerId/dealerships': LEGACY,
   'POST /staff/purchase/piles/:pileId/chase': LEGACY,
   'POST /staff/purchase/stock/:soId/hold': LEGACY,
