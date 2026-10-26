@@ -178,7 +178,10 @@ export async function assertCallerMayDecideBuyer(buyerId, caller) {
  * prefilled from the registration and editable; Assigned to is required
  * (DEC-062). BR-081 — the tehsil is required by the schema.
  */
-export async function approveBuyer(registrationId, input, caller) {
+export async function approveBuyer(registrationId, input, caller, 
+// 26 Oct — a bulk approval of test data may skip the "you're approved"
+// WhatsApp, so no server sharing the database messages real numbers.
+options = {}) {
     const counterparty = await Counterparty.findOne({
         _id: registrationId,
         kind: { $in: ['buyer', 'both'] },
@@ -232,12 +235,14 @@ export async function approveBuyer(registrationId, input, caller) {
         await setAssignment(buyer._id, input.assignedToEmployeeId, caller.employeeId, 'Assigned at approval.', session);
         counterparty.status = 'active';
         await counterparty.save({ session });
-        await enqueueNotification({
-            counterpartyId: counterparty._id,
-            templateKey: 'registration_invite',
-            params: { outcome: 'approved' },
-            correlationId: caller.correlationId,
-        }, session);
+        if (options.notify !== false) {
+            await enqueueNotification({
+                counterpartyId: counterparty._id,
+                templateKey: 'registration_invite',
+                params: { outcome: 'approved' },
+                correlationId: caller.correlationId,
+            }, session);
+        }
         await writeAuditLog({
             actorId: caller.employeeId,
             actorType: 'staff',
@@ -246,7 +251,7 @@ export async function approveBuyer(registrationId, input, caller) {
             field: 'status',
             oldValue: 'pending',
             newValue: 'active',
-            reason: `Approved as ${input.category}, assigned to ${input.assignedToEmployeeId}.`,
+            reason: `Approved as ${input.category}, assigned to ${input.assignedToEmployeeId}.${options.notify === false ? ' (bulk approval, no WhatsApp)' : ''}`,
             correlationId: caller.correlationId,
         }, session);
     });
