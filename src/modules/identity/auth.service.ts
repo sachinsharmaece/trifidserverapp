@@ -347,6 +347,19 @@ function roleRequiresMfa(roleKeys: string[]): boolean {
   return roleKeys.some((key) => MFA_REQUIRED_ROLE_KEYS.has(key));
 }
 
+/**
+ * 27 Oct — a lockout that has run out starts the count again. The counter was
+ * only reset by a successful sign-in, so after a lockout ended one more typo
+ * (6 ≥ 5) locked the person out for another 30 minutes.
+ */
+async function clearExpiredLockout(employee: HydratedDocument<EmployeeDocument>): Promise<void> {
+  if (employee.lockedUntil && employee.lockedUntil.getTime() <= Date.now()) {
+    employee.failedLoginAttempts = 0;
+    employee.lockedUntil = null;
+    await employee.save();
+  }
+}
+
 async function registerStaffFailure(employee: HydratedDocument<EmployeeDocument>): Promise<void> {
   employee.failedLoginAttempts += 1;
   if (employee.failedLoginAttempts >= env.staffLockoutAttempts) {
@@ -427,6 +440,7 @@ export async function staffLogin(email: string, password: string): Promise<Staff
   if (employee.lockedUntil && employee.lockedUntil.getTime() > Date.now()) {
     throw new AppError({ code: 'LOCKED_OUT', messageEn: 'Too many attempts. Try again later.' });
   }
+  await clearExpiredLockout(employee as HydratedDocument<EmployeeDocument>);
 
   const passwordMatches = await bcrypt.compare(password, employee.passwordHash);
   if (!passwordMatches) {
@@ -487,6 +501,7 @@ export async function staffMfaVerify(
   if (employee.lockedUntil && employee.lockedUntil.getTime() > Date.now()) {
     throw new AppError({ code: 'LOCKED_OUT', messageEn: 'Too many attempts. Try again later.' });
   }
+  await clearExpiredLockout(employee as HydratedDocument<EmployeeDocument>);
 
   const codeIsValid = await checkMfaCode(employee.mfaSecret, code);
   if (!codeIsValid) {
