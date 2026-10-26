@@ -290,6 +290,9 @@ export async function approveBuyer(
   registrationId: string,
   input: { category: BuyerCategory; location: Location; assignedToEmployeeId: string },
   caller: StaffCallerWithCorrelation,
+  // 26 Oct — a bulk approval of test data may skip the "you're approved"
+  // WhatsApp, so no server sharing the database messages real numbers.
+  options: { notify?: boolean } = {},
 ): Promise<void> {
   const counterparty = await Counterparty.findOne({
     _id: registrationId,
@@ -361,15 +364,17 @@ export async function approveBuyer(
     counterparty.status = 'active';
     await counterparty.save({ session });
 
-    await enqueueNotification(
-      {
-        counterpartyId: counterparty._id as Types.ObjectId,
-        templateKey: 'registration_invite',
-        params: { outcome: 'approved' },
-        correlationId: caller.correlationId,
-      },
-      session,
-    );
+    if (options.notify !== false) {
+      await enqueueNotification(
+        {
+          counterpartyId: counterparty._id as Types.ObjectId,
+          templateKey: 'registration_invite',
+          params: { outcome: 'approved' },
+          correlationId: caller.correlationId,
+        },
+        session,
+      );
+    }
     await writeAuditLog(
       {
         actorId: caller.employeeId,
@@ -379,7 +384,9 @@ export async function approveBuyer(
         field: 'status',
         oldValue: 'pending',
         newValue: 'active',
-        reason: `Approved as ${input.category}, assigned to ${input.assignedToEmployeeId}.`,
+        reason: `Approved as ${input.category}, assigned to ${input.assignedToEmployeeId}.${
+          options.notify === false ? ' (bulk approval, no WhatsApp)' : ''
+        }`,
         correlationId: caller.correlationId,
       },
       session,

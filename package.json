@@ -23,6 +23,7 @@
     "migrate:locationMasters": "tsx src/scripts/migrateLocationMasters.ts",
     "migrate:buyerIdentity": "tsx src/scripts/migrateBuyerIdentity.ts",
     "check:scopeReadiness": "tsx src/scripts/checkScopeReadiness.ts",
+    "approve:pendingBuyers": "tsx src/scripts/approvePendingBuyers.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
