@@ -595,12 +595,27 @@ export async function listRegistrations(
   stage: string | undefined,
   cursor: string | undefined,
   limit: number,
-  options: { kinds?: Array<'buyer' | 'seller'> } = {},
+  options: { kinds?: Array<'buyer' | 'seller'>; q?: string } = {},
 ): Promise<{ items: RegistrationListItem[]; nextCursor?: string }> {
   const query: Record<string, unknown> = {};
   if (stage) query.status = stage;
   if (cursor) query._id = { $gt: cursor };
   if (options.kinds) query.kind = { $in: [...options.kinds, 'both'] };
+  // 26 Oct — the search box: part of the firm name, GSTIN, PAN or mobile.
+  const term = options.q?.trim();
+  if (term) {
+    const pattern = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const digits = term.replace(/\D/g, '');
+    query.$or = [
+      { firm: pattern },
+      { ownerName: pattern },
+      { gstin: pattern },
+      { pan: pattern },
+      ...(digits.length >= 4
+        ? [{ mobile: new RegExp(digits) }, { contactMobile: new RegExp(digits) }]
+        : []),
+    ];
+  }
 
   const registrations = await Counterparty.find(query)
     .sort({ _id: 1 })

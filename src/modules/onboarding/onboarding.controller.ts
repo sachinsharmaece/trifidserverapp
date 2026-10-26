@@ -93,13 +93,15 @@ export async function getRegistration(req: Request, res: Response): Promise<void
 }
 
 export async function getRegistrations(req: Request, res: Response): Promise<void> {
-  const { stage, cursor, limit } = req.validatedQuery as {
+  const { stage, cursor, limit, q } = req.validatedQuery as {
     stage?: string;
     cursor?: string;
     limit?: number;
+    q?: string;
   };
   const result = await onboardingService.listRegistrations(stage, cursor, limit ?? 25, {
     kinds: registrationKindsFor(req),
+    q,
   });
   res.status(200).json({
     data: result.items,
