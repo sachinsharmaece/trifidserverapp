@@ -12,6 +12,7 @@ import { SellerAssignment } from '../../models/SellerAssignment.js';
 import { BookAssignment } from '../../models/BookAssignment.js';
 import { BankDetail } from '../../models/BankDetail.js';
 import { Manufacturer } from '../../models/Manufacturer.js';
+import { BuyerDealership } from '../../models/BuyerDealership.js';
 import { Employee } from '../../models/Employee.js';
 import { Tehsil } from '../../models/Tehsil.js';
 import { District } from '../../models/District.js';
@@ -385,6 +386,12 @@ export interface PushDetailDto {
     callNote: string | null;
     bankDetailGiven: boolean;
   } | null;
+  /**
+   * 28 Oct — the companies ticked on his buyer profile, names only (a firm
+   * detail, not trade data): Complete starts with them ticked, to untick any
+   * he does not supply.
+   */
+  buyerCompanies: Array<{ manufacturerId: string; name: string }>;
   /** The firm has a bank account on file already — Complete need not ask for one. */
   firmHasBankDetail: boolean;
   /** He had only a PAN — approval waits for a GSTIN. */
@@ -418,6 +425,17 @@ async function mayDecide(push: { receiverEmployeeId: unknown }, caller: StaffCal
   if (isAdmin(caller, 'purchase')) return true;
   if (!(await isLeaderOf('purchase', caller.employeeId))) return false;
   return callerCovers('purchase', caller, id(push.receiverEmployeeId), { queueAllowed: false });
+}
+
+async function buyerCompaniesOf(
+  buyerId: unknown,
+): Promise<Array<{ manufacturerId: string; name: string }>> {
+  const ticked = await BuyerDealership.find({ buyerId }, { manufacturerId: 1 });
+  const companies = await Manufacturer.find(
+    { _id: { $in: ticked.map((d) => d.manufacturerId) } },
+    { name: 1 },
+  ).sort({ name: 1 });
+  return companies.map((m) => ({ manufacturerId: id(m._id), name: m.name }));
 }
 
 export async function getPush(pushId: string, caller: StaffCaller): Promise<PushDetailDto> {
@@ -485,6 +503,7 @@ export async function getPush(pushId: string, caller: StaffCaller): Promise<Push
           bankDetailGiven: Boolean(draft.bankDetail),
         }
       : null,
+    buyerCompanies: await buyerCompaniesOf(push.buyerId),
     firmHasBankDetail: Boolean(await BankDetail.exists({ counterpartyId: push.counterpartyId })),
     needsGstin: !counterparty?.gstin && !draft?.gstin,
     canComplete:

@@ -13,6 +13,8 @@ import { SellerAssignment } from '../src/models/SellerAssignment.js';
 import { SellerPush } from '../src/models/SellerPush.js';
 import { StaffNotice } from '../src/models/StaffNotice.js';
 import { AuditLog } from '../src/models/AuditLog.js';
+import { Manufacturer } from '../src/models/Manufacturer.js';
+import { BuyerDealership } from '../src/models/BuyerDealership.js';
 import { loginStaff, randomEmail, randomGstin, randomMobile } from './helpers.js';
 import { locationFor, type TestLocation } from './buyerHelpers.js';
 import { staffToken } from './m4helpers.js';
@@ -399,6 +401,34 @@ describe('Phase 6 — Purchase side and the wall (checks 19, 20)', () => {
       approval(purchaseExecQ.employeeId),
     );
     expect(res.status).toBe(200);
+  });
+});
+
+describe('28 Oct — the buyer’s companies come with the push', () => {
+  it('the push detail lists the companies ticked on his buyer profile, names only', async () => {
+    const buyer = await activeBuyer('Companies Agro', execA.employeeId);
+    const [m1, m2] = await Manufacturer.create([
+      { name: `Coromandel ${Date.now()}` },
+      { name: `Atul ${Date.now()}` },
+    ]);
+    await BuyerDealership.create([
+      { buyerId: buyer.buyerId, manufacturerId: m1!._id },
+      { buyerId: buyer.buyerId, manufacturerId: m2!._id },
+    ]);
+    const pushId = (
+      await post(`/staff/buyers/${buyer.buyerId}/push`, execA, { note: 'Sells both companies' })
+    ).body.data.pushId as string;
+    const detail = await get(`/staff/purchase/pushes/${pushId}`, leaderL);
+    expect(detail.status).toBe(200);
+    expect(
+      (detail.body.data.buyerCompanies as Array<{ manufacturerId: string; name: string }>)
+        .map((c) => c.manufacturerId)
+        .sort(),
+    ).toEqual([String(m1!._id), String(m2!._id)].sort());
+    expect(Object.keys(detail.body.data.buyerCompanies[0]).sort()).toEqual([
+      'manufacturerId',
+      'name',
+    ]);
   });
 });
 
