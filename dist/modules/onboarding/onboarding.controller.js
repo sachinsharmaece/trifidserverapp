@@ -70,14 +70,17 @@ export async function getRegistration(req, res) {
     ok(res, req, result);
 }
 export async function getRegistrations(req, res) {
-    const { stage, cursor, limit, q } = req.validatedQuery;
+    const { stage, cursor, limit, q, kind } = req.validatedQuery;
+    // A desk sees its own side (F1); `kind` narrows that further, never widens it.
+    const allowed = registrationKindsFor(req);
+    const kinds = kind ? (allowed ?? ['buyer', 'seller']).filter((k) => k === kind) : allowed;
     const result = await onboardingService.listRegistrations(stage, cursor, limit ?? 25, {
-        kinds: registrationKindsFor(req),
+        kinds,
         q,
     });
     res.status(200).json({
         data: result.items,
-        meta: { correlationId: req.correlationId, nextCursor: result.nextCursor },
+        meta: { correlationId: req.correlationId, nextCursor: result.nextCursor, total: result.total },
     });
 }
 // API-014 — the request body shape depends on whether the registration is a

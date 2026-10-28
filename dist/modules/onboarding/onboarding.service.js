@@ -372,10 +372,10 @@ export async function listRegistrations(stage, cursor, limit, options = {}) {
     const query = {};
     if (stage)
         query.status = stage;
-    if (cursor)
-        query._id = { $gt: cursor };
-    if (options.kinds)
-        query.kind = { $in: [...options.kinds, 'both'] };
+    if (options.kinds) {
+        // An empty list (a desk asking for the other side) matches nothing.
+        query.kind = { $in: options.kinds.length ? [...options.kinds, 'both'] : [] };
+    }
     // 26 Oct — the search box: part of the firm name, GSTIN, PAN or mobile.
     const term = options.q?.trim();
     if (term) {
@@ -391,6 +391,10 @@ export async function listRegistrations(stage, cursor, limit, options = {}) {
                 : []),
         ];
     }
+    // 29 Oct — how many in all, for "Showing N of M" and the desk counts.
+    const total = await Counterparty.countDocuments(query);
+    if (cursor)
+        query._id = { $gt: cursor };
     const registrations = await Counterparty.find(query)
         .sort({ _id: 1 })
         .limit(limit + 1);
@@ -444,7 +448,7 @@ export async function listRegistrations(stage, cursor, limit, options = {}) {
     const nextCursor = hasMore
         ? page[page.length - 1]._id.toString()
         : undefined;
-    return { items, nextCursor };
+    return { total, items, nextCursor };
 }
 // API-014, buyer branch — approveBuyer lives in buyer.registration.ts (Phase 3).
 export { approveBuyer } from './buyer.registration.js';

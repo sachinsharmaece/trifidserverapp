@@ -107,13 +107,35 @@ export async function getPool(req, res) {
 export async function getBuyers(req, res) {
     const str = (key) => typeof req.query[key] === 'string' && req.query[key] ? req.query[key] : undefined;
     const tab = str('tab');
-    ok(res, req, await salesBuyersService.listBuyers({
+    const filters = {
         q: str('q'),
         tab,
         category: str('category'),
         districtId: str('districtId'),
         assignedTo: str('assignedTo'),
-    }));
+    };
+    // 29 Oct — with `limit`, one page (`cursor` is the offset) plus the total and
+    // the tab's filter options; without it, the whole list as before.
+    const limit = Number(str('limit'));
+    if (!Number.isInteger(limit) || limit < 1) {
+        ok(res, req, await salesBuyersService.listBuyers(filters));
+        return;
+    }
+    const offset = Math.max(0, Number(str('cursor') ?? 0) || 0);
+    const page = await salesBuyersService.listBuyersPage(filters, {
+        offset,
+        limit: Math.min(limit, 100),
+    });
+    const next = offset + Math.min(limit, 100);
+    res.status(200).json({
+        data: page.items,
+        meta: {
+            correlationId: req.correlationId,
+            nextCursor: next < page.total ? String(next) : undefined,
+            total: page.total,
+            facets: page.facets,
+        },
+    });
 }
 export async function getBuyerBoard(req, res) {
     ok(res, req, await salesBoardService.getBoardForBuyer(req.params.buyerId));

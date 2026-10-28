@@ -47,11 +47,11 @@ export async function getSkus(req, res) {
 }
 // New — the admin catalog-management screen's own unfiltered list.
 export async function getAllProducts(req, res) {
-    const { cursor, limit } = req.validatedQuery;
-    const result = await catalogService.listAllProducts(cursor, limit ?? 25);
+    const { cursor, limit, q } = req.validatedQuery;
+    const result = await catalogService.listAllProducts(cursor, limit ?? 25, q);
     res.status(200).json({
         data: result.items,
-        meta: { correlationId: req.correlationId, nextCursor: result.nextCursor },
+        meta: { correlationId: req.correlationId, nextCursor: result.nextCursor, total: result.total },
     });
 }
 export async function getProductById(req, res) {
