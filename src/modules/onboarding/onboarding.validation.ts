@@ -286,6 +286,8 @@ export const listRegistrationsQuerySchema = z
     limit: z.coerce.number().int().min(1).max(100).optional(),
     // 26 Oct — firm name, GSTIN, PAN or mobile; part of it is enough.
     q: z.string().trim().max(80).optional(),
+    // 29 Oct — only buyers or only sellers (the "Waiting" lists and their counts).
+    kind: z.enum(['buyer', 'seller']).optional(),
   })
   .strict();
 

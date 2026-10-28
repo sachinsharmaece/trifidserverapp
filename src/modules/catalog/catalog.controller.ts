@@ -71,11 +71,15 @@ export async function getSkus(req: Request, res: Response): Promise<void> {
 
 // New — the admin catalog-management screen's own unfiltered list.
 export async function getAllProducts(req: Request, res: Response): Promise<void> {
-  const { cursor, limit } = req.validatedQuery as { cursor?: string; limit?: number };
-  const result = await catalogService.listAllProducts(cursor, limit ?? 25);
+  const { cursor, limit, q } = req.validatedQuery as {
+    cursor?: string;
+    limit?: number;
+    q?: string;
+  };
+  const result = await catalogService.listAllProducts(cursor, limit ?? 25, q);
   res.status(200).json({
     data: result.items,
-    meta: { correlationId: req.correlationId, nextCursor: result.nextCursor },
+    meta: { correlationId: req.correlationId, nextCursor: result.nextCursor, total: result.total },
   });
 }
 

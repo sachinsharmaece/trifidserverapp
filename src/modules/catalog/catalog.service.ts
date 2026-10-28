@@ -262,12 +262,26 @@ interface ProductListItem {
 export async function listAllProducts(
   cursor: string | undefined,
   limit: number,
-): Promise<{ items: ProductListItem[]; nextCursor?: string }> {
+  q?: string,
+): Promise<{ items: ProductListItem[]; nextCursor?: string; total: number }> {
   const query: Record<string, unknown> = { deletedAt: null };
-  if (cursor) query._id = { $gt: cursor };
+  // 29 Oct — the search box: part of the product, technical or company name.
+  const term = q?.trim();
+  if (term) {
+    const pattern = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const companies = await Manufacturer.find({ name: pattern }, { _id: 1 });
+    query.$or = [
+      { brand: pattern },
+      { technical: pattern },
+      { manufacturerId: { $in: companies.map((m) => m._id) } },
+    ];
+  }
+  const total = await Product.countDocuments(query);
+  // Newest first, so a product just created is on the first page.
+  if (cursor) query._id = { $lt: cursor };
 
   const products = await Product.find(query)
-    .sort({ _id: 1 })
+    .sort({ _id: -1 })
     .limit(limit + 1);
 
   const hasMore = products.length > limit;
@@ -305,7 +319,11 @@ export async function listAllProducts(
   const nextCursor = hasMore
     ? (page[page.length - 1]!._id as Types.ObjectId).toString()
     : undefined;
-  return { items, nextCursor };
+  return {
+    total,
+    items,
+    nextCursor,
+  };
 }
 
 // New — the detail/edit screen's own read; API-022's `listProducts` above

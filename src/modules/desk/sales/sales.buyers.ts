@@ -74,13 +74,33 @@ export interface BuyerListRow {
  * Phase 3 — filters by category, district and Assigned to (an employee id,
  * or `queue`).
  */
-export async function listBuyers(filters: {
+export interface BuyerListFacets {
+  districts: Array<{ districtId: string; name: string }>;
+  assignees: Array<{ employeeId: string; person: string }>;
+}
+
+/** Everything, as before (the top-bar search uses this). */
+export async function listBuyers(filters: BuyerListFilters): Promise<BuyerListRow[]> {
+  return (await listBuyersPage(filters)).items;
+}
+
+export interface BuyerListFilters {
   q?: string;
   tab?: 'book' | 'queue';
   category?: string;
   districtId?: string;
   assignedTo?: string;
-}): Promise<BuyerListRow[]> {
+}
+
+/**
+ * 29 Oct — one page of the Buyers list (`offset`/`limit`), with the total and
+ * the filter options for the whole tab (every district and assignee in it,
+ * not only those on this page). Without `limit`, the whole list.
+ */
+export async function listBuyersPage(
+  filters: BuyerListFilters,
+  page: { offset?: number; limit?: number } = {},
+): Promise<{ items: BuyerListRow[]; total: number; facets: BuyerListFacets }> {
   const assignments = await BookAssignment.find({});
   const ownerEmployeeIdByBuyer = new Map(
     assignments.map((a) => [(a.buyerId as Types.ObjectId).toString(), a.ownerEmployeeId]),
@@ -111,6 +131,7 @@ export async function listBuyers(filters: {
       (b) => !ownerEmployeeIdByBuyer.has((b._id as Types.ObjectId).toString()),
     );
   }
+  const facets = await facetsFor(filters.tab, ownerEmployeeIdByBuyer);
 
   const counterparties = await Counterparty.find({
     _id: { $in: buyers.map((b) => b.counterpartyId) },
@@ -139,6 +160,12 @@ export async function listBuyers(filters: {
         inTehsil,
       );
     });
+  }
+
+  const total = buyers.length;
+  if (page.limit) {
+    const offset = page.offset ?? 0;
+    buyers = buyers.slice(offset, offset + page.limit);
   }
 
   const tehsilIds = [
@@ -171,7 +198,7 @@ export async function listBuyers(filters: {
     else orderStatsByBuyer.set(key, { count: 1, lastOrderAt: createdAt }); // sorted desc — the first hit is the latest.
   }
 
-  return buyers.map((b) => {
+  const items: BuyerListRow[] = buyers.map((b) => {
     const idStr = (b._id as Types.ObjectId).toString();
     const cp = counterpartyById.get((b.counterpartyId as Types.ObjectId).toString());
     const ownerEmployeeId = ownerEmployeeIdByBuyer.get(idStr);
@@ -199,6 +226,7 @@ export async function listBuyers(filters: {
         : null,
     };
   });
+  return { items, total, facets };
 }
 
 export interface BuyerProductHistoryRow {
@@ -559,5 +587,46 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     callLogs,
     orders,
     ordersByStage,
+  };
+}
+
+/**
+ * The filter options for a tab, over every buyer in it — districts by id and
+ * name, and the people buyers are assigned to — so a filter can pick a value
+ * that is not on the page loaded so far.
+ */
+async function facetsFor(
+  tab: 'book' | 'queue' | undefined,
+  ownerEmployeeIdByBuyer: Map<string, unknown>,
+): Promise<BuyerListFacets> {
+  const inTab = (await Buyer.find({}, { tehsilId: 1 })).filter((b) => {
+    const owned = ownerEmployeeIdByBuyer.has((b._id as Types.ObjectId).toString());
+    return tab === 'book' ? owned : tab === 'queue' ? !owned : true;
+  });
+  const tehsils = await Tehsil.find(
+    { _id: { $in: inTab.map((b) => b.tehsilId).filter(Boolean) }, districtId: { $ne: null } },
+    { districtId: 1, district: 1 },
+  );
+  const districts = new Map<string, string>();
+  for (const t of tehsils) districts.set(String(t.districtId), t.district ?? '');
+  const ownerIds =
+    tab === 'queue'
+      ? []
+      : [
+          ...new Set(
+            inTab
+              .map((b) => ownerEmployeeIdByBuyer.get((b._id as Types.ObjectId).toString()))
+              .filter(Boolean)
+              .map(String),
+          ),
+        ];
+  const people = await Employee.find({ _id: { $in: ownerIds } }, { person: 1 });
+  return {
+    districts: [...districts]
+      .map(([districtId, name]) => ({ districtId, name }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    assignees: people
+      .map((e) => ({ employeeId: String(e._id), person: e.person }))
+      .sort((a, b) => a.person.localeCompare(b.person)),
   };
 }

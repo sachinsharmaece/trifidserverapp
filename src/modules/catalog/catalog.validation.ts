@@ -66,6 +66,8 @@ export const listAllProductsQuerySchema = z
   .object({
     cursor: z.string().optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
+    // 29 Oct — part of the product, technical or company name.
+    q: z.string().trim().max(80).optional(),
   })
   .strict();
 
