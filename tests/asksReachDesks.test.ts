@@ -660,3 +660,105 @@ describe('14 — the Sales call workspace (B-43, B-44, item 16)', () => {
     expect(malformed.status).toBe(400);
   });
 });
+
+describe('28 Oct — every call action shows in the call history', () => {
+  const ask = (w: Awaited<ReturnType<typeof seedWorld>>) => ({
+    skuId: w.skuId,
+    allPacks: false,
+    qty: 2,
+    conditionRequirement: { expiryBand: 'over12' },
+    buyerCounterpartyId: w.buyer.counterpartyId,
+  });
+  const history = async (token: string, buyerDocId: string) =>
+    (await getAs(token, `/staff/sales/calls?buyerId=${buyerDocId}`)).body.data as Array<{
+      kind: string;
+      outcome: string | null;
+      note: string;
+      direction: string | null;
+      producedAskId: string | null;
+      employeeName: string;
+    }>;
+
+  it('raising an ask (one or several), and declining one, each write one call-history row', async () => {
+    const w = await seedWorld({ trustedSeller: false });
+    const one = await postAs(w.sales.token, '/staff/proxy/buyer/asks', {
+      ...ask(w),
+      callNote: 'He wants 2 boxes.',
+      direction: 'in',
+    });
+    expect(one.status).toBe(201);
+    let rows = await history(w.sales.token, w.buyer.buyerDocId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'call',
+      outcome: 'asked_for_a_rate',
+      note: 'He wants 2 boxes.',
+      direction: 'in',
+      producedAskId: one.body.data.askId,
+    });
+
+    const batch = await postAs(w.sales.token, '/staff/proxy/buyer/asks/batch', {
+      buyerCounterpartyId: w.buyer.counterpartyId,
+      callNote: 'Two more on the same call.',
+      lines: [
+        { skuId: w.skuId, allPacks: false, qty: 1, conditionRequirement: { expiryBand: 'over12' } },
+        { skuId: w.skuId, allPacks: true, qty: 3, conditionRequirement: { expiryBand: 'over12' } },
+      ],
+    });
+    expect(batch.status).toBe(201);
+    rows = await history(w.sales.token, w.buyer.buyerDocId);
+    expect(rows.filter((r) => r.note === 'Two more on the same call.')).toHaveLength(2);
+
+    const decline = await postAs(
+      w.sales.token,
+      `/staff/proxy/buyer/asks/${one.body.data.askId as string}/decline`,
+      { buyerCounterpartyId: w.buyer.counterpartyId, callNote: 'Bought elsewhere.' },
+    );
+    expect(decline.status).toBe(200);
+    rows = await history(w.sales.token, w.buyer.buyerDocId);
+    expect(rows.find((r) => r.note === 'Declined the ask. Bought elsewhere.')).toMatchObject({
+      outcome: null,
+      direction: null,
+    });
+    expect(rows).toHaveLength(4);
+  });
+
+  it('a refused raise writes nothing', async () => {
+    const w = await seedWorld({ trustedSeller: false });
+    const bad = await postAs(w.sales.token, '/staff/proxy/buyer/asks', {
+      ...ask(w),
+      qty: 0,
+      callNote: 'No quantity.',
+    });
+    expect(bad.status).toBeGreaterThanOrEqual(400);
+    expect(await history(w.sales.token, w.buyer.buyerDocId)).toHaveLength(0);
+  });
+
+  it('the backfill adds a row for a call logged before the fix, once', async () => {
+    const { backfillCallHistory } = await import('../src/modules/desk/sales/sales.calls.js');
+    const { CallLog } = await import('../src/models/CallLog.js');
+    const w = await seedWorld({ trustedSeller: false });
+    const raised = await postAs(w.sales.token, '/staff/proxy/buyer/asks', {
+      ...ask(w),
+      callNote: 'Old call.',
+    });
+    // As it was before the fix: the note on the ask, no call-history row.
+    await CallLog.deleteMany({ buyerId: w.buyer.buyerDocId });
+    await Ask.updateOne(
+      { _id: raised.body.data.askId },
+      { $set: { 'proxyLog.0.at': new Date('2026-10-20T10:00:00Z') } },
+    );
+
+    const dry = await backfillCallHistory({ apply: false });
+    expect(dry.added).toBeGreaterThanOrEqual(1);
+    expect(await CallLog.countDocuments({ buyerId: w.buyer.buyerDocId })).toBe(0);
+
+    await backfillCallHistory({ apply: true });
+    const rows = await history(w.sales.token, w.buyer.buyerDocId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ outcome: 'asked_for_a_rate', note: 'Old call.' });
+    const again = await backfillCallHistory({ apply: true });
+    expect(again.added).toBe(0);
+    expect(await history(w.sales.token, w.buyer.buyerDocId)).toHaveLength(1);
+  });
+});
