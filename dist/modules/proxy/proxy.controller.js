@@ -4,6 +4,7 @@ import { Pile } from '../../models/Pile.js';
 import { Quote } from '../../models/Quote.js';
 import { ListingLine } from '../../models/ListingLine.js';
 import { appendProxyLog } from '../../shared/proxyLog.js';
+import { recordCallAction } from '../desk/sales/sales.calls.js';
 import * as demandService from '../demand/demand.service.js';
 import * as listingService from '../listing/listing.service.js';
 import * as ordersService from '../orders/orders.service.js';
@@ -19,7 +20,7 @@ function actingStaffId(req) {
 // buyer's own POST /asks would call; the call note lands on the Ask this
 // creates.
 export async function postBuyerCallAsk(req, res) {
-    const { buyerCounterpartyId, callNote, expectedRatePaise, ...input } = req.body;
+    const { buyerCounterpartyId, callNote, expectedRatePaise, direction, ...input } = req.body;
     // DEC-051 — the enquiry it opens is recorded as a Sales call, by this staff member.
     const result = await demandService.raiseAsk(buyerCounterpartyId, input, {
         channel: 'sales_call',
@@ -31,6 +32,14 @@ export async function postBuyerCallAsk(req, res) {
         callNote,
         action: 'raise_ask',
     });
+    await recordCallAction({
+        buyerCounterpartyId,
+        employeeId: actingStaffId(req),
+        direction,
+        outcome: 'asked_for_a_rate',
+        note: callNote,
+        producedAskId: result.askId,
+    });
     ok(res, req, result, 201);
 }
 // "Log a buyer call" for a call that names several products: one ask per line, each
@@ -38,7 +47,7 @@ export async function postBuyerCallAsk(req, res) {
 // Not all-or-nothing — each ask stands on its own (own quotes, own enquiry) — so a line
 // that fails is reported by position and the rest stay saved; the rep retries only that one.
 export async function postBuyerCallAsks(req, res) {
-    const { buyerCounterpartyId, callNote, lines } = req.body;
+    const { buyerCounterpartyId, callNote, lines, direction } = req.body;
     const results = [];
     for (const [index, line] of lines.entries()) {
         try {
@@ -52,6 +61,14 @@ export async function postBuyerCallAsks(req, res) {
                 actingStaffId: actingStaffId(req),
                 callNote,
                 action: 'raise_ask',
+            });
+            await recordCallAction({
+                buyerCounterpartyId,
+                employeeId: actingStaffId(req),
+                direction,
+                outcome: 'asked_for_a_rate',
+                note: callNote,
+                producedAskId: result.askId,
             });
             results.push({ index, askId: result.askId });
         }
@@ -74,17 +91,25 @@ export async function getBuyerCallAsks(req, res) {
 // Maps to API-042 — advancing an ask, or confirming a rate over the phone;
 // this codebase has one accept endpoint for both.
 export async function postBuyerCallAcceptFill(req, res) {
-    const { buyerCounterpartyId, callNote, ...input } = req.body;
+    const { buyerCounterpartyId, callNote, direction, ...input } = req.body;
     const askId = req.params.id;
     const result = await demandService.acceptAskFill(buyerCounterpartyId, askId, input, req.correlationId);
     const staffId = actingStaffId(req);
     await appendProxyLog(Ask, askId, { actingStaffId: staffId, callNote, action: 'accept_fill' });
     await Promise.all(result.soIds.map((soId) => appendProxyLog(So, soId, { actingStaffId: staffId, callNote, action: 'accept_fill' })));
+    await recordCallAction({
+        buyerCounterpartyId,
+        employeeId: staffId,
+        direction,
+        outcome: 'placed_an_order',
+        note: callNote,
+        producedAskId: askId,
+    });
     ok(res, req, result, 201);
 }
 // Maps to API-043 — walking away, free, never a strike.
 export async function postBuyerCallDecline(req, res) {
-    const { buyerCounterpartyId, callNote } = req.body;
+    const { buyerCounterpartyId, callNote, direction } = req.body;
     const askId = req.params.id;
     await demandService.declineAsk(buyerCounterpartyId, askId);
     await appendProxyLog(Ask, askId, {
@@ -92,12 +117,20 @@ export async function postBuyerCallDecline(req, res) {
         callNote,
         action: 'decline_ask',
     });
+    await recordCallAction({
+        buyerCounterpartyId,
+        employeeId: actingStaffId(req),
+        direction,
+        outcome: null,
+        note: `Declined the ask. ${callNote}`,
+        producedAskId: askId,
+    });
     ok(res, req, { declined: true });
 }
 // Maps to API-071 — the WF-11 promoted-fallback accept/decline, a buyer
 // decision Sales may also log on a call.
 export async function postBuyerCallAcceptPromotion(req, res) {
-    const { buyerCounterpartyId, callNote } = req.body;
+    const { buyerCounterpartyId, callNote, direction } = req.body;
     const soId = req.params.id;
     await ordersService.acceptPromotion(buyerCounterpartyId, soId, req.correlationId);
     await appendProxyLog(So, soId, {
@@ -105,16 +138,30 @@ export async function postBuyerCallAcceptPromotion(req, res) {
         callNote,
         action: 'accept_promotion',
     });
+    await recordCallAction({
+        buyerCounterpartyId,
+        employeeId: actingStaffId(req),
+        direction,
+        outcome: null,
+        note: `Accepted the promoted offer. ${callNote}`,
+    });
     ok(res, req, { accepted: true });
 }
 export async function postBuyerCallRejectPromotion(req, res) {
-    const { buyerCounterpartyId, callNote } = req.body;
+    const { buyerCounterpartyId, callNote, direction } = req.body;
     const soId = req.params.id;
     await ordersService.rejectPromotion(buyerCounterpartyId, soId);
     await appendProxyLog(So, soId, {
         actingStaffId: actingStaffId(req),
         callNote,
         action: 'reject_promotion',
+    });
+    await recordCallAction({
+        buyerCounterpartyId,
+        employeeId: actingStaffId(req),
+        direction,
+        outcome: null,
+        note: `Turned down the promoted offer. ${callNote}`,
     });
     ok(res, req, { rejected: true });
 }

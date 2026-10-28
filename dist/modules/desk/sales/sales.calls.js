@@ -1,3 +1,6 @@
+import { Ask } from '../../../models/Ask.js';
+import { So } from '../../../models/So.js';
+import { Buyer } from '../../../models/Buyer.js';
 import { CallLog, } from '../../../models/CallLog.js';
 import { Employee } from '../../../models/Employee.js';
 import { AppError } from '../../../shared/errors.js';
@@ -82,4 +85,102 @@ export async function listDuePromises(now = new Date()) {
     }).sort({ promiseDueAt: 1 });
     const nameById = await employeeNamesByRow(rows);
     return rows.map((r) => toDto(r, nameById.get(r.employeeId.toString()) ?? '—'));
+}
+/**
+ * 28 Oct — a call action taken on the call page (raising an ask, accepting a
+ * rate, declining, a promoted-offer decision) is also a call: it writes one
+ * row to the call history, so the history shows every call, not only those
+ * saved with "Record a call outcome". The call note also stays on the ask or
+ * order itself (proxyLog), as before.
+ */
+export async function recordCallAction(input) {
+    const buyer = await Buyer.findOne({ counterpartyId: input.buyerCounterpartyId }, { _id: 1 });
+    if (!buyer)
+        return;
+    await CallLog.create({
+        buyerId: buyer._id,
+        employeeId: input.employeeId,
+        direction: input.direction ?? null,
+        at: input.at ?? new Date(),
+        kind: 'call',
+        outcome: input.outcome,
+        note: input.note,
+        producedAskId: input.producedAskId ?? null,
+    });
+}
+const ACTION_ROW = {
+    raise_ask: { outcome: 'asked_for_a_rate', prefix: '' },
+    accept_fill: { outcome: 'placed_an_order', prefix: '' },
+    decline_ask: { outcome: null, prefix: 'Declined the ask. ' },
+    accept_promotion: { outcome: null, prefix: 'Accepted the promoted offer. ' },
+    reject_promotion: { outcome: null, prefix: 'Turned down the promoted offer. ' },
+};
+/**
+ * 28 Oct — one-off: calls logged on the call page before `recordCallAction`
+ * existed kept their note only in the ask's or order's `proxyLog`. Adds the
+ * matching call-history row for each (original time and staff member). A row
+ * already within 10 s of the entry, for the same buyer and staff member, counts
+ * as there — so it is safe to run twice, and skips calls made after the fix.
+ * An order's own accept_fill entry is skipped: the ask's carries the same call.
+ */
+export async function backfillCallHistory(options) {
+    const result = {
+        found: 0,
+        alreadyThere: 0,
+        added: 0,
+        skipped: 0,
+        byAction: {},
+    };
+    const sources = [];
+    for (const ask of await Ask.find({ 'proxyLog.0': { $exists: true } }, { buyerId: 1, proxyLog: 1 })) {
+        sources.push({
+            buyerId: ask.buyerId,
+            askId: ask._id,
+            entries: ask.proxyLog,
+        });
+    }
+    for (const so of await So.find({ 'proxyLog.0': { $exists: true } }, { buyerId: 1, proxyLog: 1 })) {
+        sources.push({
+            buyerId: so.buyerId,
+            askId: null,
+            entries: so.proxyLog.filter((e) => e.action !== 'accept_fill'),
+        });
+    }
+    for (const source of sources) {
+        for (const entry of source.entries) {
+            const shape = ACTION_ROW[entry.action];
+            if (!shape)
+                continue;
+            result.found += 1;
+            if (!(await Buyer.exists({ _id: source.buyerId }))) {
+                result.skipped += 1;
+                continue;
+            }
+            const at = new Date(entry.at);
+            const there = await CallLog.exists({
+                buyerId: source.buyerId,
+                employeeId: entry.actingStaffId,
+                at: { $gte: new Date(at.getTime() - 10_000), $lte: new Date(at.getTime() + 10_000) },
+            });
+            if (there) {
+                result.alreadyThere += 1;
+                continue;
+            }
+            result.added += 1;
+            result.byAction[entry.action] = (result.byAction[entry.action] ?? 0) + 1;
+            if (options.apply) {
+                await CallLog.create({
+                    buyerId: source.buyerId,
+                    employeeId: entry.actingStaffId,
+                    direction: null,
+                    at,
+                    kind: 'call',
+                    outcome: shape.outcome,
+                    note: `${shape.prefix}${entry.callNote}`,
+                    producedAskId: source.askId,
+                });
+            }
+        }
+    }
+    return result;
 }
