@@ -11,6 +11,7 @@ import { SellerAssignment } from '../../models/SellerAssignment.js';
 import { BookAssignment } from '../../models/BookAssignment.js';
 import { BankDetail } from '../../models/BankDetail.js';
 import { Manufacturer } from '../../models/Manufacturer.js';
+import { BuyerDealership } from '../../models/BuyerDealership.js';
 import { Employee } from '../../models/Employee.js';
 import { Tehsil } from '../../models/Tehsil.js';
 import { District } from '../../models/District.js';
@@ -250,6 +251,11 @@ async function mayDecide(push, caller) {
         return false;
     return callerCovers('purchase', caller, id(push.receiverEmployeeId), { queueAllowed: false });
 }
+async function buyerCompaniesOf(buyerId) {
+    const ticked = await BuyerDealership.find({ buyerId }, { manufacturerId: 1 });
+    const companies = await Manufacturer.find({ _id: { $in: ticked.map((d) => d.manufacturerId) } }, { name: 1 }).sort({ name: 1 });
+    return companies.map((m) => ({ manufacturerId: id(m._id), name: m.name }));
+}
 export async function getPush(pushId, caller) {
     const push = await loadPush(pushId);
     await assertPurchaseCovers(push, caller);
@@ -315,6 +321,7 @@ export async function getPush(pushId, caller) {
                 bankDetailGiven: Boolean(draft.bankDetail),
             }
             : null,
+        buyerCompanies: await buyerCompaniesOf(push.buyerId),
         firmHasBankDetail: Boolean(await BankDetail.exists({ counterpartyId: push.counterpartyId })),
         needsGstin: !counterparty?.gstin && !draft?.gstin,
         canComplete: open &&
