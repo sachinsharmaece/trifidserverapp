@@ -95,7 +95,21 @@ export interface BuyerListFilters {
   category?: string;
   districtId?: string;
   assignedTo?: string;
+  /** 29 Oct — default `firm` (A→Z); `dir` default `asc`. */
+  sort?: BuyerListSort;
+  dir?: 'asc' | 'desc';
 }
+
+export const BUYER_LIST_SORTS = [
+  'firm',
+  'tehsil',
+  'district',
+  'registered',
+  'orders',
+  'lastOrder',
+  'rateViews',
+] as const;
+export type BuyerListSort = (typeof BUYER_LIST_SORTS)[number];
 
 /**
  * 29 Oct — one page of the Buyers list (`offset`/`limit`), with the total and
@@ -167,12 +181,8 @@ export async function listBuyersPage(
     });
   }
 
-  const total = buyers.length;
-  if (page.limit) {
-    const offset = page.offset ?? 0;
-    buyers = buyers.slice(offset, offset + page.limit);
-  }
-
+  // 29 Oct — names and order stats for the whole filtered list, not just the page, so the list
+  // can be sorted by any column before it is cut into pages.
   const tehsilIds = [
     ...new Set(
       buyers.filter((b) => b.tehsilId).map((b) => (b.tehsilId as Types.ObjectId).toString()),
@@ -186,22 +196,53 @@ export async function listBuyersPage(
     tehsils.map((t) => [(t._id as Types.ObjectId).toString(), t.district]),
   );
 
+  const statRows = buyers.length
+    ? await So.aggregate<{ _id: Types.ObjectId; count: number; lastOrderAt: Date }>([
+        { $match: { buyerId: { $in: buyers.map((b) => b._id) } } },
+        { $group: { _id: '$buyerId', count: { $sum: 1 }, lastOrderAt: { $max: '$createdAt' } } },
+      ])
+    : [];
+  const orderStatsByBuyer = new Map(
+    statRows.map((r) => [r._id.toString(), { count: r.count, lastOrderAt: r.lastOrderAt }]),
+  );
+
+  const tehsilKey = (b: (typeof buyers)[number]) =>
+    b.tehsilId ? (tehsilNameById.get((b.tehsilId as Types.ObjectId).toString()) ?? null) : null;
+  const districtKey = (b: (typeof buyers)[number]) =>
+    b.tehsilId ? (districtByTehsilId.get((b.tehsilId as Types.ObjectId).toString()) ?? null) : null;
+  const firmKey = (b: (typeof buyers)[number]) =>
+    counterpartyById.get((b.counterpartyId as Types.ObjectId).toString())?.firm?.trim() || null;
+  const sortKey = (b: (typeof buyers)[number]): string | number | null => {
+    const stats = orderStatsByBuyer.get((b._id as Types.ObjectId).toString());
+    switch (filters.sort ?? 'firm') {
+      case 'tehsil':
+        return tehsilKey(b);
+      case 'district':
+        return districtKey(b);
+      case 'registered':
+        return (b as unknown as { createdAt: Date }).createdAt.getTime();
+      case 'orders':
+        return stats?.count ?? null;
+      case 'lastOrder':
+        return stats?.lastOrderAt ? stats.lastOrderAt.getTime() : null;
+      case 'rateViews':
+        return b.rateViews ?? 0;
+      default:
+        return firmKey(b);
+    }
+  };
+  buyers = sortBuyers(buyers, sortKey, firmKey, filters.dir ?? 'asc');
+
+  const total = buyers.length;
+  if (page.limit) {
+    const offset = page.offset ?? 0;
+    buyers = buyers.slice(offset, offset + page.limit);
+  }
+
   const employees = await Employee.find({ _id: { $in: [...ownerEmployeeIdByBuyer.values()] } });
   const employeeNameById = new Map(
     employees.map((e) => [(e._id as Types.ObjectId).toString(), e.person]),
   );
-
-  const sos = await So.find({ buyerId: { $in: buyers.map((b) => b._id) } })
-    .select('buyerId createdAt')
-    .sort({ createdAt: -1 });
-  const orderStatsByBuyer = new Map<string, { count: number; lastOrderAt: Date }>();
-  for (const so of sos) {
-    const key = (so.buyerId as Types.ObjectId).toString();
-    const createdAt = (so as unknown as { createdAt: Date }).createdAt;
-    const existing = orderStatsByBuyer.get(key);
-    if (existing) existing.count += 1;
-    else orderStatsByBuyer.set(key, { count: 1, lastOrderAt: createdAt }); // sorted desc — the first hit is the latest.
-  }
 
   const items: BuyerListRow[] = buyers.map((b) => {
     const idStr = (b._id as Types.ObjectId).toString();
@@ -232,6 +273,41 @@ export async function listBuyersPage(
     };
   });
   return { items, total, facets };
+}
+
+const byName = new Intl.Collator('en', { sensitivity: 'base', numeric: true });
+
+/**
+ * Sorts by `key` in `dir`; a buyer with no value (no firm, no tehsil, never ordered) goes last
+ * either way. Ties fall back to firm A→Z, then id, so pages never repeat or skip a row.
+ */
+function sortBuyers<B extends { _id: unknown }>(
+  buyers: B[],
+  key: (b: B) => string | number | null,
+  firmKey: (b: B) => string | null,
+  dir: 'asc' | 'desc',
+): B[] {
+  const sign = dir === 'desc' ? -1 : 1;
+  const compareValues = (a: string | number, b: string | number) =>
+    typeof a === 'number' && typeof b === 'number' ? a - b : byName.compare(String(a), String(b));
+  return buyers
+    .map((b) => ({ b, k: key(b), f: firmKey(b), id: String(b._id) }))
+    .sort((x, y) => {
+      if (x.k === null && y.k !== null) return 1;
+      if (y.k === null && x.k !== null) return -1;
+      if (x.k !== null && y.k !== null) {
+        const c = compareValues(x.k, y.k);
+        if (c !== 0) return sign * c;
+      }
+      if (x.f !== y.f) {
+        if (x.f === null) return 1;
+        if (y.f === null) return -1;
+        const c = byName.compare(x.f, y.f);
+        if (c !== 0) return c;
+      }
+      return x.id < y.id ? -1 : x.id > y.id ? 1 : 0;
+    })
+    .map((r) => r.b);
 }
 
 export interface BuyerProductHistoryRow {

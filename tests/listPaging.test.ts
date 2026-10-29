@@ -7,6 +7,8 @@ import { Counterparty } from '../src/models/Counterparty.js';
 import { Buyer } from '../src/models/Buyer.js';
 import { Seller } from '../src/models/Seller.js';
 import { BookAssignment } from '../src/models/BookAssignment.js';
+import { Tehsil } from '../src/models/Tehsil.js';
+import type { Types } from 'mongoose';
 import { staffToken } from './m4helpers.js';
 import { randomMobile } from './helpers.js';
 
@@ -111,5 +113,57 @@ describe('Sales → Buyers — pages with every filter option', () => {
     expect(second.body.meta.nextCursor).toBeUndefined();
     // Without a limit, the whole list as before (the top-bar search).
     expect((await get(`/staff/sales/buyers?q=${tag}`)).body.data).toHaveLength(3);
+  });
+
+  it('sorts firm A→Z by default, across pages; Z→A, rate views and tehsil on request', async () => {
+    const tag = `Srt${Date.now()}`;
+    const t1 = await Tehsil.create({ name: `${tag} Zeta`, district: `${tag} D1`, state: 'MP' });
+    const t2 = await Tehsil.create({ name: `${tag} Alpha`, district: `${tag} D2`, state: 'MP' });
+    const rows: Array<[string, number, Types.ObjectId | null]> = [
+      [`${tag} charlie`, 5, t2._id as Types.ObjectId],
+      [`${tag} Alpha`, 0, null],
+      [`${tag} bravo`, 9, t1._id as Types.ObjectId],
+    ];
+    for (const [firm, rateViews, tehsilId] of rows) {
+      const cp = await Counterparty.create({
+        kind: 'buyer',
+        status: 'active',
+        firm,
+        mobile: randomMobile(),
+      });
+      await Buyer.create({ counterpartyId: cp._id, rateViews, tehsilId });
+    }
+    const firms = (body: { data: Array<{ firm: string }> }) => body.data.map((r) => r.firm);
+    const [a, b, c] = [`${tag} Alpha`, `${tag} bravo`, `${tag} charlie`];
+
+    // Default: firm A→Z, ignoring case, and page two carries on from page one.
+    const first = await get(`/staff/sales/buyers?q=${tag}&limit=2`);
+    expect(firms(first.body)).toEqual([a, b]);
+    const second = await get(`/staff/sales/buyers?q=${tag}&limit=2&cursor=2`);
+    expect(firms(second.body)).toEqual([c]);
+
+    expect(firms((await get(`/staff/sales/buyers?q=${tag}&limit=5&dir=desc`)).body)).toEqual([
+      c,
+      b,
+      a,
+    ]);
+    expect(
+      firms((await get(`/staff/sales/buyers?q=${tag}&limit=5&sort=rateViews&dir=desc`)).body),
+    ).toEqual([b, c, a]);
+    // Tehsil A→Z; the buyer with no tehsil goes last, in either direction.
+    expect(firms((await get(`/staff/sales/buyers?q=${tag}&limit=5&sort=tehsil`)).body)).toEqual([
+      c,
+      b,
+      a,
+    ]);
+    expect(
+      firms((await get(`/staff/sales/buyers?q=${tag}&limit=5&sort=tehsil&dir=desc`)).body),
+    ).toEqual([b, c, a]);
+    // An unknown sort falls back to firm A→Z.
+    expect(firms((await get(`/staff/sales/buyers?q=${tag}&limit=5&sort=nope`)).body)).toEqual([
+      a,
+      b,
+      c,
+    ]);
   });
 });

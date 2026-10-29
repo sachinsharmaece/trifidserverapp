@@ -185,6 +185,11 @@ export async function getBuyers(req: Request, res: Response): Promise<void> {
     category: str('category'),
     districtId: str('districtId'),
     assignedTo: str('assignedTo'),
+    // 29 Oct — an unknown sort or direction falls back to firm A→Z rather than failing.
+    sort: (salesBuyersService.BUYER_LIST_SORTS as readonly string[]).includes(str('sort') ?? '')
+      ? (str('sort') as salesBuyersService.BuyerListSort)
+      : undefined,
+    dir: str('dir') === 'desc' ? ('desc' as const) : ('asc' as const),
   };
   // 29 Oct — with `limit`, one page (`cursor` is the offset) plus the total and
   // the tab's filter options; without it, the whole list as before.
