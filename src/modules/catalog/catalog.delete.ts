@@ -1,0 +1,123 @@
+import { Types } from 'mongoose';
+import { Product } from '../../models/Product.js';
+import { Sku } from '../../models/Sku.js';
+import { Listing } from '../../models/Listing.js';
+import { ListingLine } from '../../models/ListingLine.js';
+import { Ask } from '../../models/Ask.js';
+import { Pile } from '../../models/Pile.js';
+import { Pool } from '../../models/Pool.js';
+import { So } from '../../models/So.js';
+import { SoLine } from '../../models/SoLine.js';
+import { AppError } from '../../shared/errors.js';
+
+/**
+ * 29 Oct — soft delete of a product from Manage → Products (BR-370). The row stays, so past
+ * orders, invoices and reports keep its name; `deletedAt` (and `active: false`, which the reads
+ * that only check `active` rely on) takes it out of every list and picker. Its packs are left as
+ * they are — every read reaches them through the product.
+ */
+
+/** An order in one of these is done; any other state still needs the product. */
+const FINISHED_SO_STATES = ['delivered', 'closed', 'cancelled', 'supply_failed'];
+
+export interface ProductInUse {
+  liveListings: number;
+  openAsks: number;
+  pilesWaiting: number;
+  openPools: number;
+  unfinishedOrders: number;
+}
+
+/** What still points at this product; all zero means it can go. */
+export async function productInUse(productId: Types.ObjectId): Promise<ProductInUse> {
+  const skuIds = (await Sku.find({ productId }, { _id: 1 })).map((s) => s._id);
+  const listings = await Listing.find({ productId, deletedAt: null }, { _id: 1, state: 1 });
+  const lineIds = listings.length
+    ? (await ListingLine.find({ listingId: { $in: listings.map((l) => l._id) } }, { _id: 1 })).map(
+        (l) => l._id,
+      )
+    : [];
+  const soIds = skuIds.length ? await SoLine.distinct('soId', { skuId: { $in: skuIds } }) : [];
+  const [openAsks, pilesWaiting, openPools, unfinishedOrders] = await Promise.all([
+    Ask.countDocuments({
+      state: { $in: ['open', 'quoted'] },
+      $or: [{ productId }, { skuId: { $in: skuIds } }],
+    }),
+    lineIds.length ? Pile.countDocuments({ decision: null, listingLineId: { $in: lineIds } }) : 0,
+    skuIds.length ? Pool.countDocuments({ isActive: true, skuId: { $in: skuIds } }) : 0,
+    soIds.length
+      ? So.countDocuments({ _id: { $in: soIds }, state: { $nin: FINISHED_SO_STATES } })
+      : 0,
+  ]);
+  return {
+    liveListings: listings.filter((l) => l.state === 'live' || l.state === 'paused').length,
+    openAsks,
+    pilesWaiting,
+    openPools,
+    unfinishedOrders,
+  };
+}
+
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+function describeInUse(u: ProductInUse): string[] {
+  return [
+    u.liveListings ? plural(u.liveListings, 'live listing', 'live listings') : null,
+    u.openAsks ? plural(u.openAsks, 'open ask', 'open asks') : null,
+    u.pilesWaiting
+      ? plural(u.pilesWaiting, 'request waiting on a seller', 'requests waiting on a seller')
+      : null,
+    u.openPools ? plural(u.openPools, 'open pool', 'open pools') : null,
+    u.unfinishedOrders
+      ? plural(u.unfinishedOrders, 'order not yet finished', 'orders not yet finished')
+      : null,
+  ].filter((s): s is string => s !== null);
+}
+
+function asObjectId(id: string): Types.ObjectId {
+  if (!Types.ObjectId.isValid(id)) {
+    throw new AppError({ code: 'NOT_FOUND', messageEn: 'Product not found.' });
+  }
+  return new Types.ObjectId(id);
+}
+
+/** Refused while anything live points at it (`PRODUCT_IN_USE`, with what in `meta.inUse`). */
+export async function deleteProduct(
+  productId: string,
+  employeeId: string,
+): Promise<{ productId: string }> {
+  const product = await Product.findOne({ _id: asObjectId(productId), deletedAt: null });
+  if (!product) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Product not found.' });
+
+  const inUse = await productInUse(product._id as Types.ObjectId);
+  const reasons = describeInUse(inUse);
+  if (reasons.length > 0) {
+    throw new AppError({
+      code: 'PRODUCT_IN_USE',
+      messageEn: `${product.brand} is still in use: ${reasons.join(', ')}. Close these first, or untick Active to stop selling it.`,
+      meta: { inUse, reasons },
+    });
+  }
+
+  product.deletedAt = new Date();
+  product.deletedBy = new Types.ObjectId(employeeId);
+  product.active = false;
+  await product.save();
+  return { productId };
+}
+
+/** Back in every list, but inactive — Admin looks it over and ticks Active to sell it again. */
+export async function restoreProduct(productId: string): Promise<{ productId: string }> {
+  const product = await Product.findOne({
+    _id: asObjectId(productId),
+    deletedAt: { $ne: null },
+  });
+  if (!product) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Deleted product not found.' });
+  product.deletedAt = null;
+  product.deletedBy = null;
+  product.active = false;
+  await product.save();
+  return { productId };
+}

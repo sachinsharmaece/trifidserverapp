@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import * as catalogService from './catalog.service.js';
+import * as catalogDelete from './catalog.delete.js';
 import { writeAuditLog } from '../../shared/audit.js';
 
 /** 24 Oct — every product and pack change is audited (DEC-065). */
@@ -71,12 +72,13 @@ export async function getSkus(req: Request, res: Response): Promise<void> {
 
 // New — the admin catalog-management screen's own unfiltered list.
 export async function getAllProducts(req: Request, res: Response): Promise<void> {
-  const { cursor, limit, q } = req.validatedQuery as {
+  const { cursor, limit, q, deleted } = req.validatedQuery as {
     cursor?: string;
     limit?: number;
     q?: string;
+    deleted?: 'true' | 'false';
   };
-  const result = await catalogService.listAllProducts(cursor, limit ?? 25, q);
+  const result = await catalogService.listAllProducts(cursor, limit ?? 25, q, deleted === 'true');
   res.status(200).json({
     data: result.items,
     meta: { correlationId: req.correlationId, nextCursor: result.nextCursor, total: result.total },
@@ -124,6 +126,19 @@ export async function patchProduct(req: Request, res: Response): Promise<void> {
     },
   );
   await audit(req, 'product', result.productId, 'edit', req.body);
+  ok(res, req, result);
+}
+
+/** 29 Oct — soft delete (BR-370); refused while the product is in use. */
+export async function deleteProduct(req: Request, res: Response): Promise<void> {
+  const result = await catalogDelete.deleteProduct(req.params.id as string, req.auth!.employeeId!);
+  await audit(req, 'product', result.productId, 'delete', { deleted: true });
+  ok(res, req, result);
+}
+
+export async function postProductRestore(req: Request, res: Response): Promise<void> {
+  const result = await catalogDelete.restoreProduct(req.params.id as string);
+  await audit(req, 'product', result.productId, 'restore', { deleted: false, active: false });
   ok(res, req, result);
 }
 

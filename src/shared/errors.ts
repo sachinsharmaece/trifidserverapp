@@ -81,6 +81,9 @@ export type ErrorCode =
   // business rule: BR-087's "no merge rule" governs two DIFFERENT rates or
   // scopes on the same product, which this never touches.
   | 'DUPLICATE_LISTING'
+  // 29 Oct — a product that something live still points at (a listing, an ask, a pile, a pool,
+  // an unfinished order) cannot be deleted; `meta.inUse` says what. A state refusal.
+  | 'PRODUCT_IN_USE'
   | 'INTERNAL_ERROR';
 
 const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
@@ -129,6 +132,7 @@ const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
   CONFIRMATION_REQUIRED: 409,
   OUT_OF_SCOPE: 403,
   DUPLICATE_LISTING: 409,
+  PRODUCT_IN_USE: 409,
   INTERNAL_ERROR: 500,
 };
 

@@ -107,6 +107,21 @@ catalogRouter.patch(
   validateBody(updateProductSchema),
   controller.patchProduct,
 );
+// 29 Oct — soft delete and restore (BR-370), audited like every product change.
+catalogRouter.delete(
+  '/admin/products/:id',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  requireIdempotencyKey(),
+  controller.deleteProduct,
+);
+catalogRouter.post(
+  '/admin/products/:id/restore',
+  authenticate,
+  requirePermission(PERMISSIONS.CATALOG_WRITE),
+  requireIdempotencyKey(),
+  controller.postProductRestore,
+);
 catalogRouter.post(
   '/admin/skus/import',
   authenticate,

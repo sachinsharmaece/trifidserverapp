@@ -4,6 +4,7 @@ import { Hsn, type ProductCategory } from '../../models/Hsn.js';
 import { Product } from '../../models/Product.js';
 import { Sku } from '../../models/Sku.js';
 import { Technical } from '../../models/Technical.js';
+import { Employee } from '../../models/Employee.js';
 import { AppError } from '../../shared/errors.js';
 import { packLabelMatchesBaseUnit } from '../../shared/validators.js';
 
@@ -254,6 +255,9 @@ interface ProductListItem {
   active: boolean;
   state: string;
   createdBy: string | null;
+  /** 29 Oct — only on the deleted list. */
+  deletedAt?: string;
+  deletedByName?: string | null;
 }
 
 // New — the admin catalog-management screen's own unfiltered list (not
@@ -263,8 +267,10 @@ export async function listAllProducts(
   cursor: string | undefined,
   limit: number,
   q?: string,
+  deleted = false,
 ): Promise<{ items: ProductListItem[]; nextCursor?: string; total: number }> {
-  const query: Record<string, unknown> = { deletedAt: null };
+  // 29 Oct — `deleted` lists only the soft-deleted ones, newest deleted first.
+  const query: Record<string, unknown> = { deletedAt: deleted ? { $ne: null } : null };
   // 29 Oct — the search box: part of the product, technical or company name.
   const term = q?.trim();
   if (term) {
@@ -277,11 +283,14 @@ export async function listAllProducts(
     ];
   }
   const total = await Product.countDocuments(query);
+  // The deleted list pages by offset (it sorts on `deletedAt`, not `_id`).
+  const offset = deleted ? Math.max(0, Number(cursor ?? 0) || 0) : 0;
   // Newest first, so a product just created is on the first page.
-  if (cursor) query._id = { $lt: cursor };
+  if (cursor && !deleted) query._id = { $lt: cursor };
 
   const products = await Product.find(query)
-    .sort({ _id: -1 })
+    .sort(deleted ? { deletedAt: -1, _id: -1 } : { _id: -1 })
+    .skip(offset)
     .limit(limit + 1);
 
   const hasMore = products.length > limit;
@@ -295,6 +304,13 @@ export async function listAllProducts(
       (manufacturer._id as Types.ObjectId).toString(),
       manufacturer.name,
     ]),
+  );
+
+  const deleters = deleted
+    ? await Employee.find({ _id: { $in: page.map((product) => product.deletedBy) } })
+    : [];
+  const deleterNameById = new Map(
+    deleters.map((e) => [(e._id as Types.ObjectId).toString(), e.person]),
   );
 
   const items: ProductListItem[] = page.map((product) => ({
@@ -314,11 +330,22 @@ export async function listAllProducts(
     createdBy: product.createdBy
       ? (product.createdBy as unknown as Types.ObjectId).toString()
       : null,
+    ...(deleted && product.deletedAt
+      ? {
+          deletedAt: product.deletedAt.toISOString(),
+          deletedByName: product.deletedBy
+            ? (deleterNameById.get((product.deletedBy as unknown as Types.ObjectId).toString()) ??
+              null)
+            : null,
+        }
+      : {}),
   }));
 
-  const nextCursor = hasMore
-    ? (page[page.length - 1]!._id as Types.ObjectId).toString()
-    : undefined;
+  const nextCursor = !hasMore
+    ? undefined
+    : deleted
+      ? String(offset + limit)
+      : (page[page.length - 1]!._id as Types.ObjectId).toString();
   return {
     total,
     items,
