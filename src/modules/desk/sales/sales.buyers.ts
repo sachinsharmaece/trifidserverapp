@@ -10,6 +10,11 @@ import { Sku } from '../../../models/Sku.js';
 import { Product } from '../../../models/Product.js';
 import { Ask } from '../../../models/Ask.js';
 import { Quote } from '../../../models/Quote.js';
+import { Pile } from '../../../models/Pile.js';
+import { PileRequest } from '../../../models/PileRequest.js';
+import { Pool } from '../../../models/Pool.js';
+import { PoolCommitment } from '../../../models/PoolCommitment.js';
+import { ListingLine } from '../../../models/ListingLine.js';
 import { AppError } from '../../../shared/errors.js';
 import { computeBuyerFacingRatePaise } from '../../listing/listing.service.js';
 import { addDays } from '../../../shared/clock.js';
@@ -293,6 +298,28 @@ export interface BuyerFileLiveQuote {
   bindingUntil: string;
 }
 
+/**
+ * 29 Oct — a listed offer he has been put on (by Sales on a call, or by his own Buy button) that
+ * is waiting on the seller: a pile request (Purchase → Confirmations) or a place in a pool that
+ * has not reached its minimum yet. Once the seller confirms it is an order and shows there.
+ */
+export interface BuyerFileWaitingOnSeller {
+  kind: 'pile' | 'pool';
+  /** The pile request, or the pool commitment. */
+  id: string;
+  productId: string | null;
+  brand: string;
+  packLabel: string | null;
+  qty: number;
+  /** His own rate on the offer — pile only; a pool's rate is set when it triggers. */
+  ratePaise: number | null;
+  requestedAt: string;
+  /** Pile only — when the seller's window to confirm ends. */
+  decideBy: string | null;
+  /** Pool only — boxes in so far, against its minimum. */
+  pool: { committedBoxes: number; moq: number; status: string } | null;
+}
+
 /** His orders sliced by the funnel joint they sit at; `other` is every state outside the three. */
 export interface BuyerFileOrdersByStage {
   paymentPending: SalesOrderRow[];
@@ -328,6 +355,7 @@ export interface BuyerFileDto {
   funnel: BuyerFunnelStage[];
   productHistory: BuyerProductHistoryRow[];
   openAsks: BuyerFileOpenAsk[];
+  waitingOnSeller: BuyerFileWaitingOnSeller[];
   liveQuotes: BuyerFileLiveQuote[];
   callLogs: CallLogDto[];
   orders: SalesOrderRow[];
@@ -489,6 +517,8 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     parkedRowsByAskId.set(row.askId, [...(parkedRowsByAskId.get(row.askId) ?? []), row]);
   }
 
+  const waitingOnSeller = await listWaitingOnSeller(buyer);
+
   // The same nine joints as the Funnel tab, with the same state lists and wording,
   // counted over this buyer's own records only.
   const staleBefore = addDays(new Date(), -(ASK_LEAK_STALENESS_HOURS / 24));
@@ -583,6 +613,7 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
         pendingQuotes: parkedRowsByAskId.get((a._id as Types.ObjectId).toString()) ?? [],
       };
     }),
+    waitingOnSeller,
     liveQuotes: liveQuoteRows,
     callLogs,
     orders,
@@ -629,4 +660,87 @@ async function facetsFor(
       .map((e) => ({ employeeId: String(e._id), person: e.person }))
       .sort((a, b) => a.person.localeCompare(b.person)),
   };
+}
+
+/** 29 Oct — his pile requests the seller has not decided, and his places in pools still filling. */
+async function listWaitingOnSeller(
+  buyer: InstanceType<typeof Buyer>,
+): Promise<BuyerFileWaitingOnSeller[]> {
+  const [requests, commitments] = await Promise.all([
+    PileRequest.find({ buyerId: buyer._id }),
+    PoolCommitment.find({ buyerId: buyer._id, withdrawnAt: null }),
+  ]);
+  const piles = requests.length
+    ? await Pile.find({ _id: { $in: requests.map((r) => r.pileId) }, decision: null })
+    : [];
+  const pileById = new Map(piles.map((p) => [String(p._id), p]));
+  const lines = piles.length
+    ? await ListingLine.find({ _id: { $in: piles.map((p) => p.listingLineId) } })
+    : [];
+  const lineById = new Map(lines.map((l) => [String(l._id), l]));
+  const pools = commitments.length
+    ? await Pool.find({ _id: { $in: commitments.map((c) => c.poolId) }, isActive: true })
+    : [];
+  const poolById = new Map(pools.map((p) => [String(p._id), p]));
+  const poolBoxes = new Map<string, number>();
+  if (pools.length) {
+    const all = await PoolCommitment.find({
+      poolId: { $in: pools.map((p) => p._id) },
+      withdrawnAt: null,
+    });
+    for (const c of all)
+      poolBoxes.set(String(c.poolId), (poolBoxes.get(String(c.poolId)) ?? 0) + c.qty);
+  }
+  const skuIds = [...lines.map((l) => l.skuId), ...pools.map((p) => p.skuId)];
+  const skus = skuIds.length ? await Sku.find({ _id: { $in: skuIds } }) : [];
+  const skuById = new Map(skus.map((x) => [String(x._id), x]));
+  const products = skus.length
+    ? await Product.find({ _id: { $in: skus.map((x) => x.productId) } })
+    : [];
+  const productById = new Map(products.map((x) => [String(x._id), x]));
+  const named = (skuId: unknown) => {
+    const sku = skuById.get(String(skuId));
+    const product = sku ? productById.get(String(sku.productId)) : undefined;
+    return {
+      productId: product ? String(product._id) : null,
+      brand: product?.brand ?? '—',
+      packLabel: sku?.packLabel ?? null,
+    };
+  };
+
+  const rows: BuyerFileWaitingOnSeller[] = [];
+  for (const r of requests) {
+    const pile = pileById.get(String(r.pileId));
+    const line = pile ? lineById.get(String(pile.listingLineId)) : undefined;
+    if (!pile || !line) continue;
+    rows.push({
+      kind: 'pile',
+      id: String(r._id),
+      ...named(line.skuId),
+      qty: r.qty,
+      ratePaise: await computeBuyerFacingRatePaise(buyer, line.skuId, line.ratePaise),
+      requestedAt: r.requestedAt.toISOString(),
+      decideBy: pile.confirmWindowEndsAt.toISOString(),
+      pool: null,
+    });
+  }
+  for (const c of commitments) {
+    const pool = poolById.get(String(c.poolId));
+    if (!pool) continue;
+    rows.push({
+      kind: 'pool',
+      id: String(c._id),
+      ...named(pool.skuId),
+      qty: c.qty,
+      ratePaise: null,
+      requestedAt: (c as unknown as { createdAt: Date }).createdAt.toISOString(),
+      decideBy: null,
+      pool: {
+        committedBoxes: poolBoxes.get(String(pool._id)) ?? 0,
+        moq: pool.moq,
+        status: pool.status,
+      },
+    });
+  }
+  return rows.sort((a, b) => b.requestedAt.localeCompare(a.requestedAt));
 }

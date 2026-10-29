@@ -724,6 +724,7 @@ export async function getBuyerFeed(
 
 export interface BuyerOfferDto {
   listingLineId: string;
+  skuId: string;
   ratePaise: Paise;
   conditions: BuyerConditionTagsDto;
   hasPool: boolean;
@@ -755,6 +756,8 @@ export async function getProductOffers(
   return {
     offers: priced.map((v) => ({
       listingLineId: (v.line._id as Types.ObjectId).toString(),
+      // 29 Oct — so his ask form can tell a listed pack and send him to Buy instead.
+      skuId: (v.line.skuId as Types.ObjectId).toString(),
       ratePaise: v.buyerRatePaise,
       conditions: toConditionTags(v.line),
       hasPool: pools.some(
@@ -845,22 +848,29 @@ export async function getListingLineForBuy(
 
 interface InquireInput {
   qty: number;
-  deliveryLocationId: string;
+  deliveryLocationId?: string;
 }
 
 /**
- * New — not in the original `API_CONTRACT.md`, needed to actually submit
- * WF-04's buy screen (API-032 only describes the read). BR-093 — the
- * delivery location is not constrained by the listing's scope; an
- * out-of-scope delivery only raises a monitoring flag, it blocks nothing.
- * Creates a `pile` on first request against a line (BR-133); nothing is
- * charged and no clock runs against the seller.
+ * 29 Oct — where an inquiry or pool place delivers when none is named: his primary delivery
+ * location, else his first, else `null` — his registered address.
  */
-export async function createPileRequest(
+export async function defaultDeliveryLocationId(
+  buyerId: Types.ObjectId,
+): Promise<Types.ObjectId | null> {
+  const locations = await BuyerLocation.find({ buyerId, deletedAt: null }).sort({ createdAt: 1 });
+  const chosen = locations.find((l) => l.isPrimary) ?? locations[0];
+  return chosen ? (chosen._id as Types.ObjectId) : null;
+}
+
+/**
+ * A live listing line this buyer can see — the same rule his own board uses. Anything else
+ * reads as "Not found", so a line outside his area never confirms it exists.
+ */
+export async function requireLineVisibleToBuyer(
   buyerCounterpartyId: string,
   listingLineId: string,
-  input: InquireInput,
-): Promise<{ pileId: string; enquiryId: string | null }> {
+) {
   const { buyer, counterparty } = await requireActiveBuyer(buyerCounterpartyId);
   await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new inquiries.
   const line = await ListingLine.findById(listingLineId);
@@ -884,6 +894,28 @@ export async function createPileRequest(
     blockLookup,
   );
   if (!visible) throw new AppError({ code: 'NOT_VISIBLE', messageEn: 'Not found.' });
+  return { buyer, counterparty, line, listing };
+}
+
+/**
+ * New — not in the original `API_CONTRACT.md`, needed to actually submit
+ * WF-04's buy screen (API-032 only describes the read). BR-093 — the
+ * delivery location is not constrained by the listing's scope; an
+ * out-of-scope delivery only raises a monitoring flag, it blocks nothing.
+ * Creates a `pile` on first request against a line (BR-133); nothing is
+ * charged and no clock runs against the seller.
+ */
+export async function createPileRequest(
+  buyerCounterpartyId: string,
+  listingLineId: string,
+  input: InquireInput,
+  // 29 Oct — Sales may put him on a listed offer on a call; the enquiry then records that.
+  options: { channel?: 'self' | 'sales_call'; raisedBy?: string } = {},
+): Promise<{ pileId: string; enquiryId: string | null }> {
+  const { buyer, line, listing } = await requireLineVisibleToBuyer(
+    buyerCounterpartyId,
+    listingLineId,
+  );
 
   if (input.qty < line.moqExact) {
     throw new AppError({
@@ -892,17 +924,23 @@ export async function createPileRequest(
       field: 'qty',
     });
   }
-  const location = await BuyerLocation.findOne({
-    _id: input.deliveryLocationId,
-    buyerId: buyer._id,
-    deletedAt: null,
-  });
-  if (!location) {
-    throw new AppError({
-      code: 'VALIDATION_FAILED',
-      messageEn: 'Delivery location not found.',
-      field: 'deliveryLocationId',
+  let deliveryLocationId: Types.ObjectId | null;
+  if (input.deliveryLocationId) {
+    const location = await BuyerLocation.findOne({
+      _id: input.deliveryLocationId,
+      buyerId: buyer._id,
+      deletedAt: null,
     });
+    if (!location) {
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: 'Delivery location not found.',
+        field: 'deliveryLocationId',
+      });
+    }
+    deliveryLocationId = location._id as Types.ObjectId;
+  } else {
+    deliveryLocationId = await defaultDeliveryLocationId(buyer._id as Types.ObjectId);
   }
 
   let pile = await Pile.findOne({ listingLineId: line._id });
@@ -925,8 +963,9 @@ export async function createPileRequest(
     const enquiryId = await createTradeEnquiryInSession(
       {
         kind: 'pile_request',
-        channel: 'self',
+        channel: options.channel ?? 'self',
         raisedAt: now,
+        raisedBy: options.raisedBy ?? null,
         buyerId: buyer._id as Types.ObjectId,
         skuId: line.skuId as Types.ObjectId,
         productId: listing.productId as Types.ObjectId,
@@ -943,7 +982,7 @@ export async function createPileRequest(
           pileId: pile._id,
           buyerId: buyer._id,
           qty: input.qty,
-          deliveryLocationId: location._id,
+          deliveryLocationId,
           requestedAt: now,
           enquiryId,
         },

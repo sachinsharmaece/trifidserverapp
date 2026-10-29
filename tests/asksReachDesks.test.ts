@@ -20,6 +20,10 @@ import { staffToken, createTestSku, seedMarginCell } from './m4helpers.js';
 import { createTehsil, createApprovedSellerAtTehsils } from './m5helpers.js';
 import { randomGstin, randomMobile } from './helpers.js';
 import { approveBuyerRegistration } from './buyerHelpers.js';
+import { randomUUID } from 'node:crypto';
+import { ListingLine } from '../src/models/ListingLine.js';
+import { PileRequest } from '../src/models/PileRequest.js';
+import { createListing } from '../src/modules/listing/listing.service.js';
 
 /**
  * "Asks reaching the desks" — the client's My-view items 13, 14 and 16.
@@ -760,5 +764,165 @@ describe('28 Oct — every call action shows in the call history', () => {
     const again = await backfillCallHistory({ apply: true });
     expect(again.added).toBe(0);
     expect(await history(w.sales.token, w.buyer.buyerDocId)).toHaveLength(1);
+  });
+});
+
+describe('29 Oct — a listed product goes to Confirmations, one not listed to Demand', () => {
+  const wantsIt = (token: string, lineId: string, body: object, key = randomUUID()) =>
+    request(app)
+      .post(`/api/v1/staff/proxy/buyer/listing-lines/${lineId}/wants-it`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', key)
+      .send(body);
+  const lineOf = async (skuId: string) => String((await ListingLine.findOne({ skuId }))!._id);
+
+  it('"He wants it" on his board makes a pile request — on Confirmations, not on Demand', async () => {
+    const w = await seedWorld({ trustedSeller: false });
+    const res = await wantsIt(w.sales.token, await lineOf(w.skuId), {
+      buyerCounterpartyId: w.buyer.counterpartyId,
+      qty: 4,
+      callNote: 'He wants 4 boxes of this.',
+      direction: 'in',
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.data.kind).toBe('pile');
+
+    const piles = (await getAs(w.purchase.token, '/staff/purchase/piles')).body.data as Array<{
+      pileId: string;
+      boxes: number;
+    }>;
+    expect(piles.find((p) => p.pileId === res.body.data.pileId)).toMatchObject({ boxes: 4 });
+    expect(await Ask.countDocuments({ buyerId: w.buyer.buyerDocId })).toBe(0);
+
+    // No delivery location on file: it goes to his registered address.
+    const request_ = await PileRequest.findOne({ buyerId: w.buyer.buyerDocId });
+    expect(request_!.deliveryLocationId).toBeNull();
+
+    const file = (await getAs(w.sales.token, `/staff/sales/buyers/${w.buyer.buyerDocId}`)).body
+      .data;
+    expect(file.openAsks).toHaveLength(0);
+    expect(file.waitingOnSeller).toHaveLength(1);
+    expect(file.waitingOnSeller[0]).toMatchObject({ kind: 'pile', qty: 4 });
+    expect(file.waitingOnSeller[0].ratePaise).toBeGreaterThan(40000); // His rate, with the margin.
+
+    const calls = (await getAs(w.sales.token, `/staff/sales/calls?buyerId=${w.buyer.buyerDocId}`))
+      .body.data as Array<{ note: string; direction: string | null }>;
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ note: 'He wants 4 boxes of this.', direction: 'in' });
+  });
+
+  it('below the minimum order he joins the pool for that offer', async () => {
+    const w = await seedWorld({ trustedSeller: false });
+    const seller = await Seller.findById(w.sellerDocId);
+    const poolSku = await createTestSku('Medium');
+    const sku = await Sku.findById(poolSku);
+    await createListing(String(seller!.counterpartyId), {
+      productId: String(sku!.productId),
+      scopeType: 'my_area',
+      lines: [
+        {
+          skuId: poolSku,
+          ratePaise: 30000,
+          expiryBand: 'over12',
+          moqExact: 10,
+          deliveryBand: '48h',
+          provenance: 'company',
+          qty: 50,
+        },
+      ],
+    } as never);
+    const res = await wantsIt(w.sales.token, await lineOf(poolSku), {
+      buyerCounterpartyId: w.buyer.counterpartyId,
+      qty: 3,
+      callNote: 'Only 3 boxes.',
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.data.kind).toBe('pool');
+    const file = (await getAs(w.sales.token, `/staff/sales/buyers/${w.buyer.buyerDocId}`)).body
+      .data;
+    expect(file.waitingOnSeller[0]).toMatchObject({
+      kind: 'pool',
+      qty: 3,
+      pool: { committedBoxes: 3, moq: 10, status: 'open' },
+    });
+  });
+
+  it('one call: the listed product goes on the offer, the unlisted one becomes an ask', async () => {
+    const w = await seedWorld({ trustedSeller: false });
+    const unlistedSku = await createTestSku('Medium');
+    const batch = await postAs(w.sales.token, '/staff/proxy/buyer/asks/batch', {
+      buyerCounterpartyId: w.buyer.counterpartyId,
+      callNote: 'Two products on one call.',
+      lines: [
+        { skuId: w.skuId, allPacks: false, qty: 2, conditionRequirement: { expiryBand: 'over12' } },
+        {
+          skuId: unlistedSku,
+          allPacks: false,
+          qty: 5,
+          conditionRequirement: { expiryBand: 'over12' },
+        },
+      ],
+    });
+    expect(batch.status).toBe(201);
+    const [listed, unlisted] = batch.body.data.results;
+    expect(listed).toMatchObject({ index: 0, kind: 'pile' });
+    expect(unlisted).toMatchObject({ index: 1, kind: 'ask' });
+
+    const demand = (await getAs(w.purchase.token, '/staff/purchase/demand')).body.data as Array<{
+      askId: string;
+      skuId: string | null;
+    }>;
+    expect(demand.map((d) => d.askId)).toContain(unlisted.askId);
+    expect(demand.some((d) => d.skuId === w.skuId)).toBe(false);
+    const piles = (await getAs(w.purchase.token, '/staff/purchase/piles')).body.data as Array<{
+      pileId: string;
+    }>;
+    expect(piles.map((p) => p.pileId)).toContain(listed.pileId);
+  });
+
+  it('an offer that does not reach him is refused, and nothing is written', async () => {
+    const w = await seedWorld({ trustedSeller: false });
+    const elsewhere = await createTehsil();
+    const otherSellerDocId = await createApprovedSellerAtTehsils(app, w.purchase.token, [
+      elsewhere,
+    ]);
+    const otherSeller = await Seller.findById(otherSellerDocId);
+    const farSku = await createTestSku('Medium');
+    const sku = await Sku.findById(farSku);
+    await createListing(String(otherSeller!.counterpartyId), {
+      productId: String(sku!.productId),
+      scopeType: 'my_area',
+      lines: [
+        {
+          skuId: farSku,
+          ratePaise: 30000,
+          expiryBand: 'over12',
+          moqExact: 1,
+          deliveryBand: '48h',
+          provenance: 'company',
+          qty: 50,
+        },
+      ],
+    } as never);
+    const res = await wantsIt(w.sales.token, await lineOf(farSku), {
+      buyerCounterpartyId: w.buyer.counterpartyId,
+      qty: 2,
+      callNote: 'Not his area.',
+    });
+    expect(res.status).toBe(404);
+    expect(await PileRequest.countDocuments({ buyerId: w.buyer.buyerDocId })).toBe(0);
+    const calls = (await getAs(w.sales.token, `/staff/sales/calls?buyerId=${w.buyer.buyerDocId}`))
+      .body.data;
+    expect(calls).toHaveLength(0);
+  });
+
+  it("the buyer's own Buy works without a delivery location on file", async () => {
+    const w = await seedWorld({ trustedSeller: false });
+    const res = await request(app)
+      .post(`/api/v1/listings/lines/${await lineOf(w.skuId)}/inquire`)
+      .set('Authorization', `Bearer ${w.buyer.token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ qty: 2 });
+    expect(res.status).toBe(201);
   });
 });

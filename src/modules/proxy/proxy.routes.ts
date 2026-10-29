@@ -18,6 +18,7 @@ import {
   proxyConfirmPileSchema,
   proxyPileDecisionSchema,
   proxyListBuyerAsksQuerySchema,
+  proxyWantsItSchema,
 } from './proxy.validation.js';
 
 /**
@@ -50,6 +51,15 @@ proxyRouter.post(
   requireInScope('sales', field('body', 'buyerCounterpartyId')),
   validateBody(proxyRaiseAsksSchema),
   controller.postBuyerCallAsks,
+);
+// 29 Oct — "He wants it" on a listed offer: a pile request or its pool (Purchase → Confirmations).
+proxyRouter.post(
+  '/staff/proxy/buyer/listing-lines/:id/wants-it',
+  ...buyerCall,
+  requireInScope('sales', field('body', 'buyerCounterpartyId')),
+  requireIdempotencyKey(),
+  validateBody(proxyWantsItSchema),
+  controller.postBuyerCallWantsIt,
 );
 // Feeds the ask/quote pickers on "Advance an ask on a call".
 proxyRouter.get(

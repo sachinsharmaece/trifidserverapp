@@ -9,6 +9,11 @@ import { recordCallAction } from '../desk/sales/sales.calls.js';
 import * as demandService from '../demand/demand.service.js';
 import * as listingService from '../listing/listing.service.js';
 import * as ordersService from '../orders/orders.service.js';
+import {
+  cheapestOfferOnHisBoard,
+  placeOnListedOffer,
+  type WantsItResult,
+} from './proxy.wantsIt.js';
 import { AppError } from '../../shared/errors.js';
 import type {
   proxyRaiseAskSchema,
@@ -21,6 +26,7 @@ import type {
   proxyConfirmPileSchema,
   proxyPileDecisionSchema,
   proxyListBuyerAsksQuerySchema,
+  proxyWantsItSchema,
 } from './proxy.validation.js';
 import type { z } from 'zod';
 
@@ -62,20 +68,59 @@ export async function postBuyerCallAsk(req: Request, res: Response): Promise<voi
   ok(res, req, result, 201);
 }
 
-// "Log a buyer call" for a call that names several products: one ask per line, each
-// created by the same raiseAsk the single route uses and carrying the same call note.
-// Not all-or-nothing — each ask stands on its own (own quotes, own enquiry) — so a line
-// that fails is reported by position and the rest stay saved; the rep retries only that one.
+// 29 Oct — "He wants it" on a listed offer: a pile request (Purchase → Confirmations) or the
+// pool for that offer, never an ask — an ask is only for what is not on his board.
+export async function postBuyerCallWantsIt(req: Request, res: Response): Promise<void> {
+  const { buyerCounterpartyId, callNote, direction, qty, deliveryLocationId } = req.body as z.infer<
+    typeof proxyWantsItSchema
+  >;
+  const result = await placeOnListedOffer(buyerCounterpartyId, String(req.params.id), {
+    qty,
+    raisedBy: actingStaffId(req),
+    ...(deliveryLocationId ? { deliveryLocationId } : {}),
+  });
+  await recordCallAction({
+    buyerCounterpartyId,
+    employeeId: actingStaffId(req),
+    direction,
+    outcome: 'asked_for_a_rate',
+    note: callNote,
+  });
+  ok(res, req, result, 201);
+}
+
+// "Log a buyer call" for a call that names several products, under the one call note.
+// 29 Oct — each line goes where its product belongs: if it is on his board he is put on the
+// cheapest offer (a pile, or its pool — Purchase → Confirmations); if not, it is an ask
+// (Purchase → Demand). Not all-or-nothing — each line stands on its own — so a line that
+// fails is reported by position and the rest stay saved; the rep retries only that one.
 export async function postBuyerCallAsks(req: Request, res: Response): Promise<void> {
   const { buyerCounterpartyId, callNote, lines, direction } = req.body as z.infer<
     typeof proxyRaiseAsksSchema
   >;
   const results: Array<
-    { index: number; askId: string } | { index: number; error: string; code: string | null }
+    | ({ index: number } & ({ kind: 'ask'; askId: string } | WantsItResult))
+    | { index: number; error: string; code: string | null }
   > = [];
   for (const [index, line] of lines.entries()) {
     try {
       const { expectedRatePaise, ...askLine } = line;
+      const offerId = await cheapestOfferOnHisBoard(buyerCounterpartyId, askLine);
+      if (offerId) {
+        const placed = await placeOnListedOffer(buyerCounterpartyId, offerId, {
+          qty: askLine.qty,
+          raisedBy: actingStaffId(req),
+        });
+        await recordCallAction({
+          buyerCounterpartyId,
+          employeeId: actingStaffId(req),
+          direction,
+          outcome: 'asked_for_a_rate',
+          note: callNote,
+        });
+        results.push({ index, ...placed });
+        continue;
+      }
       const result = await demandService.raiseAsk(buyerCounterpartyId, askLine, {
         channel: 'sales_call',
         raisedBy: actingStaffId(req),
@@ -94,7 +139,7 @@ export async function postBuyerCallAsks(req: Request, res: Response): Promise<vo
         note: callNote,
         producedAskId: result.askId,
       });
-      results.push({ index, askId: result.askId });
+      results.push({ index, kind: 'ask', askId: result.askId });
     } catch (error) {
       if (!(error instanceof AppError)) throw error; // A real fault, not a rejected line.
       results.push({ index, error: error.messageEn, code: error.code });
