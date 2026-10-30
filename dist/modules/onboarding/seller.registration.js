@@ -170,7 +170,7 @@ export async function updateSellerProfile(sellerId, input, caller) {
                 contactMobile: input.contactMobile,
                 gstin,
                 pan: panFromGstin(gstin),
-                licenceNo: input.licenceNo,
+                licenceNo: input.licenceNo ?? null,
             },
         }, { session });
         await Seller.updateOne({ _id: sellerId }, {

@@ -225,7 +225,8 @@ export async function registerBuyer(input, staffAssisted, correlationId = 'unkno
 /** API-011. WF-02. */
 export async function registerSeller(input, staffAssisted, correlationId = 'unknown', extras) {
     await assertGstinAndMobileAreFree(input.gstin, input.mobile);
-    assertBankDetailIsWellFormed(input.bankDetail);
+    if (input.bankDetail)
+        assertBankDetailIsWellFormed(input.bankDetail);
     const dealershipIds = [...new Set((input.dealerships ?? []).map((d) => d.manufacturerId))];
     if (dealershipIds.length > 0) {
         const known = await Manufacturer.countDocuments({ _id: { $in: dealershipIds } });
@@ -247,7 +248,7 @@ export async function registerSeller(input, staffAssisted, correlationId = 'unkn
                 gstin: input.gstin,
                 pan: panFromGstin(input.gstin),
                 ownerName: input.ownerName,
-                licenceNo: input.licenceNo,
+                licenceNo: input.licenceNo || undefined,
                 kind: 'seller',
                 status: 'pending',
                 ...(staffAssisted
@@ -277,7 +278,9 @@ export async function registerSeller(input, staffAssisted, correlationId = 'unkn
         ], { session });
         if (!seller)
             throw new Error('Seller.create returned no document.');
-        await SellerReference.create(input.references.map((reference) => ({ sellerId: seller._id, ...reference })), { session, ordered: true });
+        if (input.references?.length) {
+            await SellerReference.create(input.references.map((reference) => ({ sellerId: seller._id, ...reference })), { session, ordered: true });
+        }
         if (dealershipIds.length > 0) {
             await SellerDealership.create(dealershipIds.map((manufacturerId) => ({
                 sellerId: seller._id,
@@ -285,7 +288,9 @@ export async function registerSeller(input, staffAssisted, correlationId = 'unkn
                 setBy: staffAssisted?.employeeId ?? null,
             })), { session, ordered: true });
         }
-        await createPendingBankDetail(counterparty._id, input.bankDetail, session);
+        // Without one he cannot be paid (BANK_DETAIL_NOT_PAYABLE) until staff add it (BR-017).
+        if (input.bankDetail)
+            await createPendingBankDetail(counterparty._id, input.bankDetail, session);
         await writeConsents(counterparty._id, input.consent, session);
         if (extras?.location.pincode) {
             await recordPincodeIfUnknown({ pincode: extras.location.pincode, tehsilId: extras.location.tehsilId }, extras.caller, session);
@@ -321,13 +326,15 @@ export async function registerSeller(input, staffAssisted, correlationId = 'unkn
                 correlationId: staffAssisted.correlationId,
             }, session);
         }
-        accountNameWarning = await auditAccountNameMismatchIfAny({
-            accountName: input.bankDetail.accountName,
-            ownerName: input.ownerName,
-            firm: input.firm,
-            entityId: counterparty._id,
-            correlationId: staffAssisted?.correlationId ?? correlationId,
-        }, session);
+        if (input.bankDetail) {
+            accountNameWarning = await auditAccountNameMismatchIfAny({
+                accountName: input.bankDetail.accountName,
+                ownerName: input.ownerName,
+                firm: input.firm,
+                entityId: counterparty._id,
+                correlationId: staffAssisted?.correlationId ?? correlationId,
+            }, session);
+        }
         return counterparty._id.toString();
     });
     return { registrationId, accountNameWarning };
