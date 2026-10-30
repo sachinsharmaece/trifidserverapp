@@ -260,6 +260,10 @@ interface ProductListItem {
   deletedByName?: string | null;
 }
 
+/** 30 Oct — what Manage → Products can be sorted by; `created` is the date added. */
+export const PRODUCT_LIST_SORTS = ['brand', 'technical', 'manufacturer', 'created'] as const;
+export type ProductListSort = (typeof PRODUCT_LIST_SORTS)[number];
+
 // New — the admin catalog-management screen's own unfiltered list (not
 // BR-111's counterparty picker, see catalog.validation.ts's own note).
 // Cursor-paginated on `_id`, same pattern as `listRegistrations`.
@@ -268,6 +272,7 @@ export async function listAllProducts(
   limit: number,
   q?: string,
   deleted = false,
+  order: { sort?: ProductListSort; dir?: 'asc' | 'desc' } = {},
 ): Promise<{ items: ProductListItem[]; nextCursor?: string; total: number }> {
   // 29 Oct — `deleted` lists only the soft-deleted ones, newest deleted first.
   const query: Record<string, unknown> = { deletedAt: deleted ? { $ne: null } : null };
@@ -283,18 +288,57 @@ export async function listAllProducts(
     ];
   }
   const total = await Product.countDocuments(query);
-  // The deleted list pages by offset (it sorts on `deletedAt`, not `_id`).
-  const offset = deleted ? Math.max(0, Number(cursor ?? 0) || 0) : 0;
-  // Newest first, so a product just created is on the first page.
-  if (cursor && !deleted) query._id = { $lt: cursor };
-
-  const products = await Product.find(query)
-    .sort(deleted ? { deletedAt: -1, _id: -1 } : { _id: -1 })
-    .skip(offset)
-    .limit(limit + 1);
-
-  const hasMore = products.length > limit;
-  const page = hasMore ? products.slice(0, limit) : products;
+  // 30 Oct — sorted on the server (product name A→Z by default; the deleted list newest deleted
+  // first), paged by offset so the next page carries on in the same order. Names compare without
+  // case; ties go product name, then id.
+  const offset = Math.max(0, Number(cursor ?? 0) || 0);
+  const sign = order.dir === 'desc' ? -1 : 1;
+  const sortField = deleted
+    ? null
+    : (
+        {
+          brand: 'brand',
+          technical: 'technical',
+          manufacturer: 'companyName',
+          created: '_id',
+        } as const
+      )[order.sort ?? 'brand'];
+  const ordered = await Product.aggregate<{ _id: Types.ObjectId }>(
+    [
+      { $match: query },
+      ...(sortField === 'companyName'
+        ? [
+            {
+              $lookup: {
+                from: 'manufacturer',
+                localField: 'manufacturerId',
+                foreignField: '_id',
+                as: 'company',
+              },
+            },
+            { $addFields: { companyName: { $first: '$company.name' } } },
+          ]
+        : []),
+      {
+        $sort: deleted
+          ? { deletedAt: -1, _id: -1 }
+          : sortField === '_id'
+            ? { _id: sign }
+            : sortField === 'brand'
+              ? { brand: sign, _id: 1 }
+              : { [sortField!]: sign, brand: 1, _id: 1 },
+      },
+      { $skip: offset },
+      { $limit: limit + 1 },
+      { $project: { _id: 1 } },
+    ],
+    { collation: { locale: 'en', strength: 2 } },
+  );
+  const hasMore = ordered.length > limit;
+  const pageIds = (hasMore ? ordered.slice(0, limit) : ordered).map((r) => r._id.toString());
+  const docs = await Product.find({ _id: { $in: pageIds } });
+  const docById = new Map(docs.map((d) => [(d._id as Types.ObjectId).toString(), d]));
+  const page = pageIds.map((id) => docById.get(id)!).filter(Boolean);
 
   const manufacturers = await Manufacturer.find({
     _id: { $in: page.map((product) => product.manufacturerId) },
@@ -341,11 +385,7 @@ export async function listAllProducts(
       : {}),
   }));
 
-  const nextCursor = !hasMore
-    ? undefined
-    : deleted
-      ? String(offset + limit)
-      : (page[page.length - 1]!._id as Types.ObjectId).toString();
+  const nextCursor = hasMore ? String(offset + limit) : undefined;
   return {
     total,
     items,

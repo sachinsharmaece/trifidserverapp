@@ -70,6 +70,9 @@ export const listAllProductsQuerySchema = z
     q: z.string().trim().max(80).optional(),
     // 29 Oct — only the soft-deleted products.
     deleted: z.enum(['true', 'false']).optional(),
+    // 30 Oct — default product name A→Z.
+    sort: z.enum(['brand', 'technical', 'manufacturer', 'created']).optional(),
+    dir: z.enum(['asc', 'desc']).optional(),
   })
   .strict();
 

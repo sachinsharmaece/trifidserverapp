@@ -27,7 +27,7 @@ beforeAll(async () => {
 }, 60000);
 
 describe('Manage → Products — search and pages', () => {
-  it('searches product, technical or company; newest first; pages with a total', async () => {
+  it('searches product, technical or company; pages with a total in the chosen order', async () => {
     const tag = `Pg${Date.now()}`;
     const company = await Manufacturer.create({ name: `${tag} Agro Co` });
     const made: string[] = [];
@@ -40,21 +40,59 @@ describe('Manage → Products — search and pages', () => {
       });
       made.push(String(p._id));
     }
+    const ids = (body: { data: Array<{ productId: string }> }) => body.data.map((p) => p.productId);
+    // 30 Oct — product name A→Z by default, and page two carries on from page one.
     const first = await get(`/admin/products?q=${tag}&limit=2`);
     expect(first.body.meta.total).toBe(3);
-    expect(first.body.data.map((p: { productId: string }) => p.productId)).toEqual([
-      made[2],
-      made[1],
-    ]);
+    expect(ids(first.body)).toEqual([made[0], made[1]]);
     const second = await get(
       `/admin/products?q=${tag}&limit=2&cursor=${first.body.meta.nextCursor}`,
     );
-    expect(second.body.data.map((p: { productId: string }) => p.productId)).toEqual([made[0]]);
+    expect(ids(second.body)).toEqual([made[2]]);
     expect(second.body.meta.nextCursor).toBeUndefined();
+    // Z→A, and newest added first.
+    expect(ids((await get(`/admin/products?q=${tag}&dir=desc`)).body)).toEqual([
+      made[2],
+      made[1],
+      made[0],
+    ]);
+    expect(ids((await get(`/admin/products?q=${tag}&sort=created&dir=desc`)).body)).toEqual([
+      made[2],
+      made[1],
+      made[0],
+    ]);
     // By company name too.
     expect(
       (await get(`/admin/products?q=${encodeURIComponent(`${tag} Agro`)}`)).body.meta.total,
     ).toBe(3);
+  });
+
+  it('sorts by company and technical, ignoring case (30 Oct)', async () => {
+    const tag = `Ps${Date.now()}`;
+    const zeta = await Manufacturer.create({ name: `${tag} zeta Co` });
+    const alpha = await Manufacturer.create({ name: `${tag} Alpha Co` });
+    const make = async (brand: string, technical: string, manufacturerId: unknown) =>
+      String(
+        (
+          await Product.create({
+            brand: `${tag} ${brand}`,
+            technical,
+            manufacturerId,
+            hsn: '38089110',
+          })
+        )._id,
+      );
+    const a = await make('apple', 'Zineb', zeta._id);
+    const b = await make('Banana', 'atrazine', alpha._id);
+    const ids = (body: { data: Array<{ productId: string }> }) => body.data.map((p) => p.productId);
+    expect(ids((await get(`/admin/products?q=${tag}`)).body)).toEqual([a, b]);
+    expect(ids((await get(`/admin/products?q=${tag}&sort=manufacturer`)).body)).toEqual([b, a]);
+    expect(ids((await get(`/admin/products?q=${tag}&sort=technical`)).body)).toEqual([b, a]);
+    expect(ids((await get(`/admin/products?q=${tag}&sort=technical&dir=desc`)).body)).toEqual([
+      a,
+      b,
+    ]);
+    expect((await get(`/admin/products?q=${tag}&sort=nope`)).status).toBe(400);
   });
 });
 
