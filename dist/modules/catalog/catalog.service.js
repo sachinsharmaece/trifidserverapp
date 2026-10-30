@@ -3,6 +3,7 @@ import { Hsn } from '../../models/Hsn.js';
 import { Product } from '../../models/Product.js';
 import { Sku } from '../../models/Sku.js';
 import { Technical } from '../../models/Technical.js';
+import { Employee } from '../../models/Employee.js';
 import { AppError } from '../../shared/errors.js';
 import { packLabelMatchesBaseUnit } from '../../shared/validators.js';
 /**
@@ -201,11 +202,14 @@ export async function listProducts(technical, manufacturerId) {
         class: product.class,
     }));
 }
+/** 30 Oct — what Manage → Products can be sorted by; `created` is the date added. */
+export const PRODUCT_LIST_SORTS = ['brand', 'technical', 'manufacturer', 'created'];
 // New — the admin catalog-management screen's own unfiltered list (not
 // BR-111's counterparty picker, see catalog.validation.ts's own note).
 // Cursor-paginated on `_id`, same pattern as `listRegistrations`.
-export async function listAllProducts(cursor, limit, q) {
-    const query = { deletedAt: null };
+export async function listAllProducts(cursor, limit, q, deleted = false, order = {}) {
+    // 29 Oct — `deleted` lists only the soft-deleted ones, newest deleted first.
+    const query = { deletedAt: deleted ? { $ne: null } : null };
     // 29 Oct — the search box: part of the product, technical or company name.
     const term = q?.trim();
     if (term) {
@@ -218,14 +222,52 @@ export async function listAllProducts(cursor, limit, q) {
         ];
     }
     const total = await Product.countDocuments(query);
-    // Newest first, so a product just created is on the first page.
-    if (cursor)
-        query._id = { $lt: cursor };
-    const products = await Product.find(query)
-        .sort({ _id: -1 })
-        .limit(limit + 1);
-    const hasMore = products.length > limit;
-    const page = hasMore ? products.slice(0, limit) : products;
+    // 30 Oct — sorted on the server (product name A→Z by default; the deleted list newest deleted
+    // first), paged by offset so the next page carries on in the same order. Names compare without
+    // case; ties go product name, then id.
+    const offset = Math.max(0, Number(cursor ?? 0) || 0);
+    const sign = order.dir === 'desc' ? -1 : 1;
+    const sortField = deleted
+        ? null
+        : {
+            brand: 'brand',
+            technical: 'technical',
+            manufacturer: 'companyName',
+            created: '_id',
+        }[order.sort ?? 'brand'];
+    const ordered = await Product.aggregate([
+        { $match: query },
+        ...(sortField === 'companyName'
+            ? [
+                {
+                    $lookup: {
+                        from: 'manufacturer',
+                        localField: 'manufacturerId',
+                        foreignField: '_id',
+                        as: 'company',
+                    },
+                },
+                { $addFields: { companyName: { $first: '$company.name' } } },
+            ]
+            : []),
+        {
+            $sort: deleted
+                ? { deletedAt: -1, _id: -1 }
+                : sortField === '_id'
+                    ? { _id: sign }
+                    : sortField === 'brand'
+                        ? { brand: sign, _id: 1 }
+                        : { [sortField]: sign, brand: 1, _id: 1 },
+        },
+        { $skip: offset },
+        { $limit: limit + 1 },
+        { $project: { _id: 1 } },
+    ], { collation: { locale: 'en', strength: 2 } });
+    const hasMore = ordered.length > limit;
+    const pageIds = (hasMore ? ordered.slice(0, limit) : ordered).map((r) => r._id.toString());
+    const docs = await Product.find({ _id: { $in: pageIds } });
+    const docById = new Map(docs.map((d) => [d._id.toString(), d]));
+    const page = pageIds.map((id) => docById.get(id)).filter(Boolean);
     const manufacturers = await Manufacturer.find({
         _id: { $in: page.map((product) => product.manufacturerId) },
     });
@@ -233,6 +275,10 @@ export async function listAllProducts(cursor, limit, q) {
         manufacturer._id.toString(),
         manufacturer.name,
     ]));
+    const deleters = deleted
+        ? await Employee.find({ _id: { $in: page.map((product) => product.deletedBy) } })
+        : [];
+    const deleterNameById = new Map(deleters.map((e) => [e._id.toString(), e.person]));
     const items = page.map((product) => ({
         productId: product._id.toString(),
         brand: product.brand,
@@ -248,10 +294,17 @@ export async function listAllProducts(cursor, limit, q) {
         createdBy: product.createdBy
             ? product.createdBy.toString()
             : null,
+        ...(deleted && product.deletedAt
+            ? {
+                deletedAt: product.deletedAt.toISOString(),
+                deletedByName: product.deletedBy
+                    ? (deleterNameById.get(product.deletedBy.toString()) ??
+                        null)
+                    : null,
+            }
+            : {}),
     }));
-    const nextCursor = hasMore
-        ? page[page.length - 1]._id.toString()
-        : undefined;
+    const nextCursor = hasMore ? String(offset + limit) : undefined;
     return {
         total,
         items,

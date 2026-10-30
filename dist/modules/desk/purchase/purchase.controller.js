@@ -14,6 +14,12 @@ function staffActor(req) {
 }
 export async function getActiveDemandList(req, res) {
     const noSellerOnly = req.query.noSeller === 'true';
+    // 30 Oct — `by=product`: one row per product with its asks under it (BR-371); without it,
+    // the flat list of asks as before.
+    if (req.query.by === 'product') {
+        ok(res, req, await purchaseService.getActiveDemandByProduct({ noSellerOnly }));
+        return;
+    }
     ok(res, req, await purchaseService.getActiveDemandList({ noSellerOnly }));
 }
 export async function getQuoteGaps(req, res) {

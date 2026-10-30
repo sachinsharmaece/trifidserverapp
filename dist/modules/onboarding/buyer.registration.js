@@ -200,13 +200,13 @@ options = {}) {
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Buyer profile not found.' });
     await assertCallerMayDecideBuyer(buyer._id, caller);
     // B-28 backstop — a record that predates the real form (or was written
-    // outside it) cannot become an active account without a firm and an
-    // identity. GSTIN *or* PAN now (DEC-054), which un-sticks the staff
-    // registrations that had neither (F2) once they are edited.
-    if (!counterparty.firm?.trim() || !(counterparty.gstin?.trim() || counterparty.pan?.trim())) {
+    // outside it) cannot become an active account without a firm. GSTIN and
+    // PAN are no longer required here: staff may hold a buyer with neither
+    // (DEC-068); the buyer app still asks for one.
+    if (!counterparty.firm?.trim()) {
         throw new AppError({
             code: 'VALIDATION_FAILED',
-            messageEn: 'This registration has no firm name, or neither a GSTIN nor a PAN — add them before approving.',
+            messageEn: 'This registration has no firm name — add it before approving.',
         });
     }
     // DEC-056 — the OTP wait is off unless REQUIRE_REGISTRATION_OTP is on.

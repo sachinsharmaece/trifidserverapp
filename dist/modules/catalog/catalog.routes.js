@@ -29,6 +29,9 @@ catalogRouter.get('/admin/products/:id', authenticate, requirePermission(PERMISS
 // API-024 / API-025 — ⚙️ catalog:write.
 catalogRouter.post('/admin/products', authenticate, requirePermission(PERMISSIONS.CATALOG_WRITE), requireIdempotencyKey(), validateBody(createProductSchema), controller.postProduct);
 catalogRouter.patch('/admin/products/:id', authenticate, requirePermission(PERMISSIONS.CATALOG_WRITE), requireIdempotencyKey(), validateBody(updateProductSchema), controller.patchProduct);
+// 29 Oct — soft delete and restore (BR-370), audited like every product change.
+catalogRouter.delete('/admin/products/:id', authenticate, requirePermission(PERMISSIONS.CATALOG_WRITE), requireIdempotencyKey(), controller.deleteProduct);
+catalogRouter.post('/admin/products/:id/restore', authenticate, requirePermission(PERMISSIONS.CATALOG_WRITE), requireIdempotencyKey(), controller.postProductRestore);
 catalogRouter.post('/admin/skus/import', authenticate, requirePermission(PERMISSIONS.CATALOG_WRITE), requireIdempotencyKey(), validateBody(skuImportSchema), controller.postSkuImport);
 // 24 Oct — the Manage desk's own pack list (every pack, inactive and draft
 // too) and "Add pack" typed as on create (size + unit, BR-055 conversion).

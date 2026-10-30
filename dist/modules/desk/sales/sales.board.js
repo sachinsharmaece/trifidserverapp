@@ -11,6 +11,7 @@ import { Counterparty } from '../../../models/Counterparty.js';
 import { AppError } from '../../../shared/errors.js';
 import { computeBuyerFacingRatePaise, listPricedLinesVisibleToBuyerDoc, } from '../../listing/listing.service.js';
 import { asksOnProductFilter } from '../../demand/askScope.js';
+import { isProductSellable, unsellableProductIds } from '../../listing/listing.sellable.js';
 const DEFAULT_TIER = 'Retailer';
 /**
  * BR-060 — Sales never reads a listing line's own `ratePaise` (the seller's
@@ -41,7 +42,11 @@ async function rateForTierOrBuyer(skuId, sellerNetPaise, opts) {
 }
 /** GET /staff/sales/board — every product with at least one live listing line. */
 export async function getBoardProducts() {
-    const liveListings = await Listing.find({ state: 'live' });
+    // 30 Oct — an inactive or deleted product is not on the board (BR-370).
+    const liveListings = await Listing.find({
+        state: 'live',
+        productId: { $nin: await unsellableProductIds() },
+    });
     const liveListingIds = liveListings.map((l) => l._id);
     const productIdByListingId = new Map(liveListings.map((l) => [
         l._id.toString(),
@@ -168,7 +173,10 @@ export async function getBoardProduct(productId, opts) {
     const skus = await Sku.find({ productId: product._id });
     const skuIds = skus.map((s) => s._id);
     const skuById = new Map(skus.map((s) => [s._id.toString(), s]));
-    const liveListings = await Listing.find({ productId: product._id, state: 'live' });
+    // 30 Oct — nothing on the ladder while the product is inactive or deleted (BR-370).
+    const liveListings = (await isProductSellable(product._id))
+        ? await Listing.find({ productId: product._id, state: 'live' })
+        : [];
     const listingIds = liveListings.map((l) => l._id);
     const lines = await ListingLine.find({
         listingId: { $in: listingIds },

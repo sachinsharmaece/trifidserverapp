@@ -63,9 +63,59 @@ async function skuIdsForAsk(ask) {
     return [];
 }
 export async function getActiveDemandList(filters) {
+    return (await computeActiveDemand(filters)).items;
+}
+/** 30 Oct — the same asks, one group per product, most boxes asked first (BR-371). */
+export async function getActiveDemandByProduct(filters) {
+    const { items, sellerSetsByAskId, productIdByAskId } = await computeActiveDemand(filters);
+    const groups = new Map();
+    for (const item of items) {
+        const productId = productIdByAskId.get(item.askId) ?? null;
+        const key = productId ?? `ask:${item.askId}`;
+        const group = groups.get(key) ?? {
+            productId,
+            items: [],
+            sets: { quoted: new Set(), active: new Set(), dormant: new Set() },
+        };
+        group.items.push(item);
+        const sets = sellerSetsByAskId.get(item.askId);
+        for (const state of ['quoted', 'active', 'dormant']) {
+            for (const id of sets[state])
+                group.sets[state].add(id);
+        }
+        groups.set(key, group);
+    }
+    return [...groups.values()]
+        .map(({ productId, items: asks, sets }) => {
+        // A seller counts once, in his best state across the asks: quoted, then listed, then dormant.
+        const active = [...sets.active].filter((id) => !sets.quoted.has(id));
+        const dormant = [...sets.dormant].filter((id) => !sets.quoted.has(id) && !sets.active.has(id));
+        const sellerCounts = {
+            quoted: sets.quoted.size,
+            active: active.length,
+            dormant: dormant.length,
+            dark: 0,
+        };
+        const first = asks[0];
+        return {
+            productId,
+            brand: first.brand,
+            technical: first.technical,
+            manufacturerName: first.manufacturerName,
+            askCount: asks.length,
+            totalBoxes: asks.reduce((sum, a) => sum + a.qty, 0),
+            sellerCounts,
+            noSeller: sellerCounts.quoted + sellerCounts.active + sellerCounts.dormant === 0,
+            asks,
+        };
+    })
+        .sort((a, b) => b.totalBoxes - a.totalBoxes || a.brand.localeCompare(b.brand));
+}
+async function computeActiveDemand(filters) {
     const asks = await Ask.find({ state: { $in: ['open', 'quoted'] } }).sort({ createdAt: -1 });
     const items = [];
     const productIdByAskId = new Map();
+    const sellerSetsByAskId = new Map();
     for (const ask of asks) {
         const skuIds = await skuIdsForAsk(ask);
         let productId = ask.productId ? ask.productId.toString() : null;
@@ -97,14 +147,24 @@ export async function getActiveDemandList(filters) {
         const noSeller = sellerCounts.quoted + sellerCounts.active + sellerCounts.dormant === 0;
         if (filters.noSellerOnly && !noSeller)
             continue;
+        const askIdStr = ask._id.toString();
+        sellerSetsByAskId.set(askIdStr, {
+            quoted: quotedSellerIds,
+            active: activeSellerIds,
+            dormant: everSuppliedSellerIds,
+        });
+        const packSku = ask.skuId && !ask.allPacks ? await Sku.findById(ask.skuId) : null;
         items.push({
-            askId: ask._id.toString(),
+            askId: askIdStr,
             qty: ask.qty,
             skuId: ask.skuId ? ask.skuId.toString() : null,
             productId: ask.productId ? ask.productId.toString() : null,
             createdAt: ask.createdAt.toISOString(),
             sellerCounts,
             noSeller,
+            packLabel: packSku?.packLabel ?? null,
+            expiryBand: ask.conditionRequirement?.expiryBand ?? 'over12',
+            deliveryBand: ask.conditionRequirement?.deliveryBand ?? null,
         });
     }
     const products = productIdByAskId.size
@@ -115,7 +175,7 @@ export async function getActiveDemandList(filters) {
         ? await Manufacturer.find({ _id: { $in: products.map((p) => p.manufacturerId) } })
         : [];
     const manufacturerById = new Map(manufacturers.map((m) => [m._id.toString(), m]));
-    return items.map((item) => {
+    const named = items.map((item) => {
         const productId = productIdByAskId.get(item.askId);
         const product = productId ? productById.get(productId) : undefined;
         const manufacturer = product
@@ -128,6 +188,7 @@ export async function getActiveDemandList(filters) {
             manufacturerName: manufacturer?.name ?? '—',
         };
     });
+    return { items: named, sellerSetsByAskId, productIdByAskId };
 }
 export async function getQuoteGapsForAsk(askId) {
     const quotes = await Quote.find({ askId, status: { $in: OPEN_QUOTE_STATUSES } }).sort({

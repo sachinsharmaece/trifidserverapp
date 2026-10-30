@@ -7,7 +7,7 @@ import { requireIdempotencyKey } from '../../middleware/idempotency.js';
 import { validateBody, validateQuery } from '../../middleware/validate.js';
 import { PERMISSIONS } from '../../config/permissions.js';
 import * as controller from './proxy.controller.js';
-import { proxyRaiseAskSchema, proxyRaiseAsksSchema, proxyAcceptAskFillSchema, proxyDeclineAskSchema, proxyPromotionDecisionSchema, proxyCreateListingSchema, proxyPostQuoteSchema, proxyConfirmPileSchema, proxyPileDecisionSchema, proxyListBuyerAsksQuerySchema, } from './proxy.validation.js';
+import { proxyRaiseAskSchema, proxyRaiseAsksSchema, proxyAcceptAskFillSchema, proxyDeclineAskSchema, proxyPromotionDecisionSchema, proxyCreateListingSchema, proxyPostQuoteSchema, proxyConfirmPileSchema, proxyPileDecisionSchema, proxyListBuyerAsksQuerySchema, proxyWantsItSchema, } from './proxy.validation.js';
 /**
  * Staff-assisted enquiries — a phone-call proxy layer over the existing
  * ask/quote/listing flows (WF-04, WF-05, WF-09, WF-11). No new business
@@ -25,6 +25,8 @@ const sellerCall = [authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CAL
 // Maps to API-040.
 proxyRouter.post('/staff/proxy/buyer/asks', ...buyerCall, requireInScope('sales', field('body', 'buyerCounterpartyId')), validateBody(proxyRaiseAskSchema), controller.postBuyerCallAsk);
 proxyRouter.post('/staff/proxy/buyer/asks/batch', ...buyerCall, requireInScope('sales', field('body', 'buyerCounterpartyId')), validateBody(proxyRaiseAsksSchema), controller.postBuyerCallAsks);
+// 29 Oct — "He wants it" on a listed offer: a pile request or its pool (Purchase → Confirmations).
+proxyRouter.post('/staff/proxy/buyer/listing-lines/:id/wants-it', ...buyerCall, requireInScope('sales', field('body', 'buyerCounterpartyId')), requireIdempotencyKey(), validateBody(proxyWantsItSchema), controller.postBuyerCallWantsIt);
 // Feeds the ask/quote pickers on "Advance an ask on a call".
 proxyRouter.get('/staff/proxy/buyer/asks', ...buyerCall, requireInScope('sales', field('query', 'buyerCounterpartyId')), validateQuery(proxyListBuyerAsksQuerySchema), controller.getBuyerCallAsks);
 // Maps to API-042.

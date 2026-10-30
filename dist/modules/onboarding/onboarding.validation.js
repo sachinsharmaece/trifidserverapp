@@ -54,6 +54,11 @@ function refineGstinOrPan(body, ctx) {
         });
         return;
     }
+    refinePanMatchesGstin(body, ctx);
+}
+// DEC-068 — staff may register or keep a buyer with neither GSTIN nor PAN
+// (a lead from a dealer list). Only a PAN that contradicts the GSTIN is wrong.
+function refinePanMatchesGstin(body, ctx) {
     if (body.gstin && body.pan && body.pan !== panFromGstin(body.gstin)) {
         ctx.addIssue({
             code: 'custom',
@@ -182,7 +187,7 @@ export const staffRegisterBuyerSchema = z
     confirmations: confirmationsSchema,
 })
     .strict()
-    .superRefine(refineGstinOrPan);
+    .superRefine(refinePanMatchesGstin);
 /** Phase 3 — Edit on the buyer profile. Who may change what is checked in the service. */
 export const updateBuyerSchema = z
     .object({
@@ -199,7 +204,7 @@ export const updateBuyerSchema = z
     confirmations: confirmationsSchema,
 })
     .strict()
-    .superRefine(refineGstinOrPan);
+    .superRefine(refinePanMatchesGstin);
 // Phase 4 — the staff "Add a seller" form: everything the seller app asks,
 // plus his location (mandatory), Assigned to, Marg party code, and the
 // proprietor-agreed tick that replaces the OTP wait (DEC-056). GSTIN stays

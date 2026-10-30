@@ -69,6 +69,18 @@ export const proxyPileDecisionSchema = z
     callNote: callNoteSchema,
 })
     .strict();
+// 29 Oct — "He wants it" on a line of his board: Sales puts him on that listed offer (a pile
+// request, or the pool when he wants fewer than its minimum order). The delivery address is his
+// primary one unless one is named.
+export const proxyWantsItSchema = z
+    .object({
+    buyerCounterpartyId: z.string().min(1),
+    qty: z.number().int().min(1),
+    deliveryLocationId: z.string().min(1).optional(),
+    callNote: callNoteSchema,
+    direction: z.enum(['in', 'out']).optional(),
+})
+    .strict();
 // Read-side query for the Sales call workspace's ask/quote pickers — no
 // call note, nothing is written.
 export const proxyListBuyerAsksQuerySchema = z

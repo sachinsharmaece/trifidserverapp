@@ -15,7 +15,7 @@ import { addHours, formatForDisplay } from '../../shared/clock.js';
 import { enqueueNotification, counterpartyIdForBuyer, } from '../notification/notification.outbox.js';
 import { createSoInSession } from '../chain/chain.service.js';
 import { getPostedReceiptsPaiseForSo } from '../payment/payment.service.js';
-import { computeBuyerFacingRatePaise } from '../listing/listing.service.js';
+import { computeBuyerFacingRatePaise, defaultDeliveryLocationId, } from '../listing/listing.service.js';
 const PAY_WINDOW_HOURS = 16; // BR-156.
 const RECONFIRM_THRESHOLD = 0.75; // BR-154.
 // B-41 — "NaN of 200 boxes": one commitment with a missing/non-numeric
@@ -147,11 +147,14 @@ export async function commitToPool(buyerCounterpartyId, poolId, input) {
         });
     }
     const isBinding = pool.status === 'reconfirm' || pool.status === 'triggered';
+    const deliveryLocationId = input.deliveryLocationId
+        ? input.deliveryLocationId
+        : await defaultDeliveryLocationId(buyer._id);
     if (existing) {
         existing.withdrawnAt = null;
         existing.qty = input.qty;
         existing.isBinding = isBinding;
-        existing.deliveryLocationId = input.deliveryLocationId;
+        existing.deliveryLocationId = deliveryLocationId;
         await existing.save();
     }
     else {
@@ -159,7 +162,7 @@ export async function commitToPool(buyerCounterpartyId, poolId, input) {
             poolId: pool._id,
             buyerId: buyer._id,
             qty: input.qty,
-            deliveryLocationId: input.deliveryLocationId,
+            deliveryLocationId,
             isBinding,
         });
     }

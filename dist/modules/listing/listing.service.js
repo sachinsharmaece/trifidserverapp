@@ -12,6 +12,7 @@ import { Counterparty } from '../../models/Counterparty.js';
 import { Tehsil } from '../../models/Tehsil.js';
 import { Sku } from '../../models/Sku.js';
 import { Product } from '../../models/Product.js';
+import { isProductSellable, unsellableProductIds } from './listing.sellable.js';
 import { Manufacturer } from '../../models/Manufacturer.js';
 import { Pool, buildConditionSetKey } from '../../models/Pool.js';
 import { Pile } from '../../models/Pile.js';
@@ -343,6 +344,13 @@ export async function relistListing(sellerCounterpartyId, listingId) {
     const listing = await Listing.findOne({ _id: listingId, sellerId: seller?._id });
     if (!listing)
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Listing not found.' });
+    // 30 Oct — a paused listing on a product TriFid no longer sells stays paused (BR-370).
+    if (!(await isProductSellable(listing.productId))) {
+        throw new AppError({
+            code: 'VALIDATION_FAILED',
+            messageEn: 'This product is no longer sold on TriFid, so the listing cannot go live again.',
+        });
+    }
     listing.state = 'live';
     listing.pausedAt = null;
     listing.expiresAt = new Date(Date.now() + LISTING_LIFE_DAYS * 24 * 60 * 60 * 1000);
@@ -430,7 +438,11 @@ async function priceForBuyer(buyer, lines) {
  * index alone cannot express.
  */
 async function findVisibleLines(buyerTehsilId, buyerCounterpartyId, buyerGstin) {
-    const listings = await Listing.find({ state: 'live', frozenTehsilIds: buyerTehsilId });
+    const listings = await Listing.find({
+        state: 'live',
+        frozenTehsilIds: buyerTehsilId,
+        productId: { $nin: await unsellableProductIds() }, // 30 Oct — inactive/deleted products are not sold.
+    });
     const sellerIds = [...new Set(listings.map((l) => l.sellerId.toString()))];
     const sellers = await Seller.find({ _id: { $in: sellerIds } });
     const sellerCounterpartyById = new Map(sellers.map((s) => [
@@ -545,6 +557,8 @@ export async function getProductOffers(buyerCounterpartyId, productId) {
     return {
         offers: priced.map((v) => ({
             listingLineId: v.line._id.toString(),
+            // 29 Oct — so his ask form can tell a listed pack and send him to Buy instead.
+            skuId: v.line.skuId.toString(),
             ratePaise: v.buyerRatePaise,
             conditions: toConditionTags(v.line),
             hasPool: pools.some((p) => p.skuId.toString() === v.line.skuId.toString()),
@@ -564,7 +578,11 @@ export async function getListingLineForBuy(buyerCounterpartyId, listingLineId) {
     const listing = line ? await Listing.findById(line.listingId) : null;
     // WF-03 — a direct link to something outside scope returns the same
     // shape and the same latency as something that does not exist (BR-065).
-    if (!line || !listing || listing.state !== 'live') {
+    // 30 Oct — an inactive or deleted product is not sold; it reads as not found, like the rest.
+    if (!line ||
+        !listing ||
+        listing.state !== 'live' ||
+        !(await isProductSellable(listing.productId))) {
         throw new AppError({ code: 'NOT_VISIBLE', messageEn: 'Not found.' });
     }
     const seller = await Seller.findById(listing.sellerId);
@@ -606,19 +624,28 @@ export async function getListingLineForBuy(buyerCounterpartyId, listingLineId) {
     };
 }
 /**
- * New — not in the original `API_CONTRACT.md`, needed to actually submit
- * WF-04's buy screen (API-032 only describes the read). BR-093 — the
- * delivery location is not constrained by the listing's scope; an
- * out-of-scope delivery only raises a monitoring flag, it blocks nothing.
- * Creates a `pile` on first request against a line (BR-133); nothing is
- * charged and no clock runs against the seller.
+ * 29 Oct — where an inquiry or pool place delivers when none is named: his primary delivery
+ * location, else his first, else `null` — his registered address.
  */
-export async function createPileRequest(buyerCounterpartyId, listingLineId, input) {
+export async function defaultDeliveryLocationId(buyerId) {
+    const locations = await BuyerLocation.find({ buyerId, deletedAt: null }).sort({ createdAt: 1 });
+    const chosen = locations.find((l) => l.isPrimary) ?? locations[0];
+    return chosen ? chosen._id : null;
+}
+/**
+ * A live listing line this buyer can see — the same rule his own board uses. Anything else
+ * reads as "Not found", so a line outside his area never confirms it exists.
+ */
+export async function requireLineVisibleToBuyer(buyerCounterpartyId, listingLineId) {
     const { buyer, counterparty } = await requireActiveBuyer(buyerCounterpartyId);
     await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new inquiries.
     const line = await ListingLine.findById(listingLineId);
     const listing = line ? await Listing.findById(line.listingId) : null;
-    if (!line || !listing || listing.state !== 'live') {
+    // 30 Oct — an inactive or deleted product is not sold; it reads as not found, like the rest.
+    if (!line ||
+        !listing ||
+        listing.state !== 'live' ||
+        !(await isProductSellable(listing.productId))) {
         throw new AppError({ code: 'NOT_VISIBLE', messageEn: 'Not found.' });
     }
     const seller = await Seller.findById(listing.sellerId);
@@ -634,6 +661,20 @@ export async function createPileRequest(buyerCounterpartyId, listingLineId, inpu
     }, blockLookup);
     if (!visible)
         throw new AppError({ code: 'NOT_VISIBLE', messageEn: 'Not found.' });
+    return { buyer, counterparty, line, listing };
+}
+/**
+ * New — not in the original `API_CONTRACT.md`, needed to actually submit
+ * WF-04's buy screen (API-032 only describes the read). BR-093 — the
+ * delivery location is not constrained by the listing's scope; an
+ * out-of-scope delivery only raises a monitoring flag, it blocks nothing.
+ * Creates a `pile` on first request against a line (BR-133); nothing is
+ * charged and no clock runs against the seller.
+ */
+export async function createPileRequest(buyerCounterpartyId, listingLineId, input, 
+// 29 Oct — Sales may put him on a listed offer on a call; the enquiry then records that.
+options = {}) {
+    const { buyer, line, listing } = await requireLineVisibleToBuyer(buyerCounterpartyId, listingLineId);
     if (input.qty < line.moqExact) {
         throw new AppError({
             code: 'BELOW_MOQ',
@@ -641,17 +682,24 @@ export async function createPileRequest(buyerCounterpartyId, listingLineId, inpu
             field: 'qty',
         });
     }
-    const location = await BuyerLocation.findOne({
-        _id: input.deliveryLocationId,
-        buyerId: buyer._id,
-        deletedAt: null,
-    });
-    if (!location) {
-        throw new AppError({
-            code: 'VALIDATION_FAILED',
-            messageEn: 'Delivery location not found.',
-            field: 'deliveryLocationId',
+    let deliveryLocationId;
+    if (input.deliveryLocationId) {
+        const location = await BuyerLocation.findOne({
+            _id: input.deliveryLocationId,
+            buyerId: buyer._id,
+            deletedAt: null,
         });
+        if (!location) {
+            throw new AppError({
+                code: 'VALIDATION_FAILED',
+                messageEn: 'Delivery location not found.',
+                field: 'deliveryLocationId',
+            });
+        }
+        deliveryLocationId = location._id;
+    }
+    else {
+        deliveryLocationId = await defaultDeliveryLocationId(buyer._id);
     }
     let pile = await Pile.findOne({ listingLineId: line._id });
     if (!pile) {
@@ -672,8 +720,9 @@ export async function createPileRequest(buyerCounterpartyId, listingLineId, inpu
     const enquiryId = await withTransaction(async (session) => {
         const enquiryId = await createTradeEnquiryInSession({
             kind: 'pile_request',
-            channel: 'self',
+            channel: options.channel ?? 'self',
             raisedAt: now,
+            raisedBy: options.raisedBy ?? null,
             buyerId: buyer._id,
             skuId: line.skuId,
             productId: listing.productId,
@@ -686,7 +735,7 @@ export async function createPileRequest(buyerCounterpartyId, listingLineId, inpu
                 pileId: pile._id,
                 buyerId: buyer._id,
                 qty: input.qty,
-                deliveryLocationId: location._id,
+                deliveryLocationId,
                 requestedAt: now,
                 enquiryId,
             },

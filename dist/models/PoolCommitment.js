@@ -11,7 +11,9 @@ const poolCommitmentSchema = new Schema({
     poolId: { type: Schema.Types.ObjectId, ref: 'Pool', required: true },
     buyerId: { type: Schema.Types.ObjectId, ref: 'Buyer', required: true },
     qty: { type: Number, required: true, min: 1 },
-    deliveryLocationId: { type: Schema.Types.ObjectId, ref: 'BuyerLocation', required: true },
+    // 29 Oct — null: his registered address. Buyers are approved with an address but no
+    // delivery location (only staff add those, BR-094), so requiring one blocked every buy.
+    deliveryLocationId: { type: Schema.Types.ObjectId, ref: 'BuyerLocation', default: null },
     isBinding: { type: Boolean, required: true, default: false },
     reconfirmedAt: { type: Date, default: null },
     paidAt: { type: Date, default: null },
