@@ -92,10 +92,10 @@ export interface StaffSellerInput {
   firm: string;
   gstin: string;
   ownerName: string;
-  licenceNo: string;
-  references: Array<{ firm: string; phone: string; relationship: string; whatTheySaid: string }>;
+  licenceNo?: string; // DEC-069 — optional on the staff form.
+  references?: Array<{ firm: string; phone: string; relationship: string; whatTheySaid: string }>;
   dealerships?: Array<{ manufacturerId: string }>;
-  bankDetail: { accountNumber: string; ifsc: string; accountName: string };
+  bankDetail?: { accountNumber: string; ifsc: string; accountName: string };
   consent: { noticeVersion: string; marketingOptIn: boolean };
   callNote: string;
   location: Location;
@@ -227,7 +227,7 @@ export interface UpdateSellerInput {
   ownerName: string;
   contactMobile: string;
   gstin: string;
-  licenceNo: string;
+  licenceNo?: string; // DEC-069 — a seller added without one can still be edited.
   location: Location;
   margPartyCode?: string;
 }
@@ -282,7 +282,7 @@ export async function updateSellerProfile(
           contactMobile: input.contactMobile,
           gstin,
           pan: panFromGstin(gstin),
-          licenceNo: input.licenceNo,
+          licenceNo: input.licenceNo ?? null,
         },
       },
       { session },

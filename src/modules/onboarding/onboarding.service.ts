@@ -345,10 +345,12 @@ interface RegisterSellerInput {
   firm: string;
   gstin: string;
   ownerName: string;
-  licenceNo: string;
-  references: Array<{ firm: string; phone: string; relationship: string; whatTheySaid: string }>;
+  // DEC-069 (30 Oct) — the staff "Add a seller" may leave out the licence, bank detail and
+  // referees; the seller app's own registration still requires them (its schema).
+  licenceNo?: string;
+  references?: Array<{ firm: string; phone: string; relationship: string; whatTheySaid: string }>;
   dealerships?: Array<{ manufacturerId: string }>;
-  bankDetail: BankDetailInput;
+  bankDetail?: BankDetailInput;
   consent: ConsentInput;
 }
 
@@ -380,7 +382,7 @@ export async function registerSeller(
   extras?: StaffSellerExtras,
 ): Promise<{ registrationId: string; accountNameWarning: string | null }> {
   await assertGstinAndMobileAreFree(input.gstin, input.mobile);
-  assertBankDetailIsWellFormed(input.bankDetail);
+  if (input.bankDetail) assertBankDetailIsWellFormed(input.bankDetail);
 
   const dealershipIds = [...new Set((input.dealerships ?? []).map((d) => d.manufacturerId))];
   if (dealershipIds.length > 0) {
@@ -405,7 +407,7 @@ export async function registerSeller(
           gstin: input.gstin,
           pan: panFromGstin(input.gstin),
           ownerName: input.ownerName,
-          licenceNo: input.licenceNo,
+          licenceNo: input.licenceNo || undefined,
           kind: 'seller',
           status: 'pending',
           ...(staffAssisted
@@ -440,10 +442,12 @@ export async function registerSeller(
     );
     if (!seller) throw new Error('Seller.create returned no document.');
 
-    await SellerReference.create(
-      input.references.map((reference) => ({ sellerId: seller._id, ...reference })),
-      { session, ordered: true },
-    );
+    if (input.references?.length) {
+      await SellerReference.create(
+        input.references.map((reference) => ({ sellerId: seller._id, ...reference })),
+        { session, ordered: true },
+      );
+    }
 
     if (dealershipIds.length > 0) {
       await SellerDealership.create(
@@ -456,7 +460,9 @@ export async function registerSeller(
       );
     }
 
-    await createPendingBankDetail(counterparty._id, input.bankDetail, session);
+    // Without one he cannot be paid (BANK_DETAIL_NOT_PAYABLE) until staff add it (BR-017).
+    if (input.bankDetail)
+      await createPendingBankDetail(counterparty._id, input.bankDetail, session);
     await writeConsents(counterparty._id, input.consent, session);
 
     if (extras?.location.pincode) {
@@ -504,16 +510,18 @@ export async function registerSeller(
       );
     }
 
-    accountNameWarning = await auditAccountNameMismatchIfAny(
-      {
-        accountName: input.bankDetail.accountName,
-        ownerName: input.ownerName,
-        firm: input.firm,
-        entityId: counterparty._id as Types.ObjectId,
-        correlationId: staffAssisted?.correlationId ?? correlationId,
-      },
-      session,
-    );
+    if (input.bankDetail) {
+      accountNameWarning = await auditAccountNameMismatchIfAny(
+        {
+          accountName: input.bankDetail.accountName,
+          ownerName: input.ownerName,
+          firm: input.firm,
+          entityId: counterparty._id as Types.ObjectId,
+          correlationId: staffAssisted?.correlationId ?? correlationId,
+        },
+        session,
+      );
+    }
 
     return (counterparty._id as Types.ObjectId).toString();
   });

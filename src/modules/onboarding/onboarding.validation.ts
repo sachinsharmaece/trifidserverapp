@@ -262,7 +262,16 @@ export const updateBuyerSchema = z
 // plus his location (mandatory), Assigned to, Marg party code, and the
 // proprietor-agreed tick that replaces the OTP wait (DEC-056). GSTIN stays
 // mandatory for a seller — TriFid buys on a GST invoice.
+//
+// DEC-069 (30 Oct) — on this staff form the insecticide licence, the bank detail and the two
+// referees are optional, so a dealer can be added from a call with what is to hand; what is given
+// is still checked as before (a referee needs a firm and a valid phone; bank detail needs all
+// three fields). The seller app's own registration still requires them. Without bank detail he
+// cannot be paid until staff add one (BR-017).
 export const staffRegisterSellerSchema = registerSellerSchema.extend({
+  licenceNo: optionalLicence,
+  bankDetail: bankDetailInputSchema.optional(),
+  references: registerSellerSchema.shape.references.element.array().optional(),
   callNote: z.string().min(1, 'A call note is required for a staff-assisted registration.'),
   location: locationSchema,
   margPartyCode: optionalMargCode,
@@ -279,7 +288,7 @@ export const updateSellerSchema = z
     ownerName: z.string().trim().min(1, 'Enter the proprietor name.'),
     contactMobile: contactMobileSchema,
     gstin: gstinSchema,
-    licenceNo: licenceNoSchema,
+    licenceNo: optionalLicence, // DEC-069 — a seller added without one can still be edited.
     location: locationSchema,
     margPartyCode: optionalMargCode,
   })

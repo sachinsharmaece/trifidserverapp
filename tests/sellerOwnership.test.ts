@@ -9,6 +9,9 @@ import { Seller } from '../src/models/Seller.js';
 import { SellerAssignment } from '../src/models/SellerAssignment.js';
 import { LaneAllocation } from '../src/models/LaneAllocation.js';
 import { Lane } from '../src/models/Lane.js';
+import { Counterparty } from '../src/models/Counterparty.js';
+import { BankDetail } from '../src/models/BankDetail.js';
+import { SellerReference } from '../src/models/SellerReference.js';
 import { loginStaff, randomEmail, randomGstin, randomMobile } from './helpers.js';
 import { locationFor, type TestLocation } from './buyerHelpers.js';
 import { staffToken } from './m4helpers.js';
@@ -121,6 +124,57 @@ beforeAll(async () => {
   areaId = String(
     (await Tehsil.create({ name: `Area ${Date.now()}`, district: 'D', state: 'MP' }))._id,
   );
+});
+
+describe('Add a seller — licence, bank and referees optional on the staff form (DEC-069)', () => {
+  it('registers him without them, and he can be approved', async () => {
+    const res = await addSeller(execP.token, {
+      gstin: await randomGstin(),
+      licenceNo: '',
+      bankDetail: undefined,
+      references: undefined,
+    });
+    expect(res.status).toBe(201);
+    const id = res.body.data.registrationId as string;
+    expect((await Counterparty.findById(id))!.licenceNo ?? null).toBeNull();
+    expect(await BankDetail.countDocuments({ counterpartyId: id })).toBe(0);
+    expect(await SellerReference.countDocuments({ sellerId: (await sellerOf(id))._id })).toBe(0);
+    const ok = await approve(leaderP.token, id, { assignedToEmployeeId: execP.employeeId });
+    expect(ok.status).toBe(200);
+  });
+
+  it('still checks what is given: one referee is fine, a referee without a phone is not', async () => {
+    const one = await addSeller(execP.token, {
+      gstin: await randomGstin(),
+      references: [
+        { firm: 'Ref One', phone: '9000000001', relationship: 'Supplier', whatTheySaid: 'Good' },
+      ],
+    });
+    expect(one.status).toBe(201);
+    const noPhone = await addSeller(execP.token, {
+      gstin: await randomGstin(),
+      references: [{ firm: 'Ref One', phone: '', relationship: 'Supplier', whatTheySaid: 'Good' }],
+    });
+    expect(noPhone.status).toBe(400);
+    const badLicence = await addSeller(execP.token, {
+      gstin: await randomGstin(),
+      licenceNo: 'AB',
+    });
+    expect(badLicence.status).toBe(400);
+  });
+
+  it("the seller app's own registration still requires them", async () => {
+    const res = await request(app)
+      .post('/api/v1/registrations/seller')
+      .send({
+        mobile: randomMobile(),
+        firm: 'App Seller',
+        gstin: await randomGstin(),
+        ownerName: 'Owner',
+        consent: { noticeVersion: 'v1', marketingOptIn: false },
+      });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('Add a seller (check 18)', () => {
