@@ -33,7 +33,8 @@ export interface IdentityWarning {
 
 export interface CheckedIdentity {
   gstin: string | undefined;
-  pan: string;
+  /** Null only for a staff-held buyer with neither GSTIN nor PAN (DEC-068). */
+  pan: string | null;
   /** The login mobile to store — null when another firm already logs in with it. */
   loginMobile: string | null;
   contactMobile: string;
@@ -77,8 +78,9 @@ export async function checkBuyerIdentity(input: {
   confirmations?: { sharedMobile?: boolean; panInsideGstin?: boolean };
 }): Promise<CheckedIdentity> {
   const gstin = input.gstin?.trim().toUpperCase() || undefined;
-  const pan = gstin ? panFromGstin(gstin) : input.pan?.trim().toUpperCase();
-  if (!pan) {
+  const pan = (gstin ? panFromGstin(gstin) : input.pan?.trim().toUpperCase()) || null;
+  // DEC-068 — staff may hold a buyer with neither (a lead); the buyer app may not.
+  if (!pan && input.mode === 'self') {
     throw refuse('gstin', 'Enter the GSTIN — or the PAN, if he has no GSTIN.');
   }
   const notSelf = input.exceptCounterpartyId ? { _id: { $ne: input.exceptCounterpartyId } } : {};
@@ -106,7 +108,7 @@ export async function checkBuyerIdentity(input: {
         byGstin,
       );
     }
-  } else {
+  } else if (pan) {
     const byPan = await Counterparty.findOne({
       pan,
       kind: { $in: BUYER_KINDS },
@@ -127,20 +129,22 @@ export async function checkBuyerIdentity(input: {
 
   // The same holder, seen from the other side: a PAN-only buyer and a GSTIN
   // buyer whose GSTIN carries that PAN.
-  const panTwin = gstin
-    ? await Counterparty.findOne({
-        pan,
-        kind: { $in: BUYER_KINDS },
-        $or: [{ gstin: null }, { gstin: { $exists: false } }],
-        deletedAt: null,
-        ...notSelf,
-      })
-    : await Counterparty.findOne({
-        gstin: { $regex: `^\\d{2}${pan}` },
-        kind: { $in: BUYER_KINDS },
-        deletedAt: null,
-        ...notSelf,
-      });
+  const panTwin = !pan
+    ? null
+    : gstin
+      ? await Counterparty.findOne({
+          pan,
+          kind: { $in: BUYER_KINDS },
+          $or: [{ gstin: null }, { gstin: { $exists: false } }],
+          deletedAt: null,
+          ...notSelf,
+        })
+      : await Counterparty.findOne({
+          gstin: { $regex: `^\\d{2}${pan}` },
+          kind: { $in: BUYER_KINDS },
+          deletedAt: null,
+          ...notSelf,
+        });
   if (panTwin && !input.confirmations?.panInsideGstin) {
     warnings.push({
       key: 'panInsideGstin',

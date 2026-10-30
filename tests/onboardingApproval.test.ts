@@ -230,7 +230,7 @@ describe('Registration approval gates (BR-081, BR-083)', () => {
   // artifact, or a future direct write), so the raw driver is used here to
   // create one — a normal `.create()` would itself refuse a blank firm/GSTIN
   // at the schema level, which is not what this is testing.
-  it('refuses to approve a buyer with a blank firm, or neither a GSTIN nor a PAN', async () => {
+  it('refuses to approve a buyer with a blank firm', async () => {
     const tehsil = await Tehsil.create({
       name: `Test Tehsil ${Date.now()}-${Math.random()}`,
       district: 'Test District',
@@ -263,6 +263,6 @@ describe('Registration approval gates (BR-081, BR-083)', () => {
       });
 
     expect(approveRes.status).toBe(400);
-    expect(approveRes.body.error.message_en).toMatch(/neither a GSTIN nor a PAN/);
+    expect(approveRes.body.error.message_en).toMatch(/no firm name/);
   });
 });

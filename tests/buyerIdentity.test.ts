@@ -113,12 +113,14 @@ describe('GSTIN or PAN (check 11)', () => {
     expect(cp2!.pan).toBe('ABCFP1234K');
   });
 
-  it('refuses when both are empty, with one clear message', async () => {
-    const res = await register(execA.token, { gstin: '', pan: '' });
-    expect(res.status).toBe(400);
-    expect(res.body.error.fieldErrors).toEqual([
-      { field: 'gstin', message: 'Enter the GSTIN — or the PAN, if he has no GSTIN.' },
-    ]);
+  it('staff may register with neither (DEC-068), and several such buyers do not clash', async () => {
+    const first = await register(execA.token, { gstin: '', pan: '' });
+    expect(first.status).toBe(201);
+    const second = await register(execA.token, { gstin: '', pan: '' });
+    expect(second.status).toBe(201);
+    const cp = await Counterparty.findById(first.body.data.registrationId);
+    expect(cp!.gstin).toBeUndefined();
+    expect(cp!.pan).toBeNull();
   });
 
   it('refuses a bad GSTIN checksum, a bad PAN, a PAN not matching the GSTIN, and a GSTIN from another state', async () => {
