@@ -30,7 +30,8 @@ describe('Log a buyer call — expected rate', () => {
             conditionRequirement: { expiryBand: 'over12' },
             expectedRatePaise: 125000,
           },
-          { skuId, qty: 2, conditionRequirement: { expiryBand: 'over12' } },
+          // 30 Oct — another expiry, so it is its own ask: the same line twice now adds to one (BR-371).
+          { skuId, qty: 2, conditionRequirement: { expiryBand: 'under12' } },
         ],
       });
     expect(res.status).toBe(201);

@@ -98,7 +98,30 @@ export interface ActiveDemandItem {
   brand: string;
   technical: string;
   manufacturerName: string;
+  /** 30 Oct — what the ask is for, so asks on one product can be told apart. */
+  packLabel: string | null; // null = all packs
+  expiryBand: string;
+  deliveryBand: string | null;
 }
+
+/**
+ * 30 Oct — Purchase → Demand shows one row per product, its asks under it (BR-371). The asks stay
+ * separate records (a quote answers one ask), but the product row adds up their boxes and counts
+ * each seller once across them.
+ */
+export interface DemandProductGroup {
+  productId: string | null;
+  brand: string;
+  technical: string;
+  manufacturerName: string;
+  askCount: number;
+  totalBoxes: number;
+  sellerCounts: Record<SellerDemandState, number>;
+  noSeller: boolean;
+  asks: ActiveDemandItem[];
+}
+
+type SellerSets = Record<'quoted' | 'active' | 'dormant', Set<string>>;
 
 async function skuIdsForAsk(ask: InstanceType<typeof Ask>): Promise<Types.ObjectId[]> {
   if (ask.skuId) return [ask.skuId as Types.ObjectId];
@@ -112,9 +135,72 @@ async function skuIdsForAsk(ask: InstanceType<typeof Ask>): Promise<Types.Object
 export async function getActiveDemandList(filters: {
   noSellerOnly?: boolean;
 }): Promise<ActiveDemandItem[]> {
+  return (await computeActiveDemand(filters)).items;
+}
+
+/** 30 Oct — the same asks, one group per product, most boxes asked first (BR-371). */
+export async function getActiveDemandByProduct(filters: {
+  noSellerOnly?: boolean;
+}): Promise<DemandProductGroup[]> {
+  const { items, sellerSetsByAskId, productIdByAskId } = await computeActiveDemand(filters);
+  const groups = new Map<
+    string,
+    { productId: string | null; items: ActiveDemandItem[]; sets: SellerSets }
+  >();
+  for (const item of items) {
+    const productId = productIdByAskId.get(item.askId) ?? null;
+    const key = productId ?? `ask:${item.askId}`;
+    const group = groups.get(key) ?? {
+      productId,
+      items: [],
+      sets: { quoted: new Set(), active: new Set(), dormant: new Set() },
+    };
+    group.items.push(item);
+    const sets = sellerSetsByAskId.get(item.askId)!;
+    for (const state of ['quoted', 'active', 'dormant'] as const) {
+      for (const id of sets[state]) group.sets[state].add(id);
+    }
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .map(({ productId, items: asks, sets }) => {
+      // A seller counts once, in his best state across the asks: quoted, then listed, then dormant.
+      const active = [...sets.active].filter((id) => !sets.quoted.has(id));
+      const dormant = [...sets.dormant].filter(
+        (id) => !sets.quoted.has(id) && !sets.active.has(id),
+      );
+      const sellerCounts = {
+        quoted: sets.quoted.size,
+        active: active.length,
+        dormant: dormant.length,
+        dark: 0,
+      };
+      const first = asks[0]!;
+      return {
+        productId,
+        brand: first.brand,
+        technical: first.technical,
+        manufacturerName: first.manufacturerName,
+        askCount: asks.length,
+        totalBoxes: asks.reduce((sum, a) => sum + a.qty, 0),
+        sellerCounts,
+        noSeller: sellerCounts.quoted + sellerCounts.active + sellerCounts.dormant === 0,
+        asks,
+      };
+    })
+    .sort((a, b) => b.totalBoxes - a.totalBoxes || a.brand.localeCompare(b.brand));
+}
+
+async function computeActiveDemand(filters: { noSellerOnly?: boolean }): Promise<{
+  items: ActiveDemandItem[];
+  sellerSetsByAskId: Map<string, SellerSets>;
+  /** The product each ask is on, a single-pack ask included — what the groups key on. */
+  productIdByAskId: Map<string, string>;
+}> {
   const asks = await Ask.find({ state: { $in: ['open', 'quoted'] } }).sort({ createdAt: -1 });
   const items: Array<Omit<ActiveDemandItem, 'brand' | 'technical' | 'manufacturerName'>> = [];
   const productIdByAskId = new Map<string, string>();
+  const sellerSetsByAskId = new Map<string, SellerSets>();
 
   for (const ask of asks) {
     const skuIds = await skuIdsForAsk(ask);
@@ -158,14 +244,24 @@ export async function getActiveDemandList(filters: {
 
     if (filters.noSellerOnly && !noSeller) continue;
 
+    const askIdStr = (ask._id as Types.ObjectId).toString();
+    sellerSetsByAskId.set(askIdStr, {
+      quoted: quotedSellerIds,
+      active: activeSellerIds,
+      dormant: everSuppliedSellerIds,
+    });
+    const packSku = ask.skuId && !ask.allPacks ? await Sku.findById(ask.skuId) : null;
     items.push({
-      askId: (ask._id as Types.ObjectId).toString(),
+      askId: askIdStr,
       qty: ask.qty,
       skuId: ask.skuId ? (ask.skuId as Types.ObjectId).toString() : null,
       productId: ask.productId ? (ask.productId as Types.ObjectId).toString() : null,
       createdAt: (ask as unknown as { createdAt: Date }).createdAt.toISOString(),
       sellerCounts,
       noSeller,
+      packLabel: packSku?.packLabel ?? null,
+      expiryBand: ask.conditionRequirement?.expiryBand ?? 'over12',
+      deliveryBand: ask.conditionRequirement?.deliveryBand ?? null,
     });
   }
 
@@ -180,7 +276,7 @@ export async function getActiveDemandList(filters: {
     manufacturers.map((m) => [(m._id as Types.ObjectId).toString(), m]),
   );
 
-  return items.map((item) => {
+  const named = items.map((item) => {
     const productId = productIdByAskId.get(item.askId);
     const product = productId ? productById.get(productId) : undefined;
     const manufacturer = product
@@ -193,6 +289,7 @@ export async function getActiveDemandList(filters: {
       manufacturerName: manufacturer?.name ?? '—',
     };
   });
+  return { items: named, sellerSetsByAskId, productIdByAskId };
 }
 
 // ---------------------------------------------------------------------------

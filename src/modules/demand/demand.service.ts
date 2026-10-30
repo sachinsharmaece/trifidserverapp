@@ -1,6 +1,6 @@
 import mongoose, { type Types } from 'mongoose';
 import { Ask, ASK_STATES } from '../../models/Ask.js';
-import type { EnquiryChannel } from '../../models/Enquiry.js';
+import { Enquiry, type EnquiryChannel } from '../../models/Enquiry.js';
 import { deriveAskStatus } from '../enquiry/enquiry.status.js';
 import {
   convertPreTradeEnquiryInSession,
@@ -113,11 +113,40 @@ export async function raiseAsk(
   buyerCounterpartyId: string,
   input: RaiseAskInput,
   options: RaiseAskOptions = {},
-): Promise<{ askId: string; enquiryId: string | null }> {
+): Promise<{ askId: string; enquiryId: string | null; merged: boolean }> {
   const buyer = await requireActiveBuyer(buyerCounterpartyId);
   await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new asks.
   if (!input.skuId && !input.productId) {
     throw new AppError({ code: 'VALIDATION_FAILED', messageEn: 'A SKU or a product is required.' });
+  }
+
+  // BR-371 (30 Oct) — the same buyer asking again for the same pack (or all packs of the
+  // product) on the same expiry and delivery, while that ask is still open with no quote yet,
+  // adds his boxes to it instead of opening a second one. A quoted ask is left alone — sellers
+  // priced its quantity — so a new ask opens beside it. Converting a pre-trade enquiry always
+  // makes its own ask.
+  if (!options.enquiryId) {
+    const duplicate = await Ask.findOneAndUpdate(
+      {
+        buyerId: buyer._id,
+        state: 'open',
+        allPacks: input.allPacks,
+        skuId: input.skuId ?? null,
+        productId: input.productId ?? null,
+        'conditionRequirement.expiryBand': input.conditionRequirement.expiryBand,
+        'conditionRequirement.deliveryBand': input.conditionRequirement.deliveryBand ?? null,
+      },
+      { $inc: { qty: input.qty } },
+      { new: true, sort: { createdAt: 1 } },
+    );
+    if (duplicate) {
+      await Enquiry.updateOne({ askId: duplicate._id }, { $inc: { qty: input.qty } });
+      return {
+        askId: (duplicate._id as Types.ObjectId).toString(),
+        enquiryId: duplicate.enquiryId ? (duplicate.enquiryId as Types.ObjectId).toString() : null,
+        merged: true,
+      };
+    }
   }
 
   const now = new Date();
@@ -203,6 +232,7 @@ export async function raiseAsk(
   return {
     askId: (ask._id as Types.ObjectId).toString(),
     enquiryId: enquiryId ? enquiryId.toString() : null,
+    merged: false,
   };
 }
 
