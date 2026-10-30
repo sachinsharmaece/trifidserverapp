@@ -11,30 +11,32 @@ import { env } from '../config/env.js';
  */
 const ALGORITHM = 'aes-256-gcm';
 
-function getKey(): Buffer {
-  const key = Buffer.from(env.bankDetailEncryptionKey, 'base64');
+function keyFrom(base64: string, name: string): Buffer {
+  const key = Buffer.from(base64, 'base64');
   if (key.length !== 32) {
-    throw new Error(
-      'BANK_DETAIL_ENCRYPTION_KEY must decode to exactly 32 bytes (base64-encoded AES-256 key).',
-    );
+    throw new Error(`${name} must decode to exactly 32 bytes (base64-encoded AES-256 key).`);
   }
   return key;
 }
 
-export function encryptAccountNumber(plainText: string): string {
+function getKey(): Buffer {
+  return keyFrom(env.bankDetailEncryptionKey, 'BANK_DETAIL_ENCRYPTION_KEY');
+}
+
+function encryptWith(key: Buffer, plainText: string): string {
   const iv = randomBytes(12);
-  const cipher = createCipheriv(ALGORITHM, getKey(), iv);
+  const cipher = createCipheriv(ALGORITHM, key, iv);
   const ciphertext = Buffer.concat([cipher.update(plainText, 'utf8'), cipher.final()]);
   const authTag = cipher.getAuthTag();
   return `${iv.toString('base64')}:${authTag.toString('base64')}:${ciphertext.toString('base64')}`;
 }
 
-export function decryptAccountNumber(encoded: string): string {
+function decryptWith(key: Buffer, encoded: string, what: string): string {
   const [ivPart, authTagPart, ciphertextPart] = encoded.split(':');
   if (!ivPart || !authTagPart || !ciphertextPart) {
-    throw new Error('Malformed encrypted account number.');
+    throw new Error(`Malformed encrypted ${what}.`);
   }
-  const decipher = createDecipheriv(ALGORITHM, getKey(), Buffer.from(ivPart, 'base64'));
+  const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(ivPart, 'base64'));
   decipher.setAuthTag(Buffer.from(authTagPart, 'base64'));
   const plaintext = Buffer.concat([
     decipher.update(Buffer.from(ciphertextPart, 'base64')),
@@ -43,9 +45,55 @@ export function decryptAccountNumber(encoded: string): string {
   return plaintext.toString('utf8');
 }
 
+export function encryptAccountNumber(plainText: string): string {
+  return encryptWith(getKey(), plainText);
+}
+
+export function decryptAccountNumber(encoded: string): string {
+  return decryptWith(getKey(), encoded, 'account number');
+}
+
 // Masked in every UI (ARCHITECTURE.md §8) — the only form of the account
 // number that is ever allowed into a DTO or a log line.
 export function maskAccountNumber(plainText: string): string {
   if (plainText.length <= 4) return '*'.repeat(plainText.length);
   return `${'*'.repeat(plainText.length - 4)}${plainText.slice(-4)}`;
+}
+
+/**
+ * Phase 2 (DEC-061) — an employee's PAN and Aadhaar, under their own key
+ * (PII_ENCRYPTION_KEY). Same format as the bank-detail ciphertext. Decrypted
+ * only on an Admin's explicit, audited reveal; every other path shows the
+ * masked form, built from the last four characters kept beside it.
+ */
+function getPiiKey(): Buffer {
+  return keyFrom(env.piiEncryptionKey, 'PII_ENCRYPTION_KEY');
+}
+
+/**
+ * Checked once at start-up, so a key that is not 32 bytes stops the server
+ * with a clear message instead of failing the first save that encrypts
+ * something (found 24 Oct: a typed value in place of a generated key).
+ */
+export function assertEncryptionKeys(): void {
+  getKey();
+  getPiiKey();
+}
+
+export function encryptPii(plainText: string): string {
+  return encryptWith(getPiiKey(), plainText);
+}
+
+export function decryptPii(encoded: string): string {
+  return decryptWith(getPiiKey(), encoded, 'PII value');
+}
+
+/** `XXXXXX234F` — PAN with only its last four characters showing. */
+export function maskPan(last4: string): string {
+  return `XXXXXX${last4}`;
+}
+
+/** `XXXX XXXX 1234` — Aadhaar with only its last four digits showing. */
+export function maskAadhaar(last4: string): string {
+  return `XXXX XXXX ${last4}`;
 }

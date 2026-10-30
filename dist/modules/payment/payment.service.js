@@ -10,6 +10,7 @@ import { Po } from '../../models/Po.js';
 import { So } from '../../models/So.js';
 import { Buyer } from '../../models/Buyer.js';
 import { Seller } from '../../models/Seller.js';
+import { Counterparty } from '../../models/Counterparty.js';
 import { BankDetail } from '../../models/BankDetail.js';
 import { ReceiptConfirmation } from '../../models/ReceiptConfirmation.js';
 import { AppError } from '../../shared/errors.js';
@@ -695,25 +696,38 @@ export async function runDayClose(statementClosingPaise, actor) {
 // ---------------------------------------------------------------------------
 // Sales and purchase registers
 // ---------------------------------------------------------------------------
+// Firm name per buyer/seller profile id, so a register row names the firm
+// instead of showing a raw database id on screen.
+async function firmByProfileId(profiles) {
+    const counterparties = await Counterparty.find({ _id: { $in: profiles.map((p) => p.counterpartyId) } }, { firm: 1 });
+    const firmByCounterpartyId = new Map(counterparties.map((c) => [c._id.toString(), c.firm ?? '—']));
+    return new Map(profiles.map((p) => [String(p._id), firmByCounterpartyId.get(String(p.counterpartyId)) ?? '—']));
+}
 export async function getSalesRegister() {
     // WF-08 steps 4–5 — the SO enters the sales register the moment leg 2
     // dispatches, not only once the (M5-built) 7-day delivery window closes.
     const closedSos = await So.find({ state: { $in: ['dispatched_leg2', 'delivered', 'closed'] } })
         .sort({ updatedAt: -1 })
         .limit(200);
+    const buyers = await Buyer.find({ _id: { $in: closedSos.map((so) => so.buyerId) } });
+    const firmByBuyerId = await firmByProfileId(buyers);
     return closedSos.map((so) => ({
         soId: so._id.toString(),
         soNo: so.soNo,
         buyerId: so.buyerId.toString(),
+        buyerFirm: firmByBuyerId.get(String(so.buyerId)) ?? '—',
         totalPaise: so.totalPaise,
     }));
 }
 export async function getPurchaseRegister() {
     const bookedPos = await Po.find({ billed: true }).sort({ updatedAt: -1 }).limit(200);
+    const sellers = await Seller.find({ _id: { $in: bookedPos.map((po) => po.sellerId) } });
+    const firmBySellerId = await firmByProfileId(sellers);
     return bookedPos.map((po) => ({
         poId: po._id.toString(),
         poNo: po.poNo,
         sellerId: po.sellerId.toString(),
+        sellerFirm: firmBySellerId.get(String(po.sellerId)) ?? '—',
         billed: po.billed,
     }));
 }

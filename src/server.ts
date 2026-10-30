@@ -3,13 +3,17 @@ import { env } from './config/env.js';
 import { connectToDatabase } from './db/connect.js';
 import { seedRolesAndPermissions } from './db/seedRoles.js';
 import { seedLanes } from './db/seedLanes.js';
+import { seedStates } from './db/seedStates.js';
 import { seedNotificationTemplates } from './modules/notification/notification.templates.js';
 import { logger } from './shared/logger.js';
+import { assertEncryptionKeys } from './shared/encryption.js';
 
 async function startServer(): Promise<void> {
+  assertEncryptionKeys();
   await connectToDatabase(env.mongodbUri);
   await seedRolesAndPermissions();
   await seedLanes();
+  await seedStates();
   await seedNotificationTemplates();
   createApp().listen(env.port, () => {
     logger.info({ msg: `TriFid server listening on port ${env.port}` });

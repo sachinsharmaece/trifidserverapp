@@ -68,11 +68,22 @@ export type ErrorCode =
   // enquiry that is no longer pre-trade, or walking away from an ask that is
   // no longer open. A state refusal, not a business rule.
   | 'ENQUIRY_NOT_OPEN'
+  // Phase 3 — a registration that would go through, but has something a
+  // person must confirm first (a mobile another firm already uses; a PAN that
+  // sits inside another buyer's GSTIN). `meta.warnings` lists each one; the
+  // same request sent again with `confirmations` saves it.
+  | 'CONFIRMATION_REQUIRED'
+  // Phase 5 (DEC-060) — a staff member opening a buyer or seller outside his
+  // own or his team's. Staff only; a counterparty still gets NOT_VISIBLE.
+  | 'OUT_OF_SCOPE'
   // B-03 — a double-submit producing two identical live listing lines (same
   // seller, SKU, rate and condition set) is a data-integrity guard, not a
   // business rule: BR-087's "no merge rule" governs two DIFFERENT rates or
   // scopes on the same product, which this never touches.
   | 'DUPLICATE_LISTING'
+  // 29 Oct — a product that something live still points at (a listing, an ask, a pile, a pool,
+  // an unfinished order) cannot be deleted; `meta.inUse` says what. A state refusal.
+  | 'PRODUCT_IN_USE'
   | 'INTERNAL_ERROR';
 
 const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
@@ -118,7 +129,10 @@ const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
   MFA_ENROLMENT_REQUIRED: 403,
   OTP_CONFIRMATION_REQUIRED: 409,
   ENQUIRY_NOT_OPEN: 409,
+  CONFIRMATION_REQUIRED: 409,
+  OUT_OF_SCOPE: 403,
   DUPLICATE_LISTING: 409,
+  PRODUCT_IN_USE: 409,
   INTERNAL_ERROR: 500,
 };
 

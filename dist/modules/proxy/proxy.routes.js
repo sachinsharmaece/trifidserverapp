@@ -1,3 +1,5 @@
+import { field, requireInScope } from '../../shared/scope.js';
+import { buyerOfAsk, buyerOfOrder, sellerOfPile } from '../../shared/scopeResolvers.js';
 import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
 import { requirePermission } from '../../middleware/requirePermission.js';
@@ -5,7 +7,7 @@ import { requireIdempotencyKey } from '../../middleware/idempotency.js';
 import { validateBody, validateQuery } from '../../middleware/validate.js';
 import { PERMISSIONS } from '../../config/permissions.js';
 import * as controller from './proxy.controller.js';
-import { proxyRaiseAskSchema, proxyRaiseAsksSchema, proxyAcceptAskFillSchema, proxyDeclineAskSchema, proxyPromotionDecisionSchema, proxyCreateListingSchema, proxyPostQuoteSchema, proxyConfirmPileSchema, proxyPileDecisionSchema, proxyListBuyerAsksQuerySchema, } from './proxy.validation.js';
+import { proxyRaiseAskSchema, proxyRaiseAsksSchema, proxyAcceptAskFillSchema, proxyDeclineAskSchema, proxyPromotionDecisionSchema, proxyCreateListingSchema, proxyPostQuoteSchema, proxyConfirmPileSchema, proxyPileDecisionSchema, proxyListBuyerAsksQuerySchema, proxyWantsItSchema, } from './proxy.validation.js';
 /**
  * Staff-assisted enquiries — a phone-call proxy layer over the existing
  * ask/quote/listing flows (WF-04, WF-05, WF-09, WF-11). No new business
@@ -21,23 +23,25 @@ export const proxyRouter = Router();
 const buyerCall = [authenticate, requirePermission(PERMISSIONS.PROXY_BUYER_CALL)];
 const sellerCall = [authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL)];
 // Maps to API-040.
-proxyRouter.post('/staff/proxy/buyer/asks', ...buyerCall, validateBody(proxyRaiseAskSchema), controller.postBuyerCallAsk);
-proxyRouter.post('/staff/proxy/buyer/asks/batch', ...buyerCall, validateBody(proxyRaiseAsksSchema), controller.postBuyerCallAsks);
+proxyRouter.post('/staff/proxy/buyer/asks', ...buyerCall, requireInScope('sales', field('body', 'buyerCounterpartyId')), validateBody(proxyRaiseAskSchema), controller.postBuyerCallAsk);
+proxyRouter.post('/staff/proxy/buyer/asks/batch', ...buyerCall, requireInScope('sales', field('body', 'buyerCounterpartyId')), validateBody(proxyRaiseAsksSchema), controller.postBuyerCallAsks);
+// 29 Oct — "He wants it" on a listed offer: a pile request or its pool (Purchase → Confirmations).
+proxyRouter.post('/staff/proxy/buyer/listing-lines/:id/wants-it', ...buyerCall, requireInScope('sales', field('body', 'buyerCounterpartyId')), requireIdempotencyKey(), validateBody(proxyWantsItSchema), controller.postBuyerCallWantsIt);
 // Feeds the ask/quote pickers on "Advance an ask on a call".
-proxyRouter.get('/staff/proxy/buyer/asks', ...buyerCall, validateQuery(proxyListBuyerAsksQuerySchema), controller.getBuyerCallAsks);
+proxyRouter.get('/staff/proxy/buyer/asks', ...buyerCall, requireInScope('sales', field('query', 'buyerCounterpartyId')), validateQuery(proxyListBuyerAsksQuerySchema), controller.getBuyerCallAsks);
 // Maps to API-042.
-proxyRouter.post('/staff/proxy/buyer/asks/:id/accept', ...buyerCall, requireIdempotencyKey(), validateBody(proxyAcceptAskFillSchema), controller.postBuyerCallAcceptFill);
+proxyRouter.post('/staff/proxy/buyer/asks/:id/accept', ...buyerCall, requireInScope('sales', buyerOfAsk('id')), requireIdempotencyKey(), validateBody(proxyAcceptAskFillSchema), controller.postBuyerCallAcceptFill);
 // Maps to API-043.
-proxyRouter.post('/staff/proxy/buyer/asks/:id/decline', ...buyerCall, validateBody(proxyDeclineAskSchema), controller.postBuyerCallDecline);
+proxyRouter.post('/staff/proxy/buyer/asks/:id/decline', ...buyerCall, requireInScope('sales', buyerOfAsk('id')), validateBody(proxyDeclineAskSchema), controller.postBuyerCallDecline);
 // Maps to API-071.
-proxyRouter.post('/staff/proxy/buyer/orders/:id/promotion/accept', ...buyerCall, requireIdempotencyKey(), validateBody(proxyPromotionDecisionSchema), controller.postBuyerCallAcceptPromotion);
-proxyRouter.post('/staff/proxy/buyer/orders/:id/promotion/reject', ...buyerCall, validateBody(proxyPromotionDecisionSchema), controller.postBuyerCallRejectPromotion);
+proxyRouter.post('/staff/proxy/buyer/orders/:id/promotion/accept', ...buyerCall, requireInScope('sales', buyerOfOrder('id')), requireIdempotencyKey(), validateBody(proxyPromotionDecisionSchema), controller.postBuyerCallAcceptPromotion);
+proxyRouter.post('/staff/proxy/buyer/orders/:id/promotion/reject', ...buyerCall, requireInScope('sales', buyerOfOrder('id')), validateBody(proxyPromotionDecisionSchema), controller.postBuyerCallRejectPromotion);
 // Maps to API-033.
-proxyRouter.post('/staff/proxy/seller/listings', ...sellerCall, validateBody(proxyCreateListingSchema), controller.postSellerCallListing);
+proxyRouter.post('/staff/proxy/seller/listings', ...sellerCall, requireInScope('purchase', field('body', 'sellerCounterpartyId')), validateBody(proxyCreateListingSchema), controller.postSellerCallListing);
 // Maps to API-045.
-proxyRouter.post('/staff/proxy/seller/asks/:id/quotes', ...sellerCall, validateBody(proxyPostQuoteSchema), controller.postSellerCallQuote);
+proxyRouter.post('/staff/proxy/seller/asks/:id/quotes', ...sellerCall, requireInScope('purchase', field('body', 'sellerCounterpartyId')), validateBody(proxyPostQuoteSchema), controller.postSellerCallQuote);
 // Maps to API-049.
-proxyRouter.post('/staff/proxy/seller/confirmations/:id/confirm', ...sellerCall, requireIdempotencyKey(), validateBody(proxyConfirmPileSchema), controller.postSellerCallConfirmPile);
+proxyRouter.post('/staff/proxy/seller/confirmations/:id/confirm', ...sellerCall, requireInScope('purchase', sellerOfPile('id')), requireIdempotencyKey(), validateBody(proxyConfirmPileSchema), controller.postSellerCallConfirmPile);
 // Maps to API-050.
-proxyRouter.post('/staff/proxy/seller/confirmations/:id/requote', ...sellerCall, validateBody(proxyPileDecisionSchema), controller.postSellerCallRequotePile);
-proxyRouter.post('/staff/proxy/seller/confirmations/:id/decline', ...sellerCall, validateBody(proxyPileDecisionSchema), controller.postSellerCallDeclinePile);
+proxyRouter.post('/staff/proxy/seller/confirmations/:id/requote', ...sellerCall, requireInScope('purchase', sellerOfPile('id')), validateBody(proxyPileDecisionSchema), controller.postSellerCallRequotePile);
+proxyRouter.post('/staff/proxy/seller/confirmations/:id/decline', ...sellerCall, requireInScope('purchase', sellerOfPile('id')), validateBody(proxyPileDecisionSchema), controller.postSellerCallDeclinePile);

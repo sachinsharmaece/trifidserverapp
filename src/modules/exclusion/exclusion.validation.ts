@@ -1,6 +1,12 @@
 import { z } from 'zod';
 
-const gstinSchema = z.string().regex(/^[0-9A-Z]{15}$/, 'Enter a valid 15-character GSTIN.');
+// Phase 3 (DEC-054) — a buyer without a GSTIN is blocked by his PAN.
+const gstinSchema = z
+  .string()
+  .regex(
+    /^([0-9A-Z]{15}|[A-Z]{5}[0-9]{4}[A-Z])$/,
+    "Enter the buyer's 15-character GSTIN, or his 10-character PAN if he has no GSTIN.",
+  );
 
 export const lookupSchema = z
   .object({

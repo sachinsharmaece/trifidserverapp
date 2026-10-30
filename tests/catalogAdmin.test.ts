@@ -25,6 +25,7 @@ describe('Admin catalog management — products', () => {
     const mfrRes = await request(app)
       .post('/api/v1/admin/manufacturers')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ name: manufacturerName });
     expect(mfrRes.status).toBe(201);
     const { manufacturerId } = mfrRes.body.data as { manufacturerId: string };
@@ -32,6 +33,7 @@ describe('Admin catalog management — products', () => {
     const createRes = await request(app)
       .post('/api/v1/admin/products')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({
         brand: 'Test Brand',
         technical: 'Test Technical',
@@ -71,17 +73,20 @@ describe('Admin catalog management — products', () => {
     const mfrRes = await request(app)
       .post('/api/v1/admin/manufacturers')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ name: `Mfr-${Date.now()}-${Math.random()}` });
     const { manufacturerId } = mfrRes.body.data as { manufacturerId: string };
     const createRes = await request(app)
       .post('/api/v1/admin/products')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ brand: 'Before', technical: 'T', manufacturerId, hsn: '38089199' });
     const { productId } = createRes.body.data as { productId: string };
 
     const editRes = await request(app)
       .patch(`/api/v1/admin/products/${productId}`)
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ brand: 'After', active: false });
     expect(editRes.status).toBe(200);
 
@@ -115,16 +120,19 @@ describe('Admin catalog management — SKU edit', () => {
     const mfrRes = await request(app)
       .post('/api/v1/admin/manufacturers')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ name: `Mfr-${Date.now()}-${Math.random()}` });
     const { manufacturerId } = mfrRes.body.data as { manufacturerId: string };
     const productRes = await request(app)
       .post('/api/v1/admin/products')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ brand: 'B', technical: 'T', manufacturerId, hsn: '38089199' });
     const { productId } = productRes.body.data as { productId: string };
     const importRes = await request(app)
       .post('/api/v1/admin/skus/import')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({
         productId,
         rows: [{ packLabel: '1L', packSize: 1, baseUnit: 'LTR', unitsPerBox: 12 }],
@@ -140,6 +148,7 @@ describe('Admin catalog management — SKU edit', () => {
     const editRes = await request(app)
       .patch(`/api/v1/admin/skus/${skuId}`)
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ packLabel: '2L', packSize: 2, unitsPerBox: 6 });
     expect(editRes.status).toBe(200);
     expect(editRes.body.data.baseUnitsPerBox).toBe(12); // 2 * 6, recomputed, not just copied.
@@ -157,6 +166,7 @@ describe('Admin catalog management — SKU edit', () => {
     const editRes = await request(app)
       .patch(`/api/v1/admin/skus/${skuId}`)
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ baseUnit: 'KG' });
     expect(editRes.status).toBe(400);
   });
@@ -166,6 +176,7 @@ describe('Admin catalog management — SKU edit', () => {
     const res = await request(app)
       .patch('/api/v1/admin/skus/000000000000000000000000')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ packLabel: 'X' });
     expect(res.status).toBe(404);
   });
@@ -178,24 +189,28 @@ describe('Admin catalog management — HSN validation', () => {
     const mfrRes = await request(app)
       .post('/api/v1/admin/manufacturers')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ name: `Mfr-${Date.now()}-${Math.random()}` });
     const { manufacturerId } = mfrRes.body.data as { manufacturerId: string };
 
     const badRes = await request(app)
       .post('/api/v1/admin/products')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ brand: 'B', technical: 'T', manufacturerId, hsn: 'ABC' });
     expect(badRes.status).toBe(400);
 
     const wrongPrefixRes = await request(app)
       .post('/api/v1/admin/products')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ brand: 'B', technical: 'T', manufacturerId, hsn: '1234' });
     expect(wrongPrefixRes.status).toBe(400);
 
     const goodRes = await request(app)
       .post('/api/v1/admin/products')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ brand: 'B', technical: 'T', manufacturerId, hsn: '38089199' });
     expect(goodRes.status).toBe(201);
   });
@@ -210,12 +225,14 @@ describe('Admin catalog management — duplicate manufacturer names', () => {
     const firstRes = await request(app)
       .post('/api/v1/admin/manufacturers')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ name });
     expect(firstRes.status).toBe(201);
 
     const dupeRes = await request(app)
       .post('/api/v1/admin/manufacturers')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ name: name.toLowerCase() });
     expect(dupeRes.status).toBe(400);
     expect(dupeRes.body.error.field).toBe('name');
@@ -230,11 +247,13 @@ describe('Admin catalog management — duplicate pack', () => {
     const mfrRes = await request(app)
       .post('/api/v1/admin/manufacturers')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ name: `Mfr-${Date.now()}-${Math.random()}` });
     const { manufacturerId } = mfrRes.body.data as { manufacturerId: string };
     const productRes = await request(app)
       .post('/api/v1/admin/products')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ brand: 'B', technical: 'T', manufacturerId, hsn: '38089199' });
     const { productId } = productRes.body.data as { productId: string };
 
@@ -258,11 +277,13 @@ describe('Admin catalog management — duplicate pack', () => {
     const mfrRes = await request(app)
       .post('/api/v1/admin/manufacturers')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ name: `Mfr-${Date.now()}-${Math.random()}` });
     const { manufacturerId } = mfrRes.body.data as { manufacturerId: string };
     const productRes = await request(app)
       .post('/api/v1/admin/products')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ brand: 'B', technical: 'T', manufacturerId, hsn: '38089199' });
     const { productId } = productRes.body.data as { productId: string };
 
@@ -283,6 +304,7 @@ describe('Admin catalog management — manufacturer aka', () => {
     const createRes = await request(app)
       .post('/api/v1/admin/manufacturers')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ name, aka: ['Bayer CropScience'] });
     expect(createRes.status).toBe(201);
     const { manufacturerId } = createRes.body.data as { manufacturerId: string };
@@ -298,6 +320,7 @@ describe('Admin catalog management — manufacturer aka', () => {
     const patchRes = await request(app)
       .patch(`/api/v1/admin/manufacturers/${manufacturerId}`)
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ aka: ['Bayer CropScience', 'Bayer India'] });
     expect(patchRes.status).toBe(200);
 
@@ -316,6 +339,7 @@ describe('Admin catalog management — masters, category, tax and packs', () => 
     const res = await request(app)
       .post('/api/v1/admin/manufacturers')
       .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ name: `Mfr-${Date.now()}-${Math.random()}` });
     return (res.body.data as { manufacturerId: string }).manufacturerId;
   }
@@ -328,27 +352,32 @@ describe('Admin catalog management — masters, category, tax and packs', () => 
     const t = await request(app)
       .post('/api/v1/admin/technicals')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ name });
     expect(t.status).toBe(201);
     const dupe = await request(app)
       .post('/api/v1/admin/technicals')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ name: name.toUpperCase() });
     expect(dupe.status).toBe(400);
 
     const h = await request(app)
       .post('/api/v1/admin/hsn')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ code, taxPercent: 5 });
     expect(h.status).toBe(201);
     const badHsn = await request(app)
       .post('/api/v1/admin/hsn')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ code: '12', taxPercent: 5 });
     expect(badHsn.status).toBe(400);
     const badTax = await request(app)
       .post('/api/v1/admin/hsn')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ code: '31051000', taxPercent: 150 });
     expect(badTax.status).toBe(400);
 
@@ -371,6 +400,7 @@ describe('Admin catalog management — masters, category, tax and packs', () => 
     const res = await request(app)
       .post('/api/v1/admin/products')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({
         brand: 'Urea Plus',
         technical: `Urea-${Date.now()}`,
@@ -414,11 +444,13 @@ describe('Admin catalog management — masters, category, tax and packs', () => 
     await request(app)
       .post('/api/v1/admin/hsn')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ code, taxPercent: 12 });
 
     const res = await request(app)
       .post('/api/v1/admin/products')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({ brand: 'B', technical, manufacturerId, hsn: code });
     expect(res.status).toBe(201);
     const { productId } = res.body.data as { productId: string };
@@ -442,6 +474,7 @@ describe('Admin catalog management — masters, category, tax and packs', () => 
     const res = await request(app)
       .post('/api/v1/admin/products')
       .set('Authorization', `Bearer ${admin.token}`)
+      .set('Idempotency-Key', `cat-${Math.random()}`)
       .send({
         brand,
         technical: 'T',

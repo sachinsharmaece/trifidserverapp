@@ -1,3 +1,4 @@
+import { listAssignable } from '../../../shared/team.js';
 import * as purchaseService from './purchase.service.js';
 import * as catalogService from '../../catalog/catalog.service.js';
 import { getFunnelReport as getFunnelReportFromService } from './purchase.funnel.js';
@@ -13,6 +14,12 @@ function staffActor(req) {
 }
 export async function getActiveDemandList(req, res) {
     const noSellerOnly = req.query.noSeller === 'true';
+    // 30 Oct — `by=product`: one row per product with its asks under it (BR-371); without it,
+    // the flat list of asks as before.
+    if (req.query.by === 'product') {
+        ok(res, req, await purchaseService.getActiveDemandByProduct({ noSellerOnly }));
+        return;
+    }
     ok(res, req, await purchaseService.getActiveDemandList({ noSellerOnly }));
 }
 export async function getQuoteGaps(req, res) {
@@ -176,4 +183,10 @@ export async function postDraftSku(req, res) {
     const input = draftSkuSchema.parse(req.body);
     const result = await catalogService.createSkuDraft(input, req.auth.employeeId);
     ok(res, req, result, 201);
+}
+export async function getAssignees(req, res) {
+    ok(res, req, await listAssignable('purchase', {
+        employeeId: req.auth.employeeId,
+        permissions: req.auth.permissions,
+    }));
 }

@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { Ask, ASK_STATES } from '../../models/Ask.js';
+import { Enquiry } from '../../models/Enquiry.js';
 import { deriveAskStatus } from '../enquiry/enquiry.status.js';
 import { convertPreTradeEnquiryInSession, createTradeEnquiryInSession, syncEnquiriesForPile, syncEnquiryForAsk, } from '../enquiry/enquiry.sync.js';
 import { Quote, QUOTE_GAP_CODES } from '../../models/Quote.js';
@@ -75,6 +76,31 @@ export async function raiseAsk(buyerCounterpartyId, input, options = {}) {
     if (!input.skuId && !input.productId) {
         throw new AppError({ code: 'VALIDATION_FAILED', messageEn: 'A SKU or a product is required.' });
     }
+    // BR-371 (30 Oct) — the same buyer asking again for the same pack (or all packs of the
+    // product) on the same expiry and delivery, while that ask is still open with no quote yet,
+    // adds his boxes to it instead of opening a second one. A quoted ask is left alone — sellers
+    // priced its quantity — so a new ask opens beside it. Converting a pre-trade enquiry always
+    // makes its own ask.
+    if (!options.enquiryId) {
+        const duplicate = await Ask.findOneAndUpdate({
+            buyerId: buyer._id,
+            state: 'open',
+            allPacks: input.allPacks,
+            skuId: input.skuId ?? null,
+            productId: input.productId ?? null,
+            'conditionRequirement.expiryBand': input.conditionRequirement.expiryBand,
+            'conditionRequirement.deliveryBand': input.conditionRequirement.deliveryBand ?? null,
+        }, { $inc: { qty: input.qty } }, { new: true, sort: { createdAt: 1 } });
+        if (duplicate) {
+            await Enquiry.updateOne({ askId: duplicate._id }, { $inc: { qty: input.qty } });
+            return {
+                askId: duplicate._id.toString(),
+                enquiryId: duplicate.enquiryId ? duplicate.enquiryId.toString() : null,
+                merged: true,
+                qty: duplicate.qty, // His boxes on it now.
+            };
+        }
+    }
     const now = new Date();
     const hasHeadStartSeller = await anyTrustedOrCommittedSellerExists();
     const visibleToAllAt = computeVisibleToAllAt(now, hasHeadStartSeller);
@@ -142,6 +168,8 @@ export async function raiseAsk(buyerCounterpartyId, input, options = {}) {
     return {
         askId: ask._id.toString(),
         enquiryId: enquiryId ? enquiryId.toString() : null,
+        merged: false,
+        qty: input.qty,
     };
 }
 /**

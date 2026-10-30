@@ -1,3 +1,5 @@
+import { field, requireInScope } from '../../shared/scope.js';
+import { buyerOfAsk, buyerOfOrder, sellerOfPile } from '../../shared/scopeResolvers.js';
 import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
 import { requirePermission } from '../../middleware/requirePermission.js';
@@ -16,6 +18,7 @@ import {
   proxyConfirmPileSchema,
   proxyPileDecisionSchema,
   proxyListBuyerAsksQuerySchema,
+  proxyWantsItSchema,
 } from './proxy.validation.js';
 
 /**
@@ -38,19 +41,31 @@ const sellerCall = [authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CAL
 proxyRouter.post(
   '/staff/proxy/buyer/asks',
   ...buyerCall,
+  requireInScope('sales', field('body', 'buyerCounterpartyId')),
   validateBody(proxyRaiseAskSchema),
   controller.postBuyerCallAsk,
 );
 proxyRouter.post(
   '/staff/proxy/buyer/asks/batch',
   ...buyerCall,
+  requireInScope('sales', field('body', 'buyerCounterpartyId')),
   validateBody(proxyRaiseAsksSchema),
   controller.postBuyerCallAsks,
+);
+// 29 Oct — "He wants it" on a listed offer: a pile request or its pool (Purchase → Confirmations).
+proxyRouter.post(
+  '/staff/proxy/buyer/listing-lines/:id/wants-it',
+  ...buyerCall,
+  requireInScope('sales', field('body', 'buyerCounterpartyId')),
+  requireIdempotencyKey(),
+  validateBody(proxyWantsItSchema),
+  controller.postBuyerCallWantsIt,
 );
 // Feeds the ask/quote pickers on "Advance an ask on a call".
 proxyRouter.get(
   '/staff/proxy/buyer/asks',
   ...buyerCall,
+  requireInScope('sales', field('query', 'buyerCounterpartyId')),
   validateQuery(proxyListBuyerAsksQuerySchema),
   controller.getBuyerCallAsks,
 );
@@ -58,6 +73,7 @@ proxyRouter.get(
 proxyRouter.post(
   '/staff/proxy/buyer/asks/:id/accept',
   ...buyerCall,
+  requireInScope('sales', buyerOfAsk('id')),
   requireIdempotencyKey(),
   validateBody(proxyAcceptAskFillSchema),
   controller.postBuyerCallAcceptFill,
@@ -66,6 +82,7 @@ proxyRouter.post(
 proxyRouter.post(
   '/staff/proxy/buyer/asks/:id/decline',
   ...buyerCall,
+  requireInScope('sales', buyerOfAsk('id')),
   validateBody(proxyDeclineAskSchema),
   controller.postBuyerCallDecline,
 );
@@ -73,6 +90,7 @@ proxyRouter.post(
 proxyRouter.post(
   '/staff/proxy/buyer/orders/:id/promotion/accept',
   ...buyerCall,
+  requireInScope('sales', buyerOfOrder('id')),
   requireIdempotencyKey(),
   validateBody(proxyPromotionDecisionSchema),
   controller.postBuyerCallAcceptPromotion,
@@ -80,6 +98,7 @@ proxyRouter.post(
 proxyRouter.post(
   '/staff/proxy/buyer/orders/:id/promotion/reject',
   ...buyerCall,
+  requireInScope('sales', buyerOfOrder('id')),
   validateBody(proxyPromotionDecisionSchema),
   controller.postBuyerCallRejectPromotion,
 );
@@ -88,6 +107,7 @@ proxyRouter.post(
 proxyRouter.post(
   '/staff/proxy/seller/listings',
   ...sellerCall,
+  requireInScope('purchase', field('body', 'sellerCounterpartyId')),
   validateBody(proxyCreateListingSchema),
   controller.postSellerCallListing,
 );
@@ -95,6 +115,7 @@ proxyRouter.post(
 proxyRouter.post(
   '/staff/proxy/seller/asks/:id/quotes',
   ...sellerCall,
+  requireInScope('purchase', field('body', 'sellerCounterpartyId')),
   validateBody(proxyPostQuoteSchema),
   controller.postSellerCallQuote,
 );
@@ -102,6 +123,7 @@ proxyRouter.post(
 proxyRouter.post(
   '/staff/proxy/seller/confirmations/:id/confirm',
   ...sellerCall,
+  requireInScope('purchase', sellerOfPile('id')),
   requireIdempotencyKey(),
   validateBody(proxyConfirmPileSchema),
   controller.postSellerCallConfirmPile,
@@ -110,12 +132,14 @@ proxyRouter.post(
 proxyRouter.post(
   '/staff/proxy/seller/confirmations/:id/requote',
   ...sellerCall,
+  requireInScope('purchase', sellerOfPile('id')),
   validateBody(proxyPileDecisionSchema),
   controller.postSellerCallRequotePile,
 );
 proxyRouter.post(
   '/staff/proxy/seller/confirmations/:id/decline',
   ...sellerCall,
+  requireInScope('purchase', sellerOfPile('id')),
   validateBody(proxyPileDecisionSchema),
   controller.postSellerCallDeclinePile,
 );

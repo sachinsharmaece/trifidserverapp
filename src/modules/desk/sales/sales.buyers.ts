@@ -10,6 +10,11 @@ import { Sku } from '../../../models/Sku.js';
 import { Product } from '../../../models/Product.js';
 import { Ask } from '../../../models/Ask.js';
 import { Quote } from '../../../models/Quote.js';
+import { Pile } from '../../../models/Pile.js';
+import { PileRequest } from '../../../models/PileRequest.js';
+import { Pool } from '../../../models/Pool.js';
+import { PoolCommitment } from '../../../models/PoolCommitment.js';
+import { ListingLine } from '../../../models/ListingLine.js';
 import { AppError } from '../../../shared/errors.js';
 import { computeBuyerFacingRatePaise } from '../../listing/listing.service.js';
 import { addDays } from '../../../shared/clock.js';
@@ -24,6 +29,7 @@ import {
   type FunnelKey,
 } from './sales.funnel.js';
 import { listCallLogsForBuyer, type CallLogDto } from './sales.calls.js';
+import { CallLog } from '../../../models/CallLog.js';
 import { listOrders, type SalesOrderRow } from './sales.orders.js';
 
 // B-52 — `tradePosition` is stored lowercase (the enum); `rateTier` (the
@@ -37,31 +43,111 @@ function capitalizeTradePosition(tradePosition: string): string {
   return tradePosition.charAt(0).toUpperCase() + tradePosition.slice(1);
 }
 
+// Phase 3 (DEC-058) — the category, or for a buyer not yet migrated the old
+// position/trader flag; blank when he was never classified.
+function categoryOf(buyer: {
+  category?: string | null;
+  isTrader: boolean;
+  tradePosition?: string | null;
+}): string | null {
+  if (buyer.category) return buyer.category;
+  if (buyer.isTrader) return 'Trader';
+  return buyer.tradePosition ? capitalizeTradePosition(buyer.tradePosition) : null;
+}
+
 export interface BuyerListRow {
   buyerId: string;
   firm: string;
   gstin: string | null;
+  /** Phase 3 — shown as "Unregistered · PAN" when there is no GSTIN. */
+  pan: string | null;
   tehsil: string | null;
+  district: string | null;
+  /** The category (Retailer / Dealer / Distributor / Trader). */
   tier: string | null;
+  /** The Sales person he is assigned to; null = the Queue. */
+  assignedToEmployeeId: string | null;
   orderCount: number;
   lastOrderAt: string | null;
+  /** 30 Oct — the newest call or update request (not a note), and who made it; null = never. */
+  lastCalledAt: string | null;
+  lastCalledBy: string | null;
   rateViews: number;
   ownerName: string | null; // The Sales employee whose book he is in — not the firm's owner.
   contactName: string | null; // The firm's own owner, from the counterparty.
   mobile: string | null;
 }
 
-/** GET /staff/sales/buyers?q=&tab=book|queue */
-export async function listBuyers(filters: {
+/**
+ * GET /staff/sales/buyers?q=&tab=book|queue&category=&districtId=&assignedTo=
+ * Phase 3 — filters by category, district and Assigned to (an employee id,
+ * or `queue`).
+ */
+export interface BuyerListFacets {
+  districts: Array<{ districtId: string; name: string }>;
+  assignees: Array<{ employeeId: string; person: string }>;
+}
+
+/** Everything, as before (the top-bar search uses this). */
+export async function listBuyers(filters: BuyerListFilters): Promise<BuyerListRow[]> {
+  return (await listBuyersPage(filters)).items;
+}
+
+export interface BuyerListFilters {
   q?: string;
   tab?: 'book' | 'queue';
-}): Promise<BuyerListRow[]> {
+  category?: string;
+  districtId?: string;
+  assignedTo?: string;
+  /** 29 Oct — default `firm` (A→Z); `dir` default `asc`. */
+  sort?: BuyerListSort;
+  dir?: 'asc' | 'desc';
+}
+
+export const BUYER_LIST_SORTS = [
+  'firm',
+  'tehsil',
+  'district',
+  'registered',
+  'orders',
+  'lastOrder',
+  'lastCalled',
+  'rateViews',
+] as const;
+export type BuyerListSort = (typeof BUYER_LIST_SORTS)[number];
+
+/**
+ * 29 Oct — one page of the Buyers list (`offset`/`limit`), with the total and
+ * the filter options for the whole tab (every district and assignee in it,
+ * not only those on this page). Without `limit`, the whole list.
+ */
+export async function listBuyersPage(
+  filters: BuyerListFilters,
+  page: { offset?: number; limit?: number } = {},
+): Promise<{ items: BuyerListRow[]; total: number; facets: BuyerListFacets }> {
   const assignments = await BookAssignment.find({});
   const ownerEmployeeIdByBuyer = new Map(
     assignments.map((a) => [(a.buyerId as Types.ObjectId).toString(), a.ownerEmployeeId]),
   );
 
-  let buyers = await Buyer.find({}).sort({ createdAt: -1 });
+  const buyerQuery: Record<string, unknown> = {};
+  if (filters.category) buyerQuery.category = filters.category;
+  if (filters.districtId) {
+    const inDistrict = await Tehsil.find({ districtId: filters.districtId }, { _id: 1 });
+    buyerQuery.tehsilId = { $in: inDistrict.map((t) => t._id) };
+  }
+  let buyers = await Buyer.find(buyerQuery).sort({ createdAt: -1 });
+  if (filters.assignedTo === 'queue') {
+    buyers = buyers.filter(
+      (b) => !ownerEmployeeIdByBuyer.has((b._id as Types.ObjectId).toString()),
+    );
+  } else if (filters.assignedTo) {
+    buyers = buyers.filter(
+      (b) =>
+        ownerEmployeeIdByBuyer.get((b._id as Types.ObjectId).toString())?.toString() ===
+        filters.assignedTo,
+    );
+  }
   if (filters.tab === 'book') {
     buyers = buyers.filter((b) => ownerEmployeeIdByBuyer.has((b._id as Types.ObjectId).toString()));
   } else if (filters.tab === 'queue') {
@@ -69,6 +155,7 @@ export async function listBuyers(filters: {
       (b) => !ownerEmployeeIdByBuyer.has((b._id as Types.ObjectId).toString()),
     );
   }
+  const facets = await facetsFor(filters.tab, ownerEmployeeIdByBuyer);
 
   const counterparties = await Counterparty.find({
     _id: { $in: buyers.map((b) => b.counterpartyId) },
@@ -90,13 +177,17 @@ export async function listBuyers(filters: {
       return Boolean(
         cp?.firm?.toLowerCase().includes(q) ||
         cp?.gstin?.toLowerCase().includes(q) ||
+        cp?.pan?.toLowerCase().includes(q) ||
         cp?.ownerName?.toLowerCase().includes(q) ||
         cp?.mobile?.toLowerCase().includes(q) ||
+        cp?.contactMobile?.toLowerCase().includes(q) ||
         inTehsil,
       );
     });
   }
 
+  // 29 Oct — names and order stats for the whole filtered list, not just the page, so the list
+  // can be sorted by any column before it is cut into pages.
   const tehsilIds = [
     ...new Set(
       buyers.filter((b) => b.tehsilId).map((b) => (b.tehsilId as Types.ObjectId).toString()),
@@ -106,25 +197,89 @@ export async function listBuyers(filters: {
   const tehsilNameById = new Map(
     tehsils.map((t) => [(t._id as Types.ObjectId).toString(), t.name]),
   );
+  const districtByTehsilId = new Map(
+    tehsils.map((t) => [(t._id as Types.ObjectId).toString(), t.district]),
+  );
 
-  const employees = await Employee.find({ _id: { $in: [...ownerEmployeeIdByBuyer.values()] } });
+  const statRows = buyers.length
+    ? await So.aggregate<{ _id: Types.ObjectId; count: number; lastOrderAt: Date }>([
+        { $match: { buyerId: { $in: buyers.map((b) => b._id) } } },
+        { $group: { _id: '$buyerId', count: { $sum: 1 }, lastOrderAt: { $max: '$createdAt' } } },
+      ])
+    : [];
+  const orderStatsByBuyer = new Map(
+    statRows.map((r) => [r._id.toString(), { count: r.count, lastOrderAt: r.lastOrderAt }]),
+  );
+  // 30 Oct — his last conversation with us: a call or an update request, never a note.
+  const callRows = buyers.length
+    ? await CallLog.aggregate<{ _id: Types.ObjectId; at: Date; employeeId: Types.ObjectId }>([
+        {
+          $match: {
+            buyerId: { $in: buyers.map((b) => b._id) },
+            kind: { $in: ['call', 'update_request'] },
+          },
+        },
+        { $sort: { at: -1 } },
+        {
+          $group: { _id: '$buyerId', at: { $first: '$at' }, employeeId: { $first: '$employeeId' } },
+        },
+      ])
+    : [];
+  const lastCallByBuyer = new Map(callRows.map((r) => [r._id.toString(), r]));
+
+  const tehsilKey = (b: (typeof buyers)[number]) =>
+    b.tehsilId ? (tehsilNameById.get((b.tehsilId as Types.ObjectId).toString()) ?? null) : null;
+  const districtKey = (b: (typeof buyers)[number]) =>
+    b.tehsilId ? (districtByTehsilId.get((b.tehsilId as Types.ObjectId).toString()) ?? null) : null;
+  const firmKey = (b: (typeof buyers)[number]) =>
+    counterpartyById.get((b.counterpartyId as Types.ObjectId).toString())?.firm?.trim() || null;
+  const sortKey = (b: (typeof buyers)[number]): string | number | null => {
+    const stats = orderStatsByBuyer.get((b._id as Types.ObjectId).toString());
+    switch (filters.sort ?? 'firm') {
+      case 'tehsil':
+        return tehsilKey(b);
+      case 'district':
+        return districtKey(b);
+      case 'registered':
+        return (b as unknown as { createdAt: Date }).createdAt.getTime();
+      case 'orders':
+        return stats?.count ?? null;
+      case 'lastOrder':
+        return stats?.lastOrderAt ? stats.lastOrderAt.getTime() : null;
+      case 'lastCalled':
+        // Never called counts as longest ago: first when oldest-first, last when newest-first.
+        return lastCallByBuyer.get((b._id as Types.ObjectId).toString())?.at.getTime() ?? 0;
+      case 'rateViews':
+        return b.rateViews ?? 0;
+      default:
+        return firmKey(b);
+    }
+  };
+  buyers = sortBuyers(buyers, sortKey, firmKey, filters.dir ?? 'asc');
+
+  const total = buyers.length;
+  if (page.limit) {
+    const offset = page.offset ?? 0;
+    buyers = buyers.slice(offset, offset + page.limit);
+  }
+
+  const employees = await Employee.find({
+    _id: {
+      $in: [
+        ...ownerEmployeeIdByBuyer.values(),
+        // Whoever made each buyer's last call on this page.
+        ...buyers.flatMap((b) => {
+          const call = lastCallByBuyer.get((b._id as Types.ObjectId).toString());
+          return call ? [call.employeeId] : [];
+        }),
+      ],
+    },
+  });
   const employeeNameById = new Map(
     employees.map((e) => [(e._id as Types.ObjectId).toString(), e.person]),
   );
 
-  const sos = await So.find({ buyerId: { $in: buyers.map((b) => b._id) } })
-    .select('buyerId createdAt')
-    .sort({ createdAt: -1 });
-  const orderStatsByBuyer = new Map<string, { count: number; lastOrderAt: Date }>();
-  for (const so of sos) {
-    const key = (so.buyerId as Types.ObjectId).toString();
-    const createdAt = (so as unknown as { createdAt: Date }).createdAt;
-    const existing = orderStatsByBuyer.get(key);
-    if (existing) existing.count += 1;
-    else orderStatsByBuyer.set(key, { count: 1, lastOrderAt: createdAt }); // sorted desc — the first hit is the latest.
-  }
-
-  return buyers.map((b) => {
+  const items: BuyerListRow[] = buyers.map((b) => {
     const idStr = (b._id as Types.ObjectId).toString();
     const cp = counterpartyById.get((b.counterpartyId as Types.ObjectId).toString());
     const ownerEmployeeId = ownerEmployeeIdByBuyer.get(idStr);
@@ -133,24 +288,65 @@ export async function listBuyers(filters: {
       buyerId: idStr,
       firm: cp?.firm ?? '',
       gstin: cp?.gstin ?? null,
+      pan: cp?.pan ?? null,
       contactName: cp?.ownerName ?? null,
-      mobile: cp?.mobile ?? null,
+      mobile: cp?.contactMobile ?? cp?.mobile ?? null,
       tehsil: b.tehsilId
         ? (tehsilNameById.get((b.tehsilId as Types.ObjectId).toString()) ?? null)
         : null,
-      tier: b.isTrader
-        ? 'Trader'
-        : b.tradePosition
-          ? capitalizeTradePosition(b.tradePosition)
-          : null,
+      district: b.tehsilId
+        ? (districtByTehsilId.get((b.tehsilId as Types.ObjectId).toString()) ?? null)
+        : null,
+      tier: categoryOf(b),
+      assignedToEmployeeId: ownerEmployeeId ? ownerEmployeeId.toString() : null,
       orderCount: stats?.count ?? 0,
       lastOrderAt: stats?.lastOrderAt ? stats.lastOrderAt.toISOString() : null,
+      lastCalledAt: lastCallByBuyer.get(idStr)?.at.toISOString() ?? null,
+      lastCalledBy: lastCallByBuyer.has(idStr)
+        ? (employeeNameById.get(lastCallByBuyer.get(idStr)!.employeeId.toString()) ?? null)
+        : null,
       rateViews: b.rateViews,
       ownerName: ownerEmployeeId
         ? (employeeNameById.get(ownerEmployeeId.toString()) ?? null)
         : null,
     };
   });
+  return { items, total, facets };
+}
+
+const byName = new Intl.Collator('en', { sensitivity: 'base', numeric: true });
+
+/**
+ * Sorts by `key` in `dir`; a buyer with no value (no firm, no tehsil, never ordered) goes last
+ * either way. Ties fall back to firm A→Z, then id, so pages never repeat or skip a row.
+ */
+function sortBuyers<B extends { _id: unknown }>(
+  buyers: B[],
+  key: (b: B) => string | number | null,
+  firmKey: (b: B) => string | null,
+  dir: 'asc' | 'desc',
+): B[] {
+  const sign = dir === 'desc' ? -1 : 1;
+  const compareValues = (a: string | number, b: string | number) =>
+    typeof a === 'number' && typeof b === 'number' ? a - b : byName.compare(String(a), String(b));
+  return buyers
+    .map((b) => ({ b, k: key(b), f: firmKey(b), id: String(b._id) }))
+    .sort((x, y) => {
+      if (x.k === null && y.k !== null) return 1;
+      if (y.k === null && x.k !== null) return -1;
+      if (x.k !== null && y.k !== null) {
+        const c = compareValues(x.k, y.k);
+        if (c !== 0) return sign * c;
+      }
+      if (x.f !== y.f) {
+        if (x.f === null) return 1;
+        if (y.f === null) return -1;
+        const c = byName.compare(x.f, y.f);
+        if (c !== 0) return c;
+      }
+      return x.id < y.id ? -1 : x.id > y.id ? 1 : 0;
+    })
+    .map((r) => r.b);
 }
 
 export interface BuyerProductHistoryRow {
@@ -217,6 +413,28 @@ export interface BuyerFileLiveQuote {
   bindingUntil: string;
 }
 
+/**
+ * 29 Oct — a listed offer he has been put on (by Sales on a call, or by his own Buy button) that
+ * is waiting on the seller: a pile request (Purchase → Confirmations) or a place in a pool that
+ * has not reached its minimum yet. Once the seller confirms it is an order and shows there.
+ */
+export interface BuyerFileWaitingOnSeller {
+  kind: 'pile' | 'pool';
+  /** The pile request, or the pool commitment. */
+  id: string;
+  productId: string | null;
+  brand: string;
+  packLabel: string | null;
+  qty: number;
+  /** His own rate on the offer — pile only; a pool's rate is set when it triggers. */
+  ratePaise: number | null;
+  requestedAt: string;
+  /** Pile only — when the seller's window to confirm ends. */
+  decideBy: string | null;
+  /** Pool only — boxes in so far, against its minimum. */
+  pool: { committedBoxes: number; moq: number; status: string } | null;
+}
+
 /** His orders sliced by the funnel joint they sit at; `other` is every state outside the three. */
 export interface BuyerFileOrdersByStage {
   paymentPending: SalesOrderRow[];
@@ -252,6 +470,7 @@ export interface BuyerFileDto {
   funnel: BuyerFunnelStage[];
   productHistory: BuyerProductHistoryRow[];
   openAsks: BuyerFileOpenAsk[];
+  waitingOnSeller: BuyerFileWaitingOnSeller[];
   liveQuotes: BuyerFileLiveQuote[];
   callLogs: CallLogDto[];
   orders: SalesOrderRow[];
@@ -413,6 +632,8 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     parkedRowsByAskId.set(row.askId, [...(parkedRowsByAskId.get(row.askId) ?? []), row]);
   }
 
+  const waitingOnSeller = await listWaitingOnSeller(buyer);
+
   // The same nine joints as the Funnel tab, with the same state lists and wording,
   // counted over this buyer's own records only.
   const staleBefore = addDays(new Date(), -(ASK_LEAK_STALENESS_HOURS / 24));
@@ -481,13 +702,9 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     counterpartyId: (buyer.counterpartyId as Types.ObjectId).toString(),
     firm: counterparty?.firm ?? '',
     gstin: counterparty?.gstin ?? null,
-    mobile: counterparty?.mobile ?? '',
+    mobile: counterparty?.contactMobile ?? counterparty?.mobile ?? '',
     tehsil: tehsil?.name ?? null,
-    tier: buyer.isTrader
-      ? 'Trader'
-      : buyer.tradePosition
-        ? capitalizeTradePosition(buyer.tradePosition)
-        : null,
+    tier: categoryOf(buyer),
     classified: buyer.classified,
     rateViews: buyer.rateViews,
     ownerName: owner?.person ?? null,
@@ -511,9 +728,134 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
         pendingQuotes: parkedRowsByAskId.get((a._id as Types.ObjectId).toString()) ?? [],
       };
     }),
+    waitingOnSeller,
     liveQuotes: liveQuoteRows,
     callLogs,
     orders,
     ordersByStage,
   };
+}
+
+/**
+ * The filter options for a tab, over every buyer in it — districts by id and
+ * name, and the people buyers are assigned to — so a filter can pick a value
+ * that is not on the page loaded so far.
+ */
+async function facetsFor(
+  tab: 'book' | 'queue' | undefined,
+  ownerEmployeeIdByBuyer: Map<string, unknown>,
+): Promise<BuyerListFacets> {
+  const inTab = (await Buyer.find({}, { tehsilId: 1 })).filter((b) => {
+    const owned = ownerEmployeeIdByBuyer.has((b._id as Types.ObjectId).toString());
+    return tab === 'book' ? owned : tab === 'queue' ? !owned : true;
+  });
+  const tehsils = await Tehsil.find(
+    { _id: { $in: inTab.map((b) => b.tehsilId).filter(Boolean) }, districtId: { $ne: null } },
+    { districtId: 1, district: 1 },
+  );
+  const districts = new Map<string, string>();
+  for (const t of tehsils) districts.set(String(t.districtId), t.district ?? '');
+  const ownerIds =
+    tab === 'queue'
+      ? []
+      : [
+          ...new Set(
+            inTab
+              .map((b) => ownerEmployeeIdByBuyer.get((b._id as Types.ObjectId).toString()))
+              .filter(Boolean)
+              .map(String),
+          ),
+        ];
+  const people = await Employee.find({ _id: { $in: ownerIds } }, { person: 1 });
+  return {
+    districts: [...districts]
+      .map(([districtId, name]) => ({ districtId, name }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    assignees: people
+      .map((e) => ({ employeeId: String(e._id), person: e.person }))
+      .sort((a, b) => a.person.localeCompare(b.person)),
+  };
+}
+
+/** 29 Oct — his pile requests the seller has not decided, and his places in pools still filling. */
+async function listWaitingOnSeller(
+  buyer: InstanceType<typeof Buyer>,
+): Promise<BuyerFileWaitingOnSeller[]> {
+  const [requests, commitments] = await Promise.all([
+    PileRequest.find({ buyerId: buyer._id }),
+    PoolCommitment.find({ buyerId: buyer._id, withdrawnAt: null }),
+  ]);
+  const piles = requests.length
+    ? await Pile.find({ _id: { $in: requests.map((r) => r.pileId) }, decision: null })
+    : [];
+  const pileById = new Map(piles.map((p) => [String(p._id), p]));
+  const lines = piles.length
+    ? await ListingLine.find({ _id: { $in: piles.map((p) => p.listingLineId) } })
+    : [];
+  const lineById = new Map(lines.map((l) => [String(l._id), l]));
+  const pools = commitments.length
+    ? await Pool.find({ _id: { $in: commitments.map((c) => c.poolId) }, isActive: true })
+    : [];
+  const poolById = new Map(pools.map((p) => [String(p._id), p]));
+  const poolBoxes = new Map<string, number>();
+  if (pools.length) {
+    const all = await PoolCommitment.find({
+      poolId: { $in: pools.map((p) => p._id) },
+      withdrawnAt: null,
+    });
+    for (const c of all)
+      poolBoxes.set(String(c.poolId), (poolBoxes.get(String(c.poolId)) ?? 0) + c.qty);
+  }
+  const skuIds = [...lines.map((l) => l.skuId), ...pools.map((p) => p.skuId)];
+  const skus = skuIds.length ? await Sku.find({ _id: { $in: skuIds } }) : [];
+  const skuById = new Map(skus.map((x) => [String(x._id), x]));
+  const products = skus.length
+    ? await Product.find({ _id: { $in: skus.map((x) => x.productId) } })
+    : [];
+  const productById = new Map(products.map((x) => [String(x._id), x]));
+  const named = (skuId: unknown) => {
+    const sku = skuById.get(String(skuId));
+    const product = sku ? productById.get(String(sku.productId)) : undefined;
+    return {
+      productId: product ? String(product._id) : null,
+      brand: product?.brand ?? '—',
+      packLabel: sku?.packLabel ?? null,
+    };
+  };
+
+  const rows: BuyerFileWaitingOnSeller[] = [];
+  for (const r of requests) {
+    const pile = pileById.get(String(r.pileId));
+    const line = pile ? lineById.get(String(pile.listingLineId)) : undefined;
+    if (!pile || !line) continue;
+    rows.push({
+      kind: 'pile',
+      id: String(r._id),
+      ...named(line.skuId),
+      qty: r.qty,
+      ratePaise: await computeBuyerFacingRatePaise(buyer, line.skuId, line.ratePaise),
+      requestedAt: r.requestedAt.toISOString(),
+      decideBy: pile.confirmWindowEndsAt.toISOString(),
+      pool: null,
+    });
+  }
+  for (const c of commitments) {
+    const pool = poolById.get(String(c.poolId));
+    if (!pool) continue;
+    rows.push({
+      kind: 'pool',
+      id: String(c._id),
+      ...named(pool.skuId),
+      qty: c.qty,
+      ratePaise: null,
+      requestedAt: (c as unknown as { createdAt: Date }).createdAt.toISOString(),
+      decideBy: null,
+      pool: {
+        committedBoxes: poolBoxes.get(String(pool._id)) ?? 0,
+        moq: pool.moq,
+        status: pool.status,
+      },
+    });
+  }
+  return rows.sort((a, b) => b.requestedAt.localeCompare(a.requestedAt));
 }

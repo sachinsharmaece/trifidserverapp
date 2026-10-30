@@ -11,6 +11,7 @@ import { Po } from '../../models/Po.js';
 import { So } from '../../models/So.js';
 import { Buyer } from '../../models/Buyer.js';
 import { Seller } from '../../models/Seller.js';
+import { Counterparty } from '../../models/Counterparty.js';
 import { BankDetail } from '../../models/BankDetail.js';
 import { ReceiptConfirmation } from '../../models/ReceiptConfirmation.js';
 import { AppError } from '../../shared/errors.js';
@@ -973,30 +974,53 @@ export async function runDayClose(
 // Sales and purchase registers
 // ---------------------------------------------------------------------------
 
+// Firm name per buyer/seller profile id, so a register row names the firm
+// instead of showing a raw database id on screen.
+async function firmByProfileId(
+  profiles: Array<{ _id: unknown; counterpartyId: unknown }>,
+): Promise<Map<string, string>> {
+  const counterparties = await Counterparty.find(
+    { _id: { $in: profiles.map((p) => p.counterpartyId) } },
+    { firm: 1 },
+  );
+  const firmByCounterpartyId = new Map(
+    counterparties.map((c) => [(c._id as Types.ObjectId).toString(), c.firm ?? '—']),
+  );
+  return new Map(
+    profiles.map((p) => [String(p._id), firmByCounterpartyId.get(String(p.counterpartyId)) ?? '—']),
+  );
+}
+
 export async function getSalesRegister(): Promise<
-  Array<{ soId: string; soNo: string; buyerId: string; totalPaise: Paise }>
+  Array<{ soId: string; soNo: string; buyerId: string; buyerFirm: string; totalPaise: Paise }>
 > {
   // WF-08 steps 4–5 — the SO enters the sales register the moment leg 2
   // dispatches, not only once the (M5-built) 7-day delivery window closes.
   const closedSos = await So.find({ state: { $in: ['dispatched_leg2', 'delivered', 'closed'] } })
     .sort({ updatedAt: -1 })
     .limit(200);
+  const buyers = await Buyer.find({ _id: { $in: closedSos.map((so) => so.buyerId) } });
+  const firmByBuyerId = await firmByProfileId(buyers);
   return closedSos.map((so) => ({
     soId: (so._id as Types.ObjectId).toString(),
     soNo: so.soNo,
     buyerId: (so.buyerId as Types.ObjectId).toString(),
+    buyerFirm: firmByBuyerId.get(String(so.buyerId)) ?? '—',
     totalPaise: so.totalPaise,
   }));
 }
 
 export async function getPurchaseRegister(): Promise<
-  Array<{ poId: string; poNo: string; sellerId: string; billed: boolean }>
+  Array<{ poId: string; poNo: string; sellerId: string; sellerFirm: string; billed: boolean }>
 > {
   const bookedPos = await Po.find({ billed: true }).sort({ updatedAt: -1 }).limit(200);
+  const sellers = await Seller.find({ _id: { $in: bookedPos.map((po) => po.sellerId) } });
+  const firmBySellerId = await firmByProfileId(sellers);
   return bookedPos.map((po) => ({
     poId: (po._id as Types.ObjectId).toString(),
     poNo: po.poNo,
     sellerId: (po.sellerId as Types.ObjectId).toString(),
+    sellerFirm: firmBySellerId.get(String(po.sellerId)) ?? '—',
     billed: po.billed,
   }));
 }

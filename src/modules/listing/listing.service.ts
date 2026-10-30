@@ -19,6 +19,7 @@ import { Counterparty } from '../../models/Counterparty.js';
 import { Tehsil } from '../../models/Tehsil.js';
 import { Sku } from '../../models/Sku.js';
 import { Product } from '../../models/Product.js';
+import { isProductSellable, unsellableProductIds } from './listing.sellable.js';
 import { Manufacturer } from '../../models/Manufacturer.js';
 import { Pool, buildConditionSetKey } from '../../models/Pool.js';
 import { Pile } from '../../models/Pile.js';
@@ -221,6 +222,14 @@ export async function createListing(
       field: 'productId',
     });
   }
+  // 25 Oct — a product switched off in Manage cannot back a new listing.
+  if (!product.active || product.deletedAt) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'This product is inactive — Admin has switched it off in Manage → Products.',
+      field: 'productId',
+    });
+  }
   const manufacturer = await Manufacturer.findById(product.manufacturerId);
   if (manufacturer?.state === 'draft') {
     throw new AppError({
@@ -245,6 +254,13 @@ export async function createListing(
       throw new AppError({
         code: 'VALIDATION_FAILED',
         messageEn: 'This pack is still a draft — Admin has not confirmed it yet.',
+        field: 'skuId',
+      });
+    }
+    if (!sku.active || sku.deletedAt) {
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: `The pack ${sku.packLabel} is inactive — Admin has switched it off in Manage → Products.`,
         field: 'skuId',
       });
     }
@@ -428,6 +444,13 @@ export async function relistListing(
   const seller = await Seller.findOne({ counterpartyId: sellerCounterpartyId });
   const listing = await Listing.findOne({ _id: listingId, sellerId: seller?._id });
   if (!listing) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Listing not found.' });
+  // 30 Oct — a paused listing on a product TriFid no longer sells stays paused (BR-370).
+  if (!(await isProductSellable(listing.productId as Types.ObjectId))) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'This product is no longer sold on TriFid, so the listing cannot go live again.',
+    });
+  }
   listing.state = 'live';
   listing.pausedAt = null;
   listing.expiresAt = new Date(Date.now() + LISTING_LIFE_DAYS * 24 * 60 * 60 * 1000);
@@ -550,7 +573,11 @@ async function findVisibleLines(
   buyerCounterpartyId: string,
   buyerGstin: string,
 ): Promise<VisibleLine[]> {
-  const listings = await Listing.find({ state: 'live', frozenTehsilIds: buyerTehsilId });
+  const listings = await Listing.find({
+    state: 'live',
+    frozenTehsilIds: buyerTehsilId,
+    productId: { $nin: await unsellableProductIds() }, // 30 Oct — inactive/deleted products are not sold.
+  });
   const sellerIds = [...new Set(listings.map((l) => (l.sellerId as Types.ObjectId).toString()))];
   const sellers = await Seller.find({ _id: { $in: sellerIds } });
   const sellerCounterpartyById = new Map(
@@ -615,7 +642,7 @@ export async function listPricedLinesVisibleToBuyerDoc(
   const visible = await findVisibleLines(
     (buyer.tehsilId as Types.ObjectId).toString(),
     (buyer.counterpartyId as Types.ObjectId).toString(),
-    counterparty?.gstin ?? '',
+    counterparty?.gstin ?? counterparty?.pan ?? '',
   );
   return priceForBuyer(buyer, visible);
 }
@@ -658,7 +685,7 @@ export async function getBuyerFeed(
   const visible = await findVisibleLines(
     (buyer.tehsilId as Types.ObjectId).toString(),
     buyerCounterpartyId,
-    counterparty.gstin ?? '',
+    counterparty.gstin ?? counterparty.pan ?? '',
   );
   const priced = await priceForBuyer(buyer, visible);
 
@@ -709,6 +736,7 @@ export async function getBuyerFeed(
 
 export interface BuyerOfferDto {
   listingLineId: string;
+  skuId: string;
   ratePaise: Paise;
   conditions: BuyerConditionTagsDto;
   hasPool: boolean;
@@ -726,7 +754,7 @@ export async function getProductOffers(
   const visible = await findVisibleLines(
     (buyer.tehsilId as Types.ObjectId).toString(),
     buyerCounterpartyId,
-    counterparty.gstin ?? '',
+    counterparty.gstin ?? counterparty.pan ?? '',
   );
   const priced = await priceForBuyer(
     buyer,
@@ -740,6 +768,8 @@ export async function getProductOffers(
   return {
     offers: priced.map((v) => ({
       listingLineId: (v.line._id as Types.ObjectId).toString(),
+      // 29 Oct — so his ask form can tell a listed pack and send him to Buy instead.
+      skuId: (v.line.skuId as Types.ObjectId).toString(),
       ratePaise: v.buyerRatePaise,
       conditions: toConditionTags(v.line),
       hasPool: pools.some(
@@ -780,7 +810,13 @@ export async function getListingLineForBuy(
 
   // WF-03 — a direct link to something outside scope returns the same
   // shape and the same latency as something that does not exist (BR-065).
-  if (!line || !listing || listing.state !== 'live') {
+  // 30 Oct — an inactive or deleted product is not sold; it reads as not found, like the rest.
+  if (
+    !line ||
+    !listing ||
+    listing.state !== 'live' ||
+    !(await isProductSellable(listing.productId as Types.ObjectId))
+  ) {
     throw new AppError({ code: 'NOT_VISIBLE', messageEn: 'Not found.' });
   }
   const seller = await Seller.findById(listing.sellerId);
@@ -791,7 +827,8 @@ export async function getListingLineForBuy(
       frozenTehsilIds: listing.frozenTehsilIds.map((id) => id.toString()),
     },
     {
-      gstin: counterparty.gstin ?? '',
+      // Phase 3 — GSTIN, or PAN for a buyer without one (exclusions use the same key).
+      gstin: counterparty.gstin ?? counterparty.pan ?? '',
       tehsilId: (buyer.tehsilId as Types.ObjectId).toString(),
       counterpartyId: buyerCounterpartyId,
     },
@@ -829,7 +866,59 @@ export async function getListingLineForBuy(
 
 interface InquireInput {
   qty: number;
-  deliveryLocationId: string;
+  deliveryLocationId?: string;
+}
+
+/**
+ * 29 Oct — where an inquiry or pool place delivers when none is named: his primary delivery
+ * location, else his first, else `null` — his registered address.
+ */
+export async function defaultDeliveryLocationId(
+  buyerId: Types.ObjectId,
+): Promise<Types.ObjectId | null> {
+  const locations = await BuyerLocation.find({ buyerId, deletedAt: null }).sort({ createdAt: 1 });
+  const chosen = locations.find((l) => l.isPrimary) ?? locations[0];
+  return chosen ? (chosen._id as Types.ObjectId) : null;
+}
+
+/**
+ * A live listing line this buyer can see — the same rule his own board uses. Anything else
+ * reads as "Not found", so a line outside his area never confirms it exists.
+ */
+export async function requireLineVisibleToBuyer(
+  buyerCounterpartyId: string,
+  listingLineId: string,
+) {
+  const { buyer, counterparty } = await requireActiveBuyer(buyerCounterpartyId);
+  await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new inquiries.
+  const line = await ListingLine.findById(listingLineId);
+  const listing = line ? await Listing.findById(line.listingId) : null;
+  // 30 Oct — an inactive or deleted product is not sold; it reads as not found, like the rest.
+  if (
+    !line ||
+    !listing ||
+    listing.state !== 'live' ||
+    !(await isProductSellable(listing.productId as Types.ObjectId))
+  ) {
+    throw new AppError({ code: 'NOT_VISIBLE', messageEn: 'Not found.' });
+  }
+  const seller = await Seller.findById(listing.sellerId);
+  const blockLookup = await sellerBlockLookupFor(listing.sellerId as Types.ObjectId);
+  const visible = resolveVisibility(
+    {
+      sellerId: (seller!.counterpartyId as Types.ObjectId).toString(),
+      frozenTehsilIds: listing.frozenTehsilIds.map((id) => id.toString()),
+    },
+    {
+      // Phase 3 — GSTIN, or PAN for a buyer without one (exclusions use the same key).
+      gstin: counterparty.gstin ?? counterparty.pan ?? '',
+      tehsilId: (buyer.tehsilId as Types.ObjectId).toString(),
+      counterpartyId: buyerCounterpartyId,
+    },
+    blockLookup,
+  );
+  if (!visible) throw new AppError({ code: 'NOT_VISIBLE', messageEn: 'Not found.' });
+  return { buyer, counterparty, line, listing };
 }
 
 /**
@@ -844,29 +933,13 @@ export async function createPileRequest(
   buyerCounterpartyId: string,
   listingLineId: string,
   input: InquireInput,
+  // 29 Oct — Sales may put him on a listed offer on a call; the enquiry then records that.
+  options: { channel?: 'self' | 'sales_call'; raisedBy?: string } = {},
 ): Promise<{ pileId: string; enquiryId: string | null }> {
-  const { buyer, counterparty } = await requireActiveBuyer(buyerCounterpartyId);
-  await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new inquiries.
-  const line = await ListingLine.findById(listingLineId);
-  const listing = line ? await Listing.findById(line.listingId) : null;
-  if (!line || !listing || listing.state !== 'live') {
-    throw new AppError({ code: 'NOT_VISIBLE', messageEn: 'Not found.' });
-  }
-  const seller = await Seller.findById(listing.sellerId);
-  const blockLookup = await sellerBlockLookupFor(listing.sellerId as Types.ObjectId);
-  const visible = resolveVisibility(
-    {
-      sellerId: (seller!.counterpartyId as Types.ObjectId).toString(),
-      frozenTehsilIds: listing.frozenTehsilIds.map((id) => id.toString()),
-    },
-    {
-      gstin: counterparty.gstin ?? '',
-      tehsilId: (buyer.tehsilId as Types.ObjectId).toString(),
-      counterpartyId: buyerCounterpartyId,
-    },
-    blockLookup,
+  const { buyer, line, listing } = await requireLineVisibleToBuyer(
+    buyerCounterpartyId,
+    listingLineId,
   );
-  if (!visible) throw new AppError({ code: 'NOT_VISIBLE', messageEn: 'Not found.' });
 
   if (input.qty < line.moqExact) {
     throw new AppError({
@@ -875,17 +948,23 @@ export async function createPileRequest(
       field: 'qty',
     });
   }
-  const location = await BuyerLocation.findOne({
-    _id: input.deliveryLocationId,
-    buyerId: buyer._id,
-    deletedAt: null,
-  });
-  if (!location) {
-    throw new AppError({
-      code: 'VALIDATION_FAILED',
-      messageEn: 'Delivery location not found.',
-      field: 'deliveryLocationId',
+  let deliveryLocationId: Types.ObjectId | null;
+  if (input.deliveryLocationId) {
+    const location = await BuyerLocation.findOne({
+      _id: input.deliveryLocationId,
+      buyerId: buyer._id,
+      deletedAt: null,
     });
+    if (!location) {
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: 'Delivery location not found.',
+        field: 'deliveryLocationId',
+      });
+    }
+    deliveryLocationId = location._id as Types.ObjectId;
+  } else {
+    deliveryLocationId = await defaultDeliveryLocationId(buyer._id as Types.ObjectId);
   }
 
   let pile = await Pile.findOne({ listingLineId: line._id });
@@ -908,8 +987,9 @@ export async function createPileRequest(
     const enquiryId = await createTradeEnquiryInSession(
       {
         kind: 'pile_request',
-        channel: 'self',
+        channel: options.channel ?? 'self',
         raisedAt: now,
+        raisedBy: options.raisedBy ?? null,
         buyerId: buyer._id as Types.ObjectId,
         skuId: line.skuId as Types.ObjectId,
         productId: listing.productId as Types.ObjectId,
@@ -926,7 +1006,7 @@ export async function createPileRequest(
           pileId: pile._id,
           buyerId: buyer._id,
           qty: input.qty,
-          deliveryLocationId: location._id,
+          deliveryLocationId,
           requestedAt: now,
           enquiryId,
         },
