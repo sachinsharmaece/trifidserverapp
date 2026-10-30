@@ -19,6 +19,7 @@ import { Counterparty } from '../../models/Counterparty.js';
 import { Tehsil } from '../../models/Tehsil.js';
 import { Sku } from '../../models/Sku.js';
 import { Product } from '../../models/Product.js';
+import { isProductSellable, unsellableProductIds } from './listing.sellable.js';
 import { Manufacturer } from '../../models/Manufacturer.js';
 import { Pool, buildConditionSetKey } from '../../models/Pool.js';
 import { Pile } from '../../models/Pile.js';
@@ -443,6 +444,13 @@ export async function relistListing(
   const seller = await Seller.findOne({ counterpartyId: sellerCounterpartyId });
   const listing = await Listing.findOne({ _id: listingId, sellerId: seller?._id });
   if (!listing) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Listing not found.' });
+  // 30 Oct — a paused listing on a product TriFid no longer sells stays paused (BR-370).
+  if (!(await isProductSellable(listing.productId as Types.ObjectId))) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'This product is no longer sold on TriFid, so the listing cannot go live again.',
+    });
+  }
   listing.state = 'live';
   listing.pausedAt = null;
   listing.expiresAt = new Date(Date.now() + LISTING_LIFE_DAYS * 24 * 60 * 60 * 1000);
@@ -565,7 +573,11 @@ async function findVisibleLines(
   buyerCounterpartyId: string,
   buyerGstin: string,
 ): Promise<VisibleLine[]> {
-  const listings = await Listing.find({ state: 'live', frozenTehsilIds: buyerTehsilId });
+  const listings = await Listing.find({
+    state: 'live',
+    frozenTehsilIds: buyerTehsilId,
+    productId: { $nin: await unsellableProductIds() }, // 30 Oct — inactive/deleted products are not sold.
+  });
   const sellerIds = [...new Set(listings.map((l) => (l.sellerId as Types.ObjectId).toString()))];
   const sellers = await Seller.find({ _id: { $in: sellerIds } });
   const sellerCounterpartyById = new Map(
@@ -798,7 +810,13 @@ export async function getListingLineForBuy(
 
   // WF-03 — a direct link to something outside scope returns the same
   // shape and the same latency as something that does not exist (BR-065).
-  if (!line || !listing || listing.state !== 'live') {
+  // 30 Oct — an inactive or deleted product is not sold; it reads as not found, like the rest.
+  if (
+    !line ||
+    !listing ||
+    listing.state !== 'live' ||
+    !(await isProductSellable(listing.productId as Types.ObjectId))
+  ) {
     throw new AppError({ code: 'NOT_VISIBLE', messageEn: 'Not found.' });
   }
   const seller = await Seller.findById(listing.sellerId);
@@ -875,7 +893,13 @@ export async function requireLineVisibleToBuyer(
   await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new inquiries.
   const line = await ListingLine.findById(listingLineId);
   const listing = line ? await Listing.findById(line.listingId) : null;
-  if (!line || !listing || listing.state !== 'live') {
+  // 30 Oct — an inactive or deleted product is not sold; it reads as not found, like the rest.
+  if (
+    !line ||
+    !listing ||
+    listing.state !== 'live' ||
+    !(await isProductSellable(listing.productId as Types.ObjectId))
+  ) {
     throw new AppError({ code: 'NOT_VISIBLE', messageEn: 'Not found.' });
   }
   const seller = await Seller.findById(listing.sellerId);

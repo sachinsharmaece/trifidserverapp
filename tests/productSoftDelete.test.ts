@@ -9,7 +9,13 @@ import { Sku } from '../src/models/Sku.js';
 import { Ask } from '../src/models/Ask.js';
 import { Listing } from '../src/models/Listing.js';
 import { AuditLog } from '../src/models/AuditLog.js';
+import { Counterparty } from '../src/models/Counterparty.js';
+import { Seller } from '../src/models/Seller.js';
+import { ListingLine } from '../src/models/ListingLine.js';
+import { relistListing } from '../src/modules/listing/listing.service.js';
+import { getBoardProducts, getBoardProduct } from '../src/modules/desk/sales/sales.board.js';
 import { staffToken } from './m4helpers.js';
+import { randomMobile } from './helpers.js';
 
 /**
  * 29 Oct — soft delete of a product from Manage → Products (BR-370): it leaves every list and
@@ -94,8 +100,15 @@ describe('Manage → Products — soft delete (29 Oct)', () => {
     const tag = `Use${Date.now()}`;
     const { product, sku } = await makeProduct(tag);
     const id = String(product._id);
+    const sellerCp = await Counterparty.create({
+      kind: 'seller',
+      status: 'active',
+      firm: `${tag} Seller`,
+      mobile: randomMobile(),
+    });
+    const seller = await Seller.create({ counterpartyId: sellerCp._id });
     const listing = await Listing.create({
-      sellerId: new Types.ObjectId(),
+      sellerId: seller._id,
       productId: product._id,
       origin: 'seller_initiated',
       scopeType: 'all_india',
@@ -117,14 +130,66 @@ describe('Manage → Products — soft delete (29 Oct)', () => {
     const refused = await as(admin.token).del(`/admin/products/${id}`);
     expect(refused.status).toBe(409);
     expect(refused.body.error.code).toBe('PRODUCT_IN_USE');
-    expect(refused.body.error.message_en).toMatch(/1 live listing, 1 open ask/);
+    // 30 Oct — it names whose listing it is, and no longer suggests unticking Active.
+    expect(refused.body.error.meta.reasons).toEqual([
+      `1 live listing (${tag} Seller)`,
+      '1 open ask',
+    ]);
+    expect(refused.body.error.message_en).not.toMatch(/untick Active/);
     expect((await Product.findById(id))!.deletedAt).toBeNull();
 
-    // Once the listing is withdrawn and the ask closed, it can go.
-    listing.state = 'withdrawn';
+    // 30 Oct — a paused listing no longer holds it (it is off every board, and cannot relist
+    // once the product is gone); the closed ask lets it go.
+    listing.state = 'paused';
     await listing.save();
     await Ask.updateMany({ skuId: sku._id }, { state: 'withdrawn' });
     expect((await as(admin.token).del(`/admin/products/${id}`)).status).toBe(200);
+    await expect(relistListing(String(sellerCp._id), String(listing._id))).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+    });
+    expect((await Listing.findById(listing._id))!.state).toBe('paused');
+  });
+
+  it('an inactive product is off the Sales board until it is ticked Active again (30 Oct)', async () => {
+    const tag = `Off${Date.now()}`;
+    const { product, sku } = await makeProduct(tag);
+    const sellerCp = await Counterparty.create({
+      kind: 'seller',
+      status: 'active',
+      firm: `${tag} Seller`,
+      mobile: randomMobile(),
+    });
+    const seller = await Seller.create({ counterpartyId: sellerCp._id });
+    const listing = await Listing.create({
+      sellerId: seller._id,
+      productId: product._id,
+      origin: 'seller_initiated',
+      scopeType: 'all_india',
+      state: 'live',
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await ListingLine.create({
+      listingId: listing._id,
+      skuId: sku._id,
+      ratePaise: 39000,
+      expiryBand: 'over12',
+      moqExact: 1,
+      deliveryBand: '2-5d',
+      provenance: 'company',
+      qty: 100,
+    });
+    const onBoard = async () =>
+      (await getBoardProducts()).some((r) => r.productId === String(product._id));
+    expect(await onBoard()).toBe(true);
+
+    await Product.updateOne({ _id: product._id }, { active: false });
+    expect(await onBoard()).toBe(false);
+    expect((await getBoardProduct(String(product._id), {})).ladder).toEqual([]);
+    // The listing itself is untouched, so ticking Active brings it straight back.
+    expect((await Listing.findById(listing._id))!.state).toBe('live');
+
+    await Product.updateOne({ _id: product._id }, { active: true });
+    expect(await onBoard()).toBe(true);
   });
 
   it('needs catalog:write', async () => {

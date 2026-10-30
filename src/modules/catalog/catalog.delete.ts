@@ -8,6 +8,8 @@ import { Pile } from '../../models/Pile.js';
 import { Pool } from '../../models/Pool.js';
 import { So } from '../../models/So.js';
 import { SoLine } from '../../models/SoLine.js';
+import { Seller } from '../../models/Seller.js';
+import { Counterparty } from '../../models/Counterparty.js';
 import { AppError } from '../../shared/errors.js';
 
 /**
@@ -22,6 +24,8 @@ const FINISHED_SO_STATES = ['delivered', 'closed', 'cancelled', 'supply_failed']
 
 export interface ProductInUse {
   liveListings: number;
+  /** 30 Oct — whose they are, so Admin knows whom to ask to pause them. */
+  liveListingSellers: string[];
   openAsks: number;
   pilesWaiting: number;
   openPools: number;
@@ -31,7 +35,22 @@ export interface ProductInUse {
 /** What still points at this product; all zero means it can go. */
 export async function productInUse(productId: Types.ObjectId): Promise<ProductInUse> {
   const skuIds = (await Sku.find({ productId }, { _id: 1 })).map((s) => s._id);
-  const listings = await Listing.find({ productId, deletedAt: null }, { _id: 1, state: 1 });
+  const listings = await Listing.find(
+    { productId, deletedAt: null },
+    { _id: 1, state: 1, sellerId: 1 },
+  );
+  // 30 Oct — only a live listing holds it: a paused one is off every board, and cannot go live
+  // again once the product is inactive or deleted (`relistListing`).
+  const live = listings.filter((l) => l.state === 'live');
+  const sellers = live.length
+    ? await Seller.find({ _id: { $in: live.map((l) => l.sellerId) } }, { counterpartyId: 1 })
+    : [];
+  const firms = sellers.length
+    ? await Counterparty.find({ _id: { $in: sellers.map((s) => s.counterpartyId) } }, { firm: 1 })
+    : [];
+  const liveListingSellers = [
+    ...new Set(firms.map((f) => f.firm).filter((f): f is string => Boolean(f))),
+  ].sort();
   const lineIds = listings.length
     ? (await ListingLine.find({ listingId: { $in: listings.map((l) => l._id) } }, { _id: 1 })).map(
         (l) => l._id,
@@ -50,7 +69,8 @@ export async function productInUse(productId: Types.ObjectId): Promise<ProductIn
       : 0,
   ]);
   return {
-    liveListings: listings.filter((l) => l.state === 'live' || l.state === 'paused').length,
+    liveListings: live.length,
+    liveListingSellers,
     openAsks,
     pilesWaiting,
     openPools,
@@ -64,7 +84,10 @@ function plural(n: number, one: string, many: string): string {
 
 function describeInUse(u: ProductInUse): string[] {
   return [
-    u.liveListings ? plural(u.liveListings, 'live listing', 'live listings') : null,
+    u.liveListings
+      ? plural(u.liveListings, 'live listing', 'live listings') +
+        (u.liveListingSellers.length ? ` (${u.liveListingSellers.join(', ')})` : '')
+      : null,
     u.openAsks ? plural(u.openAsks, 'open ask', 'open asks') : null,
     u.pilesWaiting
       ? plural(u.pilesWaiting, 'request waiting on a seller', 'requests waiting on a seller')
@@ -96,7 +119,7 @@ export async function deleteProduct(
   if (reasons.length > 0) {
     throw new AppError({
       code: 'PRODUCT_IN_USE',
-      messageEn: `${product.brand} is still in use: ${reasons.join(', ')}. Close these first, or untick Active to stop selling it.`,
+      messageEn: `${product.brand} is still in use: ${reasons.join(', ')}. Ask the seller to pause a live listing, and let the rest finish, then delete it.`,
       meta: { inUse, reasons },
     });
   }
