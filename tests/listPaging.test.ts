@@ -8,6 +8,7 @@ import { Buyer } from '../src/models/Buyer.js';
 import { Seller } from '../src/models/Seller.js';
 import { BookAssignment } from '../src/models/BookAssignment.js';
 import { Tehsil } from '../src/models/Tehsil.js';
+import { CallLog } from '../src/models/CallLog.js';
 import type { Types } from 'mongoose';
 import { staffToken } from './m4helpers.js';
 import { randomMobile } from './helpers.js';
@@ -151,6 +152,55 @@ describe('Sales → Buyers — pages with every filter option', () => {
     expect(second.body.meta.nextCursor).toBeUndefined();
     // Without a limit, the whole list as before (the top-bar search).
     expect((await get(`/staff/sales/buyers?q=${tag}`)).body.data).toHaveLength(3);
+  });
+
+  it('shows when each buyer was last called and by whom, and sorts on it (30 Oct)', async () => {
+    const tag = `Call${Date.now()}`;
+    const day = 86_400_000;
+    const make = async (firm: string) => {
+      const cp = await Counterparty.create({
+        kind: 'buyer',
+        status: 'active',
+        firm: `${tag} ${firm}`,
+        mobile: randomMobile(),
+      });
+      return Buyer.create({ counterpartyId: cp._id });
+    };
+    const tenDays = await make('Alpha');
+    const yesterday = await make('Bravo');
+    const never = await make('Charlie');
+    const log = (buyerId: unknown, kind: string, at: Date) =>
+      CallLog.create({
+        buyerId,
+        employeeId: admin.employeeId,
+        kind,
+        note: 'test',
+        at,
+        ...(kind === 'call' ? { outcome: 'asked_for_a_rate' } : {}),
+      });
+    await log(tenDays._id, 'call', new Date(Date.now() - 10 * day));
+    await log(yesterday._id, 'update_request', new Date(Date.now() - day));
+    // A note is not a conversation: it neither counts nor moves the date.
+    await log(tenDays._id, 'note', new Date());
+    await log(never._id, 'note', new Date());
+
+    type Row = { firm: string; lastCalledAt: string | null; lastCalledBy: string | null };
+    const rows = (await get(`/staff/sales/buyers?q=${tag}&limit=10`)).body.data as Row[];
+    const byFirm = new Map(rows.map((r) => [r.firm, r]));
+    const ago = (r: Row) => Math.round((Date.now() - Date.parse(r.lastCalledAt!)) / day);
+    expect(ago(byFirm.get(`${tag} Alpha`)!)).toBe(10);
+    expect(byFirm.get(`${tag} Alpha`)!.lastCalledBy).toBe('Test admin');
+    expect(ago(byFirm.get(`${tag} Bravo`)!)).toBe(1);
+    expect(byFirm.get(`${tag} Charlie`)).toMatchObject({ lastCalledAt: null, lastCalledBy: null });
+
+    const firms = (body: { data: Row[] }) => body.data.map((r) => r.firm.replace(`${tag} `, ''));
+    // Longest ago first: never called leads.
+    expect(
+      firms((await get(`/staff/sales/buyers?q=${tag}&limit=10&sort=lastCalled`)).body),
+    ).toEqual(['Charlie', 'Alpha', 'Bravo']);
+    expect(
+      firms((await get(`/staff/sales/buyers?q=${tag}&limit=10&sort=lastCalled&dir=desc`)).body),
+    ).toEqual(['Bravo', 'Alpha', 'Charlie']);
   });
 
   it('sorts firm A→Z by default, across pages; Z→A, rate views and tehsil on request', async () => {

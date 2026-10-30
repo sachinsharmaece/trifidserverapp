@@ -29,6 +29,7 @@ import {
   type FunnelKey,
 } from './sales.funnel.js';
 import { listCallLogsForBuyer, type CallLogDto } from './sales.calls.js';
+import { CallLog } from '../../../models/CallLog.js';
 import { listOrders, type SalesOrderRow } from './sales.orders.js';
 
 // B-52 — `tradePosition` is stored lowercase (the enum); `rateTier` (the
@@ -68,6 +69,9 @@ export interface BuyerListRow {
   assignedToEmployeeId: string | null;
   orderCount: number;
   lastOrderAt: string | null;
+  /** 30 Oct — the newest call or update request (not a note), and who made it; null = never. */
+  lastCalledAt: string | null;
+  lastCalledBy: string | null;
   rateViews: number;
   ownerName: string | null; // The Sales employee whose book he is in — not the firm's owner.
   contactName: string | null; // The firm's own owner, from the counterparty.
@@ -107,6 +111,7 @@ export const BUYER_LIST_SORTS = [
   'registered',
   'orders',
   'lastOrder',
+  'lastCalled',
   'rateViews',
 ] as const;
 export type BuyerListSort = (typeof BUYER_LIST_SORTS)[number];
@@ -205,6 +210,22 @@ export async function listBuyersPage(
   const orderStatsByBuyer = new Map(
     statRows.map((r) => [r._id.toString(), { count: r.count, lastOrderAt: r.lastOrderAt }]),
   );
+  // 30 Oct — his last conversation with us: a call or an update request, never a note.
+  const callRows = buyers.length
+    ? await CallLog.aggregate<{ _id: Types.ObjectId; at: Date; employeeId: Types.ObjectId }>([
+        {
+          $match: {
+            buyerId: { $in: buyers.map((b) => b._id) },
+            kind: { $in: ['call', 'update_request'] },
+          },
+        },
+        { $sort: { at: -1 } },
+        {
+          $group: { _id: '$buyerId', at: { $first: '$at' }, employeeId: { $first: '$employeeId' } },
+        },
+      ])
+    : [];
+  const lastCallByBuyer = new Map(callRows.map((r) => [r._id.toString(), r]));
 
   const tehsilKey = (b: (typeof buyers)[number]) =>
     b.tehsilId ? (tehsilNameById.get((b.tehsilId as Types.ObjectId).toString()) ?? null) : null;
@@ -225,6 +246,9 @@ export async function listBuyersPage(
         return stats?.count ?? null;
       case 'lastOrder':
         return stats?.lastOrderAt ? stats.lastOrderAt.getTime() : null;
+      case 'lastCalled':
+        // Never called counts as longest ago: first when oldest-first, last when newest-first.
+        return lastCallByBuyer.get((b._id as Types.ObjectId).toString())?.at.getTime() ?? 0;
       case 'rateViews':
         return b.rateViews ?? 0;
       default:
@@ -239,7 +263,18 @@ export async function listBuyersPage(
     buyers = buyers.slice(offset, offset + page.limit);
   }
 
-  const employees = await Employee.find({ _id: { $in: [...ownerEmployeeIdByBuyer.values()] } });
+  const employees = await Employee.find({
+    _id: {
+      $in: [
+        ...ownerEmployeeIdByBuyer.values(),
+        // Whoever made each buyer's last call on this page.
+        ...buyers.flatMap((b) => {
+          const call = lastCallByBuyer.get((b._id as Types.ObjectId).toString());
+          return call ? [call.employeeId] : [];
+        }),
+      ],
+    },
+  });
   const employeeNameById = new Map(
     employees.map((e) => [(e._id as Types.ObjectId).toString(), e.person]),
   );
@@ -266,6 +301,10 @@ export async function listBuyersPage(
       assignedToEmployeeId: ownerEmployeeId ? ownerEmployeeId.toString() : null,
       orderCount: stats?.count ?? 0,
       lastOrderAt: stats?.lastOrderAt ? stats.lastOrderAt.toISOString() : null,
+      lastCalledAt: lastCallByBuyer.get(idStr)?.at.toISOString() ?? null,
+      lastCalledBy: lastCallByBuyer.has(idStr)
+        ? (employeeNameById.get(lastCallByBuyer.get(idStr)!.employeeId.toString()) ?? null)
+        : null,
       rateViews: b.rateViews,
       ownerName: ownerEmployeeId
         ? (employeeNameById.get(ownerEmployeeId.toString()) ?? null)
