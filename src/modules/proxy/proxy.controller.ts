@@ -99,7 +99,10 @@ export async function postBuyerCallAsks(req: Request, res: Response): Promise<vo
     typeof proxyRaiseAsksSchema
   >;
   const results: Array<
-    | ({ index: number } & ({ kind: 'ask'; askId: string } | WantsItResult))
+    | ({ index: number } & (
+        | { kind: 'ask'; askId: string; merged: boolean } // merged — added to his open ask (BR-371)
+        | WantsItResult
+      ))
     | { index: number; error: string; code: string | null }
   > = [];
   for (const [index, line] of lines.entries()) {
@@ -139,7 +142,7 @@ export async function postBuyerCallAsks(req: Request, res: Response): Promise<vo
         note: callNote,
         producedAskId: result.askId,
       });
-      results.push({ index, kind: 'ask', askId: result.askId });
+      results.push({ index, kind: 'ask', askId: result.askId, merged: result.merged });
     } catch (error) {
       if (!(error instanceof AppError)) throw error; // A real fault, not a rejected line.
       results.push({ index, error: error.messageEn, code: error.code });

@@ -113,7 +113,7 @@ export async function raiseAsk(
   buyerCounterpartyId: string,
   input: RaiseAskInput,
   options: RaiseAskOptions = {},
-): Promise<{ askId: string; enquiryId: string | null; merged: boolean }> {
+): Promise<{ askId: string; enquiryId: string | null; merged: boolean; qty: number }> {
   const buyer = await requireActiveBuyer(buyerCounterpartyId);
   await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new asks.
   if (!input.skuId && !input.productId) {
@@ -145,6 +145,7 @@ export async function raiseAsk(
         askId: (duplicate._id as Types.ObjectId).toString(),
         enquiryId: duplicate.enquiryId ? (duplicate.enquiryId as Types.ObjectId).toString() : null,
         merged: true,
+        qty: duplicate.qty, // His boxes on it now.
       };
     }
   }
@@ -233,6 +234,7 @@ export async function raiseAsk(
     askId: (ask._id as Types.ObjectId).toString(),
     enquiryId: enquiryId ? enquiryId.toString() : null,
     merged: false,
+    qty: input.qty,
   };
 }
 
