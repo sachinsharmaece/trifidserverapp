@@ -10,6 +10,7 @@ import { SellerBlock } from '../../models/SellerBlock.js';
 import { Counterparty } from '../../models/Counterparty.js';
 import { Refund } from '../../models/Refund.js';
 import { So } from '../../models/So.js';
+import { assertBuyerApproved } from '../../shared/guards.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { addHours, formatForDisplay } from '../../shared/clock.js';
@@ -185,6 +186,7 @@ export async function commitToPool(
       messageEn: 'This account is blocked. Call the sales desk for help.',
     });
   }
+  await assertBuyerApproved(buyer.counterpartyId as Types.ObjectId); // 1 Nov — see guards.ts.
   const pool = await Pool.findById(poolId);
   if (!pool || !pool.isActive)
     throw new AppError({ code: 'POOL_CLOSED', messageEn: 'This pool is not open.' });

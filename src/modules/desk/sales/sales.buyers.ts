@@ -460,6 +460,8 @@ export interface BuyerFileDto {
   buyerId: string;
   counterpartyId: string;
   firm: string;
+  /** 1 Nov — `active` once approved; the call page puts him on offers only then. */
+  accountStatus: string;
   gstin: string | null;
   mobile: string;
   tehsil: string | null;
@@ -701,6 +703,7 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     // seller side).
     counterpartyId: (buyer.counterpartyId as Types.ObjectId).toString(),
     firm: counterparty?.firm ?? '',
+    accountStatus: counterparty?.status ?? 'pending',
     gstin: counterparty?.gstin ?? null,
     mobile: counterparty?.contactMobile ?? counterparty?.mobile ?? '',
     tehsil: tehsil?.name ?? null,

@@ -26,7 +26,7 @@ import { Config } from '../../models/Config.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { addHours, addWorkingHours } from '../../shared/clock.js';
-import { assertCounterpartyActive } from '../../shared/guards.js';
+import { assertBuyerApproved, assertCounterpartyActive } from '../../shared/guards.js';
 import { assertValidObjectId } from '../../shared/objectId.js';
 import type { Paise } from '../../shared/money.js';
 import { createSo } from '../chain/chain.service.js';
@@ -116,6 +116,7 @@ export async function raiseAsk(
 ): Promise<{ askId: string; enquiryId: string | null; merged: boolean; qty: number }> {
   const buyer = await requireActiveBuyer(buyerCounterpartyId);
   await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new asks.
+  await assertBuyerApproved(buyerCounterpartyId); // 1 Nov — his ask could never become an order.
   if (!input.skuId && !input.productId) {
     throw new AppError({ code: 'VALIDATION_FAILED', messageEn: 'A SKU or a product is required.' });
   }

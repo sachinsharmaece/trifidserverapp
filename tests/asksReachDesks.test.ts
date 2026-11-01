@@ -776,6 +776,46 @@ describe('29 Oct — a listed product goes to Confirmations, one not listed to D
       .send(body);
   const lineOf = async (skuId: string) => String((await ListingLine.findOne({ skuId }))!._id);
 
+  it('1 Nov — a buyer not yet approved is stopped at the start, not lost after Confirmations', async () => {
+    const w = await seedWorld({ trustedSeller: false });
+    await Counterparty.updateOne({ _id: w.buyer.counterpartyId }, { status: 'pending' });
+    const file = (await getAs(w.sales.token, `/staff/sales/buyers/${w.buyer.buyerDocId}`)).body
+      .data;
+    expect(file.accountStatus).toBe('pending');
+
+    const res = await wantsIt(w.sales.token, await lineOf(w.skuId), {
+      buyerCounterpartyId: w.buyer.counterpartyId,
+      qty: 4,
+      callNote: 'He wants 4 boxes of this.',
+    });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('ACCOUNT_NOT_ACTIVE');
+    expect(res.body.error.message_en).toMatch(/not approved yet — approve him in Registrations/);
+
+    // The call log says so per line; nothing is written anywhere.
+    const batch = await request(app)
+      .post('/api/v1/staff/proxy/buyer/asks/batch')
+      .set('Authorization', `Bearer ${w.sales.token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        buyerCounterpartyId: w.buyer.counterpartyId,
+        callNote: 'Two products.',
+        lines: [{ skuId: w.skuId, qty: 2, conditionRequirement: { expiryBand: 'over12' } }],
+      });
+    expect(batch.body.data.results[0].error).toMatch(/not approved yet/);
+    expect(await PileRequest.countDocuments({ buyerId: w.buyer.buyerDocId })).toBe(0);
+    expect(await Ask.countDocuments({ buyerId: w.buyer.buyerDocId })).toBe(0);
+
+    // Once approved, the same request goes through.
+    await Counterparty.updateOne({ _id: w.buyer.counterpartyId }, { status: 'active' });
+    const ok = await wantsIt(w.sales.token, await lineOf(w.skuId), {
+      buyerCounterpartyId: w.buyer.counterpartyId,
+      qty: 4,
+      callNote: 'Approved now.',
+    });
+    expect(ok.status).toBe(201);
+  });
+
   it('"He wants it" on his board makes a pile request — on Confirmations, not on Demand', async () => {
     const w = await seedWorld({ trustedSeller: false });
     const res = await wantsIt(w.sales.token, await lineOf(w.skuId), {
