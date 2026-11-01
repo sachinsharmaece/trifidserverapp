@@ -21,7 +21,7 @@ import { BuyerLocation } from '../../models/BuyerLocation.js';
 import { AppError } from '../../shared/errors.js';
 import { assertValidObjectId } from '../../shared/objectId.js';
 import { writeAuditLog } from '../../shared/audit.js';
-import { assertCounterpartyActive } from '../../shared/guards.js';
+import { assertBuyerApproved, assertCounterpartyActive } from '../../shared/guards.js';
 import { computeBuyerInclusiveRatePaise } from '../../shared/pricing.js';
 import { resolveMarginMatrixCell } from '../pricing/pricing.service.js';
 import { resolveSkuClass, toRateTier } from '../chain/chain.service.js';
@@ -639,6 +639,7 @@ export async function defaultDeliveryLocationId(buyerId) {
 export async function requireLineVisibleToBuyer(buyerCounterpartyId, listingLineId) {
     const { buyer, counterparty } = await requireActiveBuyer(buyerCounterpartyId);
     await assertCounterpartyActive(buyerCounterpartyId); // QR-015 — blacklist blocks new inquiries.
+    await assertBuyerApproved(buyerCounterpartyId); // 1 Nov — no order could be made for him.
     const line = await ListingLine.findById(listingLineId);
     const listing = line ? await Listing.findById(line.listingId) : null;
     // 30 Oct — an inactive or deleted product is not sold; it reads as not found, like the rest.

@@ -440,6 +440,7 @@ export async function getBuyerFile(buyerId) {
         // seller side).
         counterpartyId: buyer.counterpartyId.toString(),
         firm: counterparty?.firm ?? '',
+        accountStatus: counterparty?.status ?? 'pending',
         gstin: counterparty?.gstin ?? null,
         mobile: counterparty?.contactMobile ?? counterparty?.mobile ?? '',
         tehsil: tehsil?.name ?? null,
