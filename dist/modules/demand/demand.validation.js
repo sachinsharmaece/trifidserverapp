@@ -21,6 +21,9 @@ export const acceptAskFillSchema = z
     .object({
     option: z.enum(['partial', 'full']),
     quoteIds: z.array(z.string().min(1)).min(1),
+    // 2 Nov — when the quotes taken cover fewer boxes than he asked for, keep the rest open
+    // (default) or close the ask with what was ordered.
+    keepRemainderOpen: z.boolean().optional(),
 })
     .strict();
 export const postQuoteSchema = z

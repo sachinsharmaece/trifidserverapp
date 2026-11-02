@@ -1,7 +1,6 @@
 import { Listing } from '../../../models/Listing.js';
 import { ListingLine } from '../../../models/ListingLine.js';
 import { Product } from '../../../models/Product.js';
-import { Pile } from '../../../models/Pile.js';
 import { Pool, buildConditionSetKey } from '../../../models/Pool.js';
 import { PoolCommitment } from '../../../models/PoolCommitment.js';
 import { Manufacturer } from '../../../models/Manufacturer.js';
@@ -15,6 +14,7 @@ import { AppError } from '../../../shared/errors.js';
 import { computeBuyerFacingRatePaise, listPricedLinesVisibleToBuyerDoc, } from '../../listing/listing.service.js';
 import { asksOnProductFilter } from '../../demand/askScope.js';
 import { isProductSellable, unsellableProductIds } from '../../listing/listing.sellable.js';
+import { closedStateByLine } from '../../listing/listing.groups.js';
 const DEFAULT_TIER = 'Retailer';
 /**
  * BR-060 — Sales never reads a listing line's own `ratePaise` (the seller's
@@ -142,12 +142,7 @@ export async function getBoardForBuyer(buyerDocId) {
     const packLabelBySkuId = new Map(skus.map((s) => [s._id.toString(), s.packLabel]));
     // One read each, however long the board is: the seller's decision on every line, and his place
     // in every pool these lines open.
-    const lineIds = priced.map((p) => p.line._id);
-    const decidedPiles = await Pile.find({ listingLineId: { $in: lineIds }, decision: { $ne: null } }, { listingLineId: 1, decision: 1 });
-    const decisionByLine = new Map(decidedPiles.map((pile) => [
-        pile.listingLineId.toString(),
-        pile.decision,
-    ]));
+    const closedByLine = await closedStateByLine(priced.map((p) => p.line));
     const pools = await Pool.find({
         skuId: { $in: priced.map((p) => p.line.skuId) },
         isActive: true,
@@ -180,7 +175,7 @@ export async function getBoardForBuyer(buyerDocId) {
             moqBand: p.line.moqBand,
             deliveryBand: p.line.deliveryBand,
             provenance: p.line.provenance,
-            closed: decisionByLine.get(p.line._id.toString()) ?? null,
+            closed: closedByLine.get(p.line._id.toString()) ?? null,
             poolOpen: poolByKey.has(`${String(p.line.skuId)}|${buildConditionSetKey({
                 expiryBand: p.line.expiryBand,
                 moqBand: p.line.moqBand,

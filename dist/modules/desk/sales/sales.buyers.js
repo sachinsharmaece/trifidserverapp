@@ -15,7 +15,7 @@ import { Pool } from '../../../models/Pool.js';
 import { PoolCommitment } from '../../../models/PoolCommitment.js';
 import { ListingLine } from '../../../models/ListingLine.js';
 import { AppError } from '../../../shared/errors.js';
-import { computeBuyerFacingRatePaise } from '../../listing/listing.service.js';
+import { computeBuyerFacingRatePaise, listPricedLinesVisibleToBuyerDoc, } from '../../listing/listing.service.js';
 import { addDays } from '../../../shared/clock.js';
 import { ASK_LEAK_STALENESS_HOURS, BILLED_SO_STATES, DELIVERED_SO_STATES, DISPATCHED_SO_STATES, FUNNEL_LABELS, PAID_SO_STATES, PAYMENT_PENDING_SO_STATES, } from './sales.funnel.js';
 import { listCallLogsForBuyer } from './sales.calls.js';
@@ -309,6 +309,10 @@ export async function getBuyerFile(buyerId) {
     // "He asked" is an ask still waiting on a rate. The moment any rate is given it moves to
     // "Rate given"; quotes parked on it show on its row for as long as it is waiting.
     const openAsks = liveAsks.filter((a) => a.state === 'open');
+    // What is listed for him — only needed to tell an ask nothing carries yet from one Sales can work.
+    const boardLines = openAsks.length
+        ? await listPricedLinesVisibleToBuyerDoc(String(buyer._id))
+        : [];
     // An ask names a product, or only a pack (SKU) — resolve either to the product so
     // "He asked" can show a name, never a bare id.
     const askSkus = await Sku.find({
@@ -459,6 +463,12 @@ export async function getBuyerFile(buyerId) {
                 productId,
                 skuId: a.skuId ? a.skuId.toString() : null,
                 qty: a.qty,
+                filledQty: a.filledQty ?? 0,
+                waitingOnPurchase: a.state === 'open' &&
+                    !(parkedRowsByAskId.get(a._id.toString())?.length ?? 0) &&
+                    !boardLines.some((p) => a.skuId && !a.allPacks
+                        ? String(p.line.skuId) === String(a.skuId)
+                        : productId !== null && String(p.listing.productId) === productId),
                 state: a.state,
                 brand: product?.brand ?? '—',
                 technical: product?.technical ?? '—',
