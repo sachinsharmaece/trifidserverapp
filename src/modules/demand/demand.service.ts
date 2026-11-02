@@ -241,7 +241,10 @@ export async function raiseAsk(
 
 interface MyAskItem {
   askId: string;
+  /** Boxes still wanted — 2 Nov: a short fill leaves the ask open at what is left. */
   qty: number;
+  /** 2 Nov — boxes already ordered on it. */
+  filledQty: number;
   state: string;
   ttlAt: Date;
   holdExpiresAt: Date | null;
@@ -298,6 +301,7 @@ export async function listMyAsks(buyerCounterpartyId: string): Promise<MyAskItem
     items.push({
       askId: (ask._id as Types.ObjectId).toString(),
       qty: ask.qty,
+      filledQty: ask.filledQty ?? 0,
       state: ask.state,
       ttlAt: ask.ttlAt,
       holdExpiresAt: ask.holdExpiresAt ?? null,
@@ -330,18 +334,31 @@ export async function declineAsk(buyerCounterpartyId: string, askId: string): Pr
 interface AcceptFillInput {
   option: 'partial' | 'full';
   quoteIds: string[];
+  /** Default true: boxes not covered by the quotes taken stay open as the ask (BR-127). */
+  keepRemainderOpen?: boolean;
 }
 
-/** API-042. BR-127/BR-128 — a split fill is two trades; each seller's portion is its own chain. */
+/**
+ * API-042. BR-127/BR-128 — a split fill is two trades; each seller's portion is its own chain.
+ *
+ * 2 Nov — a fill that covers fewer boxes than he asked for (a seller quoted 10 of 100) no longer
+ * closes the ask and loses the rest: the ask stays open at what is left (90), `filledQty` keeps the
+ * 10, and the other sellers' live quotes stay live — Purchase finds the next seller for the rest.
+ * An order is capped at what is still wanted, so he is never over-filled. Only a full fill — or
+ * `keepRemainderOpen: false` — closes the ask and ranks the quotes not taken (BR-063).
+ */
 export async function acceptAskFill(
   buyerCounterpartyId: string,
   askId: string,
   input: AcceptFillInput,
   correlationId: string,
-): Promise<{ soIds: string[] }> {
+): Promise<{ soIds: string[]; filledBoxes: number; remainingBoxes: number }> {
   const buyer = await requireActiveBuyer(buyerCounterpartyId);
   const ask = await Ask.findOne({ _id: askId, buyerId: buyer._id });
   if (!ask) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Ask not found.' });
+  if (ask.state !== 'open' && ask.state !== 'quoted') {
+    throw new AppError({ code: 'ENQUIRY_NOT_OPEN', messageEn: 'This ask is no longer open.' });
+  }
 
   const quotes = await Quote.find({ _id: { $in: input.quoteIds }, askId: ask._id, status: 'live' });
   if (quotes.length !== input.quoteIds.length) {
@@ -350,18 +367,26 @@ export async function acceptAskFill(
       messageEn: 'One or more quotes are no longer live.',
     });
   }
+  // Cheapest first, so when the quotes taken add up to more than he wants, the dearest is the
+  // one that gets trimmed.
+  quotes.sort((a, b) => a.ratePaiseForIndore - b.ratePaiseForIndore);
 
   const soIds: string[] = [];
   const actor = { employeeId: (buyer._id as Types.ObjectId).toString(), correlationId };
+  let remaining = ask.qty;
+  let filled = 0;
+  const taken: Array<InstanceType<typeof Quote>> = [];
   // BR-128 — independent chains: "where one leg fails the other stands" —
   // each seller's portion is its own transaction, not one shared one.
   for (const quote of quotes) {
+    const boxes = Math.min(quote.qtyAvailable, remaining);
+    if (boxes < 1) break; // Already filled: the quotes left are not needed.
     const result = await createSo(
       {
         buyerId: (buyer._id as Types.ObjectId).toString(),
         sellerId: (quote.sellerId as Types.ObjectId).toString(),
         skuId: (ask.skuId as Types.ObjectId | null)?.toString() ?? '',
-        boxes: quote.qtyAvailable,
+        boxes,
         sellerNetPaise: quote.ratePaiseForIndore,
         placeOfSupply: 'intra_state',
         askId: (ask._id as Types.ObjectId).toString(),
@@ -370,14 +395,35 @@ export async function acceptAskFill(
       actor,
     );
     soIds.push(result.soId);
+    remaining -= boxes;
+    filled += boxes;
     quote.status = 'won';
     quote.rank = 1;
     await quote.save();
+    taken.push(quote);
+  }
+
+  const keepOpen = remaining > 0 && input.keepRemainderOpen !== false;
+  if (keepOpen) {
+    // Short fill: the ask stays open at what is left. The quotes not taken stay live (and parked
+    // ones stay parked) for it — Purchase and Sales work the remainder from where they are.
+    await withTransaction(async (session) => {
+      ask.filledQty = (ask.filledQty ?? 0) + filled;
+      ask.qty = remaining;
+      const stillQuoted = await Quote.exists({ askId: ask._id, status: 'live' }).session(session);
+      ask.state = stillQuoted ? 'quoted' : 'open';
+      // BR-126 — the hold starts at a quote and never restarts; with none left, the next quote
+      // is the first of a new round and starts it (and tells him, `rate_ready`).
+      if (!stillQuoted) ask.holdExpiresAt = null;
+      await ask.save({ session });
+      await syncEnquiryForAsk(ask._id as Types.ObjectId, session);
+    });
+    return { soIds, filledBoxes: filled, remainingBoxes: remaining };
   }
 
   // BR-063 — every OTHER live quote on this ask closes with a rank only.
   const losers = await Quote.find({ askId: ask._id, status: 'live' });
-  const rankedByPrice = [...quotes, ...losers].sort(
+  const rankedByPrice = [...taken, ...losers].sort(
     (a, b) => a.ratePaiseForIndore - b.ratePaiseForIndore,
   );
   for (const loser of losers) {
@@ -393,13 +439,14 @@ export async function acceptAskFill(
   // DEC-051 — the ask and its enquiry move together. (Each SO above commits in
   // its own transaction by design, BR-128; this one marks the enquiry ordered.)
   await withTransaction(async (session) => {
+    ask.filledQty = (ask.filledQty ?? 0) + filled;
     ask.state = 'converted';
     await ask.save({ session });
     await closeParkedQuotes(ask._id as Types.ObjectId, session);
     await syncEnquiryForAsk(ask._id as Types.ObjectId, session);
   });
 
-  return { soIds };
+  return { soIds, filledBoxes: filled, remainingBoxes: remaining };
 }
 
 // ---------------------------------------------------------------------------

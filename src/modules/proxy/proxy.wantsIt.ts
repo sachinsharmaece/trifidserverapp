@@ -5,6 +5,7 @@ import { Sku } from '../../models/Sku.js';
 import { AppError } from '../../shared/errors.js';
 import { assertValidObjectId } from '../../shared/objectId.js';
 import * as listingService from '../listing/listing.service.js';
+import { closedStateByLine } from '../listing/listing.groups.js';
 import { commitToPool } from '../pool/pool.service.js';
 
 /**
@@ -101,6 +102,10 @@ export async function cheapestOfferOnHisBoard(
       ? String(p.line.skuId) === wanted.skuId
       : productId !== null && String(p.listing.productId) === productId,
   );
-  matching.sort((a, b) => a.buyerRatePaise - b.buyerRatePaise);
-  return matching[0] ? String(matching[0].line._id) : null;
+  // 2 Nov — an offer that takes no more requests (BR-136) is not the cheapest he can have: the next
+  // one is, or, with none left, it is an ask.
+  const closed = await closedStateByLine(matching.map((p) => p.line));
+  const open = matching.filter((p) => !closed.get(String(p.line._id)));
+  open.sort((a, b) => a.buyerRatePaise - b.buyerRatePaise);
+  return open[0] ? String(open[0].line._id) : null;
 }

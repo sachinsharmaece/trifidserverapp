@@ -2,7 +2,6 @@ import type { Types } from 'mongoose';
 import { Listing } from '../../../models/Listing.js';
 import { ListingLine } from '../../../models/ListingLine.js';
 import { Product } from '../../../models/Product.js';
-import { Pile } from '../../../models/Pile.js';
 import { Pool, buildConditionSetKey } from '../../../models/Pool.js';
 import { PoolCommitment } from '../../../models/PoolCommitment.js';
 import { Manufacturer } from '../../../models/Manufacturer.js';
@@ -19,6 +18,7 @@ import {
 } from '../../listing/listing.service.js';
 import { asksOnProductFilter } from '../../demand/askScope.js';
 import { isProductSellable, unsellableProductIds } from '../../listing/listing.sellable.js';
+import { closedStateByLine, type LineClosed } from '../../listing/listing.groups.js';
 import type { RateTier } from '../../pricing/pricing.service.js';
 
 const DEFAULT_TIER: RateTier = 'Retailer';
@@ -173,10 +173,10 @@ export interface BoardForBuyerLine {
   deliveryBand: string;
   provenance: string;
   /**
-   * 2 Nov — the seller has already answered this line (BR-135): a line has one request group for
-   * life, so it takes no more requests. Shown as closed, with "He wants it" off.
+   * 2 Nov — why this line takes no more requests, or null (listing.groups.ts, BR-136): its last
+   * group is still in flight, or the seller revised or declined it, or it is sold out.
    */
-  closed: 'confirmed' | 'requoted' | 'declined' | null;
+  closed: LineClosed;
   /**
    * 2 Nov — a pool is open for this offer's condition set, so fewer boxes than its minimum order can
    * still join it even when the line is closed (the pool is separate from the seller's decision).
@@ -230,17 +230,7 @@ export async function getBoardForBuyer(buyerDocId: string): Promise<BoardForBuye
 
   // One read each, however long the board is: the seller's decision on every line, and his place
   // in every pool these lines open.
-  const lineIds = priced.map((p) => p.line._id as Types.ObjectId);
-  const decidedPiles = await Pile.find(
-    { listingLineId: { $in: lineIds }, decision: { $ne: null } },
-    { listingLineId: 1, decision: 1 },
-  );
-  const decisionByLine = new Map(
-    decidedPiles.map((pile) => [
-      (pile.listingLineId as Types.ObjectId).toString(),
-      pile.decision as 'confirmed' | 'requoted' | 'declined',
-    ]),
-  );
+  const closedByLine = await closedStateByLine(priced.map((p) => p.line));
   const pools = await Pool.find({
     skuId: { $in: priced.map((p) => p.line.skuId) },
     isActive: true,
@@ -276,7 +266,7 @@ export async function getBoardForBuyer(buyerDocId: string): Promise<BoardForBuye
         moqBand: p.line.moqBand,
         deliveryBand: p.line.deliveryBand,
         provenance: p.line.provenance,
-        closed: decisionByLine.get((p.line._id as Types.ObjectId).toString()) ?? null,
+        closed: closedByLine.get((p.line._id as Types.ObjectId).toString()) ?? null,
         poolOpen: poolByKey.has(
           `${String(p.line.skuId)}|${buildConditionSetKey({
             expiryBand: p.line.expiryBand,

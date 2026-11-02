@@ -29,6 +29,14 @@ import { AppError } from '../../shared/errors.js';
 import { assertValidObjectId } from '../../shared/objectId.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { assertBuyerApproved, assertCounterpartyActive } from '../../shared/guards.js';
+import {
+  closedMessage,
+  closedStateByLine,
+  closedStateOf,
+  groupFacts,
+  type LineClosed,
+} from './listing.groups.js';
+export type { LineClosed };
 import type { Paise } from '../../shared/money.js';
 import { computeBuyerInclusiveRatePaise } from '../../shared/pricing.js';
 import { resolveMarginMatrixCell } from '../pricing/pricing.service.js';
@@ -740,22 +748,8 @@ export interface BuyerOfferDto {
   ratePaise: Paise;
   conditions: BuyerConditionTagsDto;
   hasPool: boolean;
-  /** 2 Nov — the seller has already answered this line, so it takes no more requests. */
+  /** 2 Nov — why this line takes no more requests, or null (listing.groups.ts, BR-136). */
   closed: LineClosed;
-}
-
-/** What the seller decided on a line's request group; null while it is still open (BR-135). */
-export type LineClosed = 'confirmed' | 'requoted' | 'declined' | null;
-
-async function closedByLine(lineIds: Types.ObjectId[]): Promise<Map<string, LineClosed>> {
-  if (lineIds.length === 0) return new Map();
-  const piles = await Pile.find(
-    { listingLineId: { $in: lineIds }, decision: { $ne: null } },
-    { listingLineId: 1, decision: 1 },
-  );
-  return new Map(
-    piles.map((p) => [(p.listingLineId as Types.ObjectId).toString(), p.decision as LineClosed]),
-  );
 }
 
 /** API-031. Every rate on a product, cheapest first, plus pools on that product. */
@@ -780,7 +774,7 @@ export async function getProductOffers(
 
   const skuIds = [...new Set(priced.map((v) => (v.line.skuId as Types.ObjectId).toString()))];
   const pools = await Pool.find({ skuId: { $in: skuIds }, isActive: true });
-  const closed = await closedByLine(priced.map((v) => v.line._id as Types.ObjectId));
+  const closed = await closedStateByLine(priced.map((v) => v.line));
 
   return {
     offers: priced.map((v) => ({
@@ -881,7 +875,7 @@ export async function getListingLineForBuy(
     moqExact: line.moqExact,
     availableBoxes: line.qty,
     conditions: toConditionTags(line),
-    closed: (await closedByLine([line._id as Types.ObjectId])).get(String(line._id)) ?? null,
+    closed: (await closedStateByLine([line])).get(String(line._id)) ?? null,
   };
 }
 
@@ -989,17 +983,27 @@ export async function createPileRequest(
     deliveryLocationId = await defaultDeliveryLocationId(buyer._id as Types.ObjectId);
   }
 
-  let pile = await Pile.findOne({ listingLineId: line._id });
+  // 2 Nov — requests join the line's OPEN group; with none, a new group opens unless the line is
+  // closed (BR-133/BR-136, listing.groups.ts): the last group still in flight, revised, declined,
+  // or no stock left.
+  const groups = await Pile.find({ listingLineId: line._id });
+  let pile = groups.find((g) => !g.decision) ?? null;
   if (!pile) {
-    pile = await Pile.create({
-      listingLineId: line._id,
-      confirmWindowEndsAt: new Date(Date.now() + 12 * 60 * 60 * 1000), // BR-135 default confirm_window_h.
-    });
-  } else if (pile.decision) {
-    throw new AppError({
-      code: 'PILE_ALREADY_DECIDED',
-      messageEn: 'This listing has already been decided.',
-    });
+    const closed = closedStateOf(line, groups.map(groupFacts));
+    if (closed) {
+      throw new AppError({ code: 'PILE_ALREADY_DECIDED', messageEn: closedMessage(closed) });
+    }
+    try {
+      pile = await Pile.create({
+        listingLineId: line._id,
+        confirmWindowEndsAt: new Date(Date.now() + 12 * 60 * 60 * 1000), // BR-135 default confirm_window_h.
+      });
+    } catch (error) {
+      // Two requests raced to open the group; the index let one through. Join the winner's.
+      if ((error as { code?: number }).code !== 11000) throw error;
+      pile = await Pile.findOne({ listingLineId: line._id, decision: null });
+      if (!pile) throw error;
+    }
   }
 
   // DEC-051 — the request and its enquiry are created together.
