@@ -1035,6 +1035,53 @@ describe('29 Oct — a listed product goes to Confirmations, one not listed to D
       );
     });
 
+    it('a closed line with an open pool: still joinable below the minimum, and his place stays changeable', async () => {
+      const w = await seedWorld({ trustedSeller: false });
+      // A plain line has no pool: closed means closed.
+      expect((await boardLine(w, w.skuId)).poolOpen).toBe(false);
+
+      const poolSku = await poolOffer(w);
+      const lineId = await lineOf(poolSku);
+      expect((await boardLine(w, poolSku)).poolOpen).toBe(true); // Listing it opened the pool.
+      const joined = await wantsIt(w.sales.token, lineId, {
+        buyerCounterpartyId: w.buyer.counterpartyId,
+        qty: 3,
+        callNote: 'In.',
+      });
+      const poolId = joined.body.data.poolId as string;
+      // The seller answers the line's request group; the pool is a separate thing and stays open.
+      const group = await Pile.create({
+        listingLineId: lineId,
+        decision: 'confirmed',
+        decidedAt: new Date(),
+        confirmWindowEndsAt: new Date(),
+      });
+      expect(group.decision).toBe('confirmed');
+      expect(await boardLine(w, poolSku)).toMatchObject({
+        closed: 'confirmed',
+        poolOpen: true,
+        inPool: { poolId, boxes: 3, canChange: true },
+      });
+      // His place can still be changed, and a small amount can still join — at or above the
+      // minimum it would be refused, the group being decided.
+      expect(
+        (
+          await poolCall(w.sales.token, poolId, 'change', {
+            buyerCounterpartyId: w.buyer.counterpartyId,
+            qty: 6,
+            callNote: 'Six.',
+          })
+        ).status,
+      ).toBe(200);
+      const big = await wantsIt(w.sales.token, lineId, {
+        buyerCounterpartyId: w.buyer.counterpartyId,
+        qty: 12,
+        callNote: 'Twelve.',
+      });
+      expect(big.status).toBe(409);
+      expect(big.body.error.code).toBe('PILE_ALREADY_DECIDED');
+    });
+
     it('a binding place cannot be changed or withdrawn free (BR-154); the call needs a key, a note and the right desk', async () => {
       const w = await seedWorld({ trustedSeller: false });
       const poolSku = await poolOffer(w);

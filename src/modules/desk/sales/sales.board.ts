@@ -178,6 +178,11 @@ export interface BoardForBuyerLine {
    */
   closed: 'confirmed' | 'requoted' | 'declined' | null;
   /**
+   * 2 Nov — a pool is open for this offer's condition set, so fewer boxes than its minimum order can
+   * still join it even when the line is closed (the pool is separate from the seller's decision).
+   */
+  poolOpen: boolean;
+  /**
    * 2 Nov — he already holds a place in the pool this offer opened. `canChange` is false once
    * it is binding (BR-154). Null when he has none.
    */
@@ -272,6 +277,14 @@ export async function getBoardForBuyer(buyerDocId: string): Promise<BoardForBuye
         deliveryBand: p.line.deliveryBand,
         provenance: p.line.provenance,
         closed: decisionByLine.get((p.line._id as Types.ObjectId).toString()) ?? null,
+        poolOpen: poolByKey.has(
+          `${String(p.line.skuId)}|${buildConditionSetKey({
+            expiryBand: p.line.expiryBand,
+            moqBand: p.line.moqBand,
+            deliveryBand: p.line.deliveryBand,
+            provenance: p.line.provenance,
+          })}`,
+        ),
         inPool: (() => {
           const pool = poolByKey.get(
             `${String(p.line.skuId)}|${buildConditionSetKey({
