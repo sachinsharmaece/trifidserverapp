@@ -191,7 +191,15 @@ function assertBatchRequiredForAuth(provenance: Provenance, batch: string | unde
 export async function createListing(
   sellerCounterpartyId: string,
   input: CreateListingInput,
-  options: { origin?: 'seller_initiated' | 'quote_born' } = {},
+  options: {
+    origin?: 'seller_initiated' | 'quote_born';
+    /**
+     * 2 Nov — staff entering a listing from a call may give an expiry under six months away: the
+     * seller has the stock and the board only ever shows a band. The floor stays for the seller's
+     * own listings and quotes (BR-107, DEC-071).
+     */
+    skipShelfLifeFloor?: boolean;
+  } = {},
 ): Promise<{ listingId: string; lineIds: string[] }> {
   const seller = await Seller.findOne({ counterpartyId: sellerCounterpartyId });
   if (!seller) throw new AppError({ code: 'PERMISSION_DENIED', messageEn: 'Sellers only.' });
@@ -248,7 +256,7 @@ export async function createListing(
   }
 
   for (const line of input.lines) {
-    assertShelfLifeMeetsFloor(line.expiryBand, line.expiryExact);
+    if (!options.skipShelfLifeFloor) assertShelfLifeMeetsFloor(line.expiryBand, line.expiryExact);
     assertBatchRequiredForAuth(line.provenance, line.batch);
     const sku = await Sku.findOne({ _id: line.skuId, productId: input.productId });
     if (!sku) {

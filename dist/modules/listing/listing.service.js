@@ -182,7 +182,8 @@ export async function createListing(sellerCounterpartyId, input, options = {}) {
         });
     }
     for (const line of input.lines) {
-        assertShelfLifeMeetsFloor(line.expiryBand, line.expiryExact);
+        if (!options.skipShelfLifeFloor)
+            assertShelfLifeMeetsFloor(line.expiryBand, line.expiryExact);
         assertBatchRequiredForAuth(line.provenance, line.batch);
         const sku = await Sku.findOne({ _id: line.skuId, productId: input.productId });
         if (!sku) {

@@ -40,7 +40,14 @@ export async function closedStateByLine(lines) {
     const result = new Map();
     if (lines.length === 0)
         return result;
-    const piles = await Pile.find({ listingLineId: { $in: lines.map((l) => l._id) } }, { listingLineId: 1, decision: 1, executedAt: 1, shortfall: 1, shortfallResolvedAt: 1, openedAt: 1 });
+    const piles = await Pile.find({ listingLineId: { $in: lines.map((l) => l._id) } }, {
+        listingLineId: 1,
+        decision: 1,
+        executedAt: 1,
+        shortfall: 1,
+        shortfallResolvedAt: 1,
+        openedAt: 1,
+    });
     const byLine = new Map();
     for (const pile of piles) {
         const key = pile.listingLineId.toString();

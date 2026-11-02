@@ -24,9 +24,7 @@ export async function raiseOrderForRequest(ctx, request, boxes, session) {
         sellerNetPaise: ctx.sellerNetPaise,
         placeOfSupply: 'intra_state', // Refined once M6's tax-jurisdiction lookup exists; see CHANGELOG.
         pileRequestId: request._id.toString(),
-        ...(request.enquiryId
-            ? { enquiryId: request.enquiryId.toString() }
-            : {}),
+        ...(request.enquiryId ? { enquiryId: request.enquiryId.toString() } : {}),
     }, ctx.actor, session);
     // WF-05 step 8 — "Write N notification outbox rows", inside this same transaction.
     // CH §21.8 #3 — "Seller confirms supply." Queued AFTER createSoInSession's own

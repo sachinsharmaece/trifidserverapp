@@ -257,7 +257,10 @@ export async function postBuyerCallRejectPromotion(req, res) {
 // POST /listings.
 export async function postSellerCallListing(req, res) {
     const { sellerCounterpartyId, callNote, ...input } = req.body;
-    const result = await listingService.createListing(sellerCounterpartyId, input);
+    // DEC-071 — the desk may list stock whose expiry is under six months away.
+    const result = await listingService.createListing(sellerCounterpartyId, input, {
+        skipShelfLifeFloor: true,
+    });
     const staffId = actingStaffId(req);
     await Promise.all(result.lineIds.map((lineId) => appendProxyLog(ListingLine, lineId, {
         actingStaffId: staffId,

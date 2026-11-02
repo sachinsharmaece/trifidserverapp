@@ -10,6 +10,7 @@ import { Buyer } from '../src/models/Buyer.js';
 import { Seller } from '../src/models/Seller.js';
 import { Tehsil } from '../src/models/Tehsil.js';
 import * as paymentService from '../src/modules/payment/payment.service.js';
+import * as listingService from '../src/modules/listing/listing.service.js';
 import {
   staffToken,
   createApprovedBuyer,
@@ -411,7 +412,8 @@ describe('Seller-side proxy actions (Purchase desk)', () => {
     expect(line!.proxyLog![0]!.action).toBe('create_listing');
     expect(line!.proxyLog![0]!.callNote).toContain('100 boxes');
 
-    // BR-107 — the shelf-life floor refuses exactly as the real POST /listings refuses it.
+    // DEC-071 — the desk may list stock expiring within six months (the seller has it, and the
+    // board only shows a band); the seller's own listing still meets the BR-107 floor.
     const nextMonth = new Date();
     nextMonth.setMonth(nextMonth.getMonth() + 1);
     const shortExpiry = `${String(nextMonth.getMonth() + 1).padStart(2, '0')}/${nextMonth.getFullYear()}`;
@@ -435,8 +437,26 @@ describe('Seller-side proxy actions (Purchase desk)', () => {
         ],
         callNote: 'note',
       });
-    expect(floorRes.status).toBe(422);
-    expect(floorRes.body.error.code).toBe('SHELF_LIFE_FLOOR');
+    expect(floorRes.status).toBe(201);
+    const shortLine = await ListingLine.findById(floorRes.body.data.lineIds[0]);
+    expect(shortLine).toMatchObject({ expiryBand: 'under12', expiryExact: shortExpiry });
+    await expect(
+      listingService.createListing(sellerCounterpartyId, {
+        productId,
+        scopeType: 'my_area',
+        lines: [
+          {
+            skuId,
+            ratePaise: 41000,
+            expiryBand: 'under12',
+            expiryExact: shortExpiry,
+            deliveryBand: '48h',
+            provenance: 'company',
+            qty: 100,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: 'SHELF_LIFE_FLOOR' });
   });
 
   it('"raise quote" on an ask produces the same quote a seller would post — gap codes, hold, call note on the Quote', async () => {
