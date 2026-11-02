@@ -46,6 +46,15 @@ export const proxyAcceptAskFillSchema = acceptAskFillSchema.extend({
   direction: z.enum(['in', 'out']).optional(),
 });
 
+/** BR-378 — Sales taking, or walking away from, the deal given to a buyer, on his word. */
+export const proxyPileOfferDecisionSchema = z
+  .object({
+    buyerCounterpartyId: z.string().min(1),
+    callNote: callNoteSchema,
+    direction: z.enum(['in', 'out']).optional(),
+  })
+  .strict();
+
 export const proxyDeclineAskSchema = z
   .object({
     buyerCounterpartyId: z.string().min(1),

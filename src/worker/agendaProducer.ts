@@ -40,3 +40,4 @@ export const JOB_PAYMENT_WINDOW_EXPIRY = 'payment-window-expiry'; // 1 min — B
 export const JOB_DISPATCH_CHASE = 'dispatch-chase'; // hourly — BR-174
 export const JOB_PROMOTION_OFFER_EXPIRY = 'promotion-offer-expiry'; // 5 min — WF-11
 export const JOB_DELIVERY_AUTO_CLOSE = 'delivery-auto-close'; // hourly — BR-192
+export const JOB_PILE_OFFER_EXPIRY = 'pile-offer-expiry'; // 5 min — BR-378

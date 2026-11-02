@@ -1,5 +1,10 @@
 import { field, requireInScope } from '../../shared/scope.js';
-import { buyerOfAsk, buyerOfOrder, sellerOfPile } from '../../shared/scopeResolvers.js';
+import {
+  buyerOfAsk,
+  buyerOfOrder,
+  buyerOfPileRequest,
+  sellerOfPile,
+} from '../../shared/scopeResolvers.js';
 import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
 import { requirePermission } from '../../middleware/requirePermission.js';
@@ -11,6 +16,7 @@ import {
   proxyRaiseAskSchema,
   proxyRaiseAsksSchema,
   proxyAcceptAskFillSchema,
+  proxyPileOfferDecisionSchema,
   proxyDeclineAskSchema,
   proxyPromotionDecisionSchema,
   proxyCreateListingSchema,
@@ -96,6 +102,24 @@ proxyRouter.post(
   requireIdempotencyKey(),
   validateBody(proxyAcceptAskFillSchema),
   controller.postBuyerCallAcceptFill,
+);
+// BR-378 — the deal given to a buyer when the seller confirmed his pile: Sales takes it, or walks
+// away from it, on his word.
+proxyRouter.post(
+  '/staff/proxy/buyer/pile-offers/:id/accept',
+  ...buyerCall,
+  requireInScope('sales', buyerOfPileRequest('id')),
+  requireIdempotencyKey(),
+  validateBody(proxyPileOfferDecisionSchema),
+  controller.postBuyerCallAcceptPileOffer,
+);
+proxyRouter.post(
+  '/staff/proxy/buyer/pile-offers/:id/decline',
+  ...buyerCall,
+  requireInScope('sales', buyerOfPileRequest('id')),
+  requireIdempotencyKey(),
+  validateBody(proxyPileOfferDecisionSchema),
+  controller.postBuyerCallDeclinePileOffer,
 );
 // Maps to API-043.
 proxyRouter.post(

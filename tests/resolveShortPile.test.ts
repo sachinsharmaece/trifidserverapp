@@ -13,6 +13,7 @@ import { Sku } from '../src/models/Sku.js';
 import { So } from '../src/models/So.js';
 import { SoLine } from '../src/models/SoLine.js';
 import { runConfirmPileFanout } from '../src/modules/demand/pileFanout.job.js';
+import { acceptOffer, declineOffer } from './pileOfferHelpers.js';
 import * as demandService from '../src/modules/demand/demand.service.js';
 import { createListing, createPileRequest } from '../src/modules/listing/listing.service.js';
 import { closedStateByLine } from '../src/modules/listing/listing.groups.js';
@@ -136,7 +137,7 @@ describe('A short pile waits for the desk (BR-134)', () => {
 });
 
 describe('Dividing a short pile (BR-134, BR-374)', () => {
-  it("orders for those who got boxes, an ask for each buyer's leftover, the line sold out", async () => {
+  it("deals for those who got boxes, an ask for each buyer's leftover, the boxes held", async () => {
     const w = await shortPile();
     const result = await resolveShortPile(
       w.pileId,
@@ -144,14 +145,19 @@ describe('Dividing a short pile (BR-134, BR-374)', () => {
       actor(),
       everyone,
     );
-    expect(result).toEqual({ orderedBoxes: 10, backOnAskBoxes: 5, lineQty: 0 });
+    expect(result).toEqual({ offeredBoxes: 10, backOnAskBoxes: 5, lineQty: 0 });
 
-    expect(await boxesOrdered(w.buyers[0]!.docId)).toBe(6);
-    expect(await boxesOrdered(w.buyers[1]!.docId)).toBe(4);
-    expect(await boxesOrdered(w.buyers[2]!.docId)).toBe(0);
-    // Each order is tied to the request it fulfils.
-    expect(await So.countDocuments({ pileRequestId: w.requestIds[0] })).toBe(1);
-    expect(await So.countDocuments({ pileRequestId: w.requestIds[2] })).toBe(0);
+    // BR-378 — each buyer who got boxes is given his deal (his boxes, held 24 hours); no order yet.
+    const offered = await PileRequest.find({ pileId: w.pileId }).sort({ requestedAt: 1 });
+    expect(offered.map((r) => [r.offerState, r.offerQty])).toEqual([
+      ['offered', 6],
+      ['offered', 4],
+      [null, null], // He got none: his boxes are an ask instead.
+    ]);
+    expect(offered[0]!.holdUntil!.getTime() - offered[0]!.offeredAt!.getTime()).toBe(
+      24 * 3600 * 1000,
+    );
+    for (const buyer of w.buyers) expect(await boxesOrdered(buyer.docId)).toBe(0);
 
     // What was asked for and not given is open as an ask, so Purchase finds another seller.
     expect(await Ask.countDocuments({ buyerId: w.buyers[0]!.docId })).toBe(0);
@@ -170,14 +176,21 @@ describe('Dividing a short pile (BR-134, BR-374)', () => {
     });
     const line = await ListingLine.findById(w.lineId);
     expect(line!.qty).toBe(0);
-    expect((await closedStateByLine([line!])).get(w.lineId)).toBe('sold_out');
+    expect((await closedStateByLine([line!])).get(w.lineId)).toBe('sold_out'); // All 10 are held.
     expect((await listShortPiles(everyone)).some((p) => p.pileId === w.pileId)).toBe(false);
 
-    // Each buyer's call history says what he got.
+    // Each buyer's call history says what he was offered.
     const calls = await CallLog.find({ buyerId: w.buyers[1]!.docId });
     expect(calls.map((c) => c.note)).toContain(
-      'Short pile divided: got 4 of 5 boxes; the other 1 are open as an ask.',
+      'Short pile divided: offered 4 of 5 boxes; the other 1 are open as an ask.',
     );
+
+    // The first takes his deal (an order for 6); the second walks away: his 4 go back on the line.
+    await acceptOffer(String(offered[0]!._id), w.buyers[0]!.docId);
+    expect(await boxesOrdered(w.buyers[0]!.docId)).toBe(6);
+    await declineOffer(String(offered[1]!._id), w.buyers[1]!.docId);
+    expect((await ListingLine.findById(w.lineId))!.qty).toBe(4);
+    expect(await boxesOrdered(w.buyers[1]!.docId)).toBe(0);
   });
 
   it('giving less than the seller can send leaves the rest on the line, open to requests again', async () => {
@@ -202,7 +215,8 @@ describe('Dividing a short pile (BR-134, BR-374)', () => {
     await expect(resolveShortPile(w.pileId, body, actor(), everyone)).rejects.toMatchObject({
       code: 'PILE_ALREADY_DECIDED',
     });
-    expect(await So.countDocuments({ pileRequestId: { $in: w.requestIds } })).toBe(2); // Not made twice.
+    // The deals are not given twice.
+    expect(await PileRequest.countDocuments({ pileId: w.pileId, offerState: 'offered' })).toBe(2);
 
     const full = await shortPile(10, 15); // The seller can send all 15: no shortfall.
     const all = { allocations: split(full, [6, 5, 4]), reason: 'x' };
@@ -283,6 +297,6 @@ describe('The Sales route (BR-134)', () => {
 
     const done = await post(sales.token, randomUUID(), body);
     expect(done.status).toBe(200);
-    expect(done.body.data).toEqual({ orderedBoxes: 10, backOnAskBoxes: 5, lineQty: 0 });
+    expect(done.body.data).toEqual({ offeredBoxes: 10, backOnAskBoxes: 5, lineQty: 0 });
   });
 });

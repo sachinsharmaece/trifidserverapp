@@ -1,3 +1,4 @@
+import { listPileOffersForBuyer, type PileOfferDto } from '../../demand/pileOffer.service.js';
 import type { Types } from 'mongoose';
 import { Buyer } from '../../../models/Buyer.js';
 import { Counterparty } from '../../../models/Counterparty.js';
@@ -484,6 +485,11 @@ export interface BuyerFileDto {
   openAsks: BuyerFileOpenAsk[];
   waitingOnSeller: BuyerFileWaitingOnSeller[];
   liveQuotes: BuyerFileLiveQuote[];
+  /**
+   * 2 Nov — BR-378: deals given to him when a seller confirmed the pile he is on — his boxes, the
+   * expiry, his rate — held 24 hours for his word. They show under "Rate given" beside the quotes.
+   */
+  pileOffers: PileOfferDto[];
   callLogs: CallLogDto[];
   orders: SalesOrderRow[];
   ordersByStage: BuyerFileOrdersByStage;
@@ -649,6 +655,7 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
   }
 
   const waitingOnSeller = await listWaitingOnSeller(buyer);
+  const pileOffers = await listPileOffersForBuyer(buyer);
 
   // The same nine joints as the Funnel tab, with the same state lists and wording,
   // counted over this buyer's own records only.
@@ -698,7 +705,8 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     stage('classified', buyer.classified, null),
     stage('viewing', buyer.rateViews > 0, buyer.rateViews),
     stage('asked', openAsks.length > 0, openAsks.length, { leakCount: askLeakCount }),
-    stage('rate_held', liveQuoteCount > 0, liveQuoteCount),
+    // A rate held for him: a quote on an ask, or the deal given when a seller confirmed his pile.
+    stage('rate_held', liveQuoteCount + pileOffers.length > 0, liveQuoteCount + pileOffers.length),
     stage('took_it', pendingCount > 0, pendingCount),
     stage('paid', paidCount > 0, paidCount),
     stage('billed', billedCount > 0, billedCount),
@@ -756,6 +764,7 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     }),
     waitingOnSeller,
     liveQuotes: liveQuoteRows,
+    pileOffers,
     callLogs,
     orders,
     ordersByStage,

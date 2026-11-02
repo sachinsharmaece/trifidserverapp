@@ -32,6 +32,7 @@ import * as chainService from '../modules/chain/chain.service.js';
 import * as ordersService from '../modules/orders/orders.service.js';
 import * as paymentService from '../modules/payment/payment.service.js';
 import { runConfirmPileFanout } from '../modules/demand/pileFanout.job.js';
+import { acceptPileOffer } from '../modules/demand/pileOffer.service.js';
 
 /**
  * Dummy data for manually exercising the M5 buyer/seller apps against the
@@ -627,6 +628,17 @@ async function seed(): Promise<void> {
       // Runs WF-05's fan-out inline instead of waiting on the real 5-second
       // BR-137 undo window a background worker would otherwise wait out.
       await runConfirmPileFanout((pile!._id as { toString(): string }).toString());
+    }
+
+    // BR-378 — a confirmed pile gives each buyer his deal; he takes it and his order is made.
+    for (const request of await PileRequest.find({ pileId: pile!._id, offerState: 'offered' })) {
+      const dealBuyer = await Buyer.findById(request.buyerId);
+      const dealBuyerCp = String(dealBuyer!.counterpartyId);
+      await acceptPileOffer(String(request._id), dealBuyerCp, {
+        actorId: dealBuyerCp,
+        actorType: 'counterparty',
+        correlationId: 'seed-m5-demo',
+      });
     }
 
     buyer1So = await So.findOne({ buyerId: buyer!._id }).sort({ createdAt: -1 });

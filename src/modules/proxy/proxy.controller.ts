@@ -7,6 +7,7 @@ import { ListingLine } from '../../models/ListingLine.js';
 import { appendProxyLog } from '../../shared/proxyLog.js';
 import { recordCallAction } from '../desk/sales/sales.calls.js';
 import * as demandService from '../demand/demand.service.js';
+import { acceptPileOffer, declinePileOffer } from '../demand/pileOffer.service.js';
 import * as listingService from '../listing/listing.service.js';
 import * as ordersService from '../orders/orders.service.js';
 import {
@@ -22,6 +23,7 @@ import type {
   proxyRaiseAskSchema,
   proxyRaiseAsksSchema,
   proxyAcceptAskFillSchema,
+  proxyPileOfferDecisionSchema,
   proxyDeclineAskSchema,
   proxyPromotionDecisionSchema,
   proxyCreateListingSchema,
@@ -222,6 +224,53 @@ export async function getBuyerCallAsks(req: Request, res: Response): Promise<voi
 
 // Maps to API-042 — advancing an ask, or confirming a rate over the phone;
 // this codebase has one accept endpoint for both.
+// BR-378 — Sales takes the deal given to a buyer: his order is made now and its payment window starts.
+export async function postBuyerCallAcceptPileOffer(req: Request, res: Response): Promise<void> {
+  const { buyerCounterpartyId, callNote, direction } = req.body as z.infer<
+    typeof proxyPileOfferDecisionSchema
+  >;
+  const staffId = actingStaffId(req);
+  const result = await acceptPileOffer(req.params.id as string, buyerCounterpartyId, {
+    actorId: staffId,
+    actorType: 'staff',
+    correlationId: req.correlationId,
+  });
+  await appendProxyLog(So, result.soId, {
+    actingStaffId: staffId,
+    callNote,
+    action: 'accept_pile_offer',
+  });
+  await recordCallAction({
+    buyerCounterpartyId,
+    employeeId: staffId,
+    direction,
+    outcome: 'placed_an_order',
+    note: callNote,
+  });
+  ok(res, req, { soId: result.soId, boxes: result.boxes }, 201);
+}
+
+// BR-378 — Sales walks away from the deal on the buyer's word; the boxes go back on the listing.
+export async function postBuyerCallDeclinePileOffer(req: Request, res: Response): Promise<void> {
+  const { buyerCounterpartyId, callNote, direction } = req.body as z.infer<
+    typeof proxyPileOfferDecisionSchema
+  >;
+  const staffId = actingStaffId(req);
+  const result = await declinePileOffer(req.params.id as string, buyerCounterpartyId, {
+    actorId: staffId,
+    actorType: 'staff',
+    correlationId: req.correlationId,
+  });
+  await recordCallAction({
+    buyerCounterpartyId,
+    employeeId: staffId,
+    direction,
+    outcome: null,
+    note: `Walked away from the deal on the pile. ${callNote}`,
+  });
+  ok(res, req, result);
+}
+
 export async function postBuyerCallAcceptFill(req: Request, res: Response): Promise<void> {
   const { buyerCounterpartyId, callNote, direction, ...input } = req.body as z.infer<
     typeof proxyAcceptAskFillSchema

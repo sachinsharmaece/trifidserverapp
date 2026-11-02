@@ -11,6 +11,7 @@ import {
   JOB_HEAD_START_OPEN,
   JOB_LISTING_DROPPING,
   JOB_PAYMENT_WINDOW_EXPIRY,
+  JOB_PILE_OFFER_EXPIRY,
   JOB_PROMOTION_OFFER_EXPIRY,
   JOB_NOTIFICATION_OUTBOX_DRAIN,
   JOB_TEMPLATE_STATUS_POLL,
@@ -22,6 +23,7 @@ import {
   runDeliveryAutoClose,
   runDispatchChase,
   runPaymentWindowExpiry,
+  runPileOfferExpiry,
   runPromotionOfferExpiry,
 } from '../modules/clocks/clocks.jobs.js';
 import { runOutboxDrain } from '../modules/notification/notification.drain.js';
@@ -97,6 +99,9 @@ async function startWorker(): Promise<void> {
   agenda.define(JOB_DELIVERY_AUTO_CLOSE, async () => {
     await runDeliveryAutoClose(); // BR-192
   });
+  agenda.define(JOB_PILE_OFFER_EXPIRY, async () => {
+    await runPileOfferExpiry(); // BR-378
+  });
 
   agenda.on('ready', () => {
     logger.info({ msg: 'Worker process ready, agenda connected' });
@@ -112,6 +117,7 @@ async function startWorker(): Promise<void> {
   await agenda.every('1 hour', JOB_DISPATCH_CHASE);
   await agenda.every('5 minutes', JOB_PROMOTION_OFFER_EXPIRY);
   await agenda.every('1 hour', JOB_DELIVERY_AUTO_CLOSE);
+  await agenda.every('5 minutes', JOB_PILE_OFFER_EXPIRY);
   // Write one immediately so a fresh deployment does not look stale for the
   // first WORKER_HEARTBEAT_SECONDS window.
   await writeHeartbeat();

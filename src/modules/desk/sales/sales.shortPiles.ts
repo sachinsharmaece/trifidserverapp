@@ -2,8 +2,6 @@ import type { Types } from 'mongoose';
 import { Pile } from '../../../models/Pile.js';
 import { PileRequest } from '../../../models/PileRequest.js';
 import { ListingLine } from '../../../models/ListingLine.js';
-import { Listing } from '../../../models/Listing.js';
-import { Seller } from '../../../models/Seller.js';
 import { Sku } from '../../../models/Sku.js';
 import { Product } from '../../../models/Product.js';
 import { Buyer } from '../../../models/Buyer.js';
@@ -15,7 +13,7 @@ import type { Visibility } from '../../../shared/scope.js';
 import { withTransaction } from '../../../db/transaction.js';
 import { syncEnquiriesForPile } from '../../enquiry/enquiry.sync.js';
 import { raiseAsk } from '../../demand/demand.service.js';
-import { raiseOrderForRequest, type PileOrderContext } from '../../demand/pileFanout.job.js';
+import { offerPileRequests } from '../../demand/pileOffer.service.js';
 import { recordCallAction } from './sales.calls.js';
 
 /**
@@ -117,8 +115,8 @@ export interface ShortPileAllocation {
 }
 
 export interface ResolveShortPileResult {
-  /** Boxes now ordered, across all the buyers. */
-  orderedBoxes: number;
+  /** Boxes now offered to the buyers (each to take or walk away from), together. */
+  offeredBoxes: number;
   /** Boxes asked for and not given, now open as asks. */
   backOnAskBoxes: number;
   /** What the seller still has on the line afterwards. */
@@ -205,20 +203,12 @@ export async function resolveShortPile(
   const total = [...given.values()].reduce((sum, boxes) => sum + boxes, 0);
 
   const line = await ListingLine.findById(pile.listingLineId);
-  const listing = line ? await Listing.findById(line.listingId) : null;
-  const seller = listing ? await Seller.findById(listing.sellerId) : null;
-  if (!line || !seller) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Listing not found.' });
+  if (!line) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Listing not found.' });
   const buyerCounterpartyId = new Map<string, string>();
   for (const b of await Buyer.find({ _id: { $in: requests.map((r) => r.buyerId) } })) {
     buyerCounterpartyId.set(idOf(b._id), idOf(b.counterpartyId));
   }
 
-  const ctx: PileOrderContext = {
-    skuId: idOf(line.skuId),
-    sellerId: idOf(seller._id),
-    sellerNetPaise: line.ratePaise,
-    actor: { employeeId: actor.employeeId, correlationId: `pile-${pileId}-short` },
-  };
   let backOnAskBoxes = 0;
   const outcomes: Array<{ buyerId: string; asked: number; got: number }> = [];
 
@@ -226,10 +216,16 @@ export async function resolveShortPile(
     // The transaction can be retried: start from nothing each time.
     backOnAskBoxes = 0;
     outcomes.length = 0;
+    // BR-378 — each buyer who gets boxes is given the deal (held 24 hours); the order is his to make.
+    await offerPileRequests(
+      requests
+        .filter((request) => given.get(idOf(request._id))! > 0)
+        .map((request) => ({ request, qty: given.get(idOf(request._id))! })),
+      session,
+    );
     for (const request of requests) {
       const got = given.get(idOf(request._id))!;
       const left = request.qty - got;
-      if (got > 0) await raiseOrderForRequest(ctx, request, got, session);
       if (left > 0) {
         await raiseAsk(
           buyerCounterpartyId.get(idOf(request.buyerId))!,
@@ -265,7 +261,7 @@ export async function resolveShortPile(
         // DEC-014: the reason is what the rule staff actually apply is later read from.
         newValue: {
           canSend,
-          orderedBoxes: total,
+          offeredBoxes: total,
           backOnAskBoxes,
           allocations: outcomes,
           reason: input.reason,
@@ -283,17 +279,17 @@ export async function resolveShortPile(
     if (!cpId) continue;
     const note =
       o.got === o.asked
-        ? `Short pile divided: got all ${o.asked} boxes asked for.`
+        ? `Short pile divided: offered all ${o.asked} boxes asked for.`
         : o.got > 0
-          ? `Short pile divided: got ${o.got} of ${o.asked} boxes; the other ${o.asked - o.got} are open as an ask.`
-          : `Short pile divided: got none of the ${o.asked} boxes; they are open as an ask.`;
+          ? `Short pile divided: offered ${o.got} of ${o.asked} boxes; the other ${o.asked - o.got} are open as an ask.`
+          : `Short pile divided: none of the ${o.asked} boxes could be offered; they are open as an ask.`;
     await recordCallAction({
       buyerCounterpartyId: cpId,
       employeeId: actor.employeeId,
-      outcome: o.got > 0 ? 'placed_an_order' : null,
+      outcome: null, // A deal is given, not yet an order.
       note,
     });
   }
 
-  return { orderedBoxes: total, backOnAskBoxes, lineQty };
+  return { offeredBoxes: total, backOnAskBoxes, lineQty };
 }

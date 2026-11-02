@@ -8,6 +8,11 @@ demandRouter.post('/asks', authenticate, controller.postAsk);
 demandRouter.get('/asks', authenticate, controller.getMyAsks);
 demandRouter.post('/asks/:id/accept', authenticate, requireIdempotencyKey(), controller.postAcceptFill);
 demandRouter.post('/asks/:id/decline', authenticate, controller.postDeclineAsk);
+// BR-378 — 👤B. The deal given to a buyer when the seller confirmed his pile: his to take (an
+// order is made) or walk away from, inside the 24-hour hold.
+demandRouter.get('/pile-offers', authenticate, controller.getMyPileOffers);
+demandRouter.post('/pile-offers/:id/accept', authenticate, requireIdempotencyKey(), controller.postAcceptPileOffer);
+demandRouter.post('/pile-offers/:id/decline', authenticate, requireIdempotencyKey(), controller.postDeclinePileOffer);
 // API-044/045/046 — 👤S.
 demandRouter.get('/demand', authenticate, controller.getDemandBoard);
 demandRouter.post('/asks/:id/quotes', authenticate, controller.postQuote);

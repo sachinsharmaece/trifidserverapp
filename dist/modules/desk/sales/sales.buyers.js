@@ -1,3 +1,4 @@
+import { listPileOffersForBuyer } from '../../demand/pileOffer.service.js';
 import { Buyer } from '../../../models/Buyer.js';
 import { Counterparty } from '../../../models/Counterparty.js';
 import { Tehsil } from '../../../models/Tehsil.js';
@@ -391,6 +392,7 @@ export async function getBuyerFile(buyerId) {
         parkedRowsByAskId.set(row.askId, [...(parkedRowsByAskId.get(row.askId) ?? []), row]);
     }
     const waitingOnSeller = await listWaitingOnSeller(buyer);
+    const pileOffers = await listPileOffersForBuyer(buyer);
     // The same nine joints as the Funnel tab, with the same state lists and wording,
     // counted over this buyer's own records only.
     const staleBefore = addDays(new Date(), -(ASK_LEAK_STALENESS_HOURS / 24));
@@ -426,7 +428,8 @@ export async function getBuyerFile(buyerId) {
         stage('classified', buyer.classified, null),
         stage('viewing', buyer.rateViews > 0, buyer.rateViews),
         stage('asked', openAsks.length > 0, openAsks.length, { leakCount: askLeakCount }),
-        stage('rate_held', liveQuoteCount > 0, liveQuoteCount),
+        // A rate held for him: a quote on an ask, or the deal given when a seller confirmed his pile.
+        stage('rate_held', liveQuoteCount + pileOffers.length > 0, liveQuoteCount + pileOffers.length),
         stage('took_it', pendingCount > 0, pendingCount),
         stage('paid', paidCount > 0, paidCount),
         stage('billed', billedCount > 0, billedCount),
@@ -480,6 +483,7 @@ export async function getBuyerFile(buyerId) {
         }),
         waitingOnSeller,
         liveQuotes: liveQuoteRows,
+        pileOffers,
         callLogs,
         orders,
         ordersByStage,

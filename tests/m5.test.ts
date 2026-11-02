@@ -1,8 +1,10 @@
+import { acceptOffers } from './pileOfferHelpers.js';
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
 import { ListingLine } from '../src/models/ListingLine.js';
 import { Pile } from '../src/models/Pile.js';
+import { PileRequest } from '../src/models/PileRequest.js';
 import { Pool } from '../src/models/Pool.js';
 import { PoolCommitment } from '../src/models/PoolCommitment.js';
 import { So } from '../src/models/So.js';
@@ -289,7 +291,7 @@ describe('WF-05 piles — the deferred-commit confirm, and the mandatory gates',
     ).rejects.toMatchObject({ code: 'EXPIRY_REQUIRED' });
   });
 
-  it('confirm schedules the fan-out; running it creates the SO at this buyer’s own rate and decrements qty', async () => {
+  it('confirm schedules the fan-out; running it gives the buyer his deal and holds the boxes; his word makes the SO at his own rate', async () => {
     const fixture = await seedFixture();
     const productId = await getProductIdForSku(fixture.skuId);
     const sellerToken = await tokenFor(fixture.seller);
@@ -325,12 +327,19 @@ describe('WF-05 piles — the deferred-commit confirm, and the mandatory gates',
     const pileAfter = await Pile.findById(pileId);
     expect(pileAfter!.executedAt).not.toBeNull();
 
+    // BR-378 — the buyer is given his deal; no order yet, and the boxes are held off the line.
+    expect(await So.findOne({ buyerId: fixture.buyerInScope.docId })).toBeNull();
+    const pileRequest = await PileRequest.findOne({ pileId });
+    expect(pileRequest).toMatchObject({ offerState: 'offered', offerQty: 10 });
+    expect((await ListingLine.findById(lineIds[0]))!.qty).toBe(90); // 100 - 10, held.
+
+    // His word makes the order, at his own rate, with its payment window running.
+    await acceptOffers(pileId);
     const so = await So.findOne({ buyerId: fixture.buyerInScope.docId });
     expect(so).not.toBeNull();
     expect(so!.state).toBe('awaiting_payment');
-
-    const lineAfter = await ListingLine.findById(lineIds[0]);
-    expect(lineAfter!.qty).toBe(90); // 100 - 10.
+    expect((await PileRequest.findById(pileRequest!._id))!.offerState).toBe('ordered');
+    expect((await ListingLine.findById(lineIds[0]))!.qty).toBe(90);
   }, 20000);
 
   it('undo within the window cancels the job — no SO is ever created', async () => {

@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import * as demandService from './demand.service.js';
+import * as pileOfferService from './pileOffer.service.js';
 import {
   acceptAskFillSchema,
   confirmPileSchema,
@@ -9,6 +10,40 @@ import {
 
 function ok(res: Response, req: Request, data: unknown, status = 200): void {
   res.status(status).json({ data, meta: { correlationId: req.correlationId } });
+}
+
+// BR-378 — 👤B. The deals given to him that wait on his word.
+export async function getMyPileOffers(req: Request, res: Response): Promise<void> {
+  ok(res, req, await pileOfferService.listMyPileOffers(req.auth!.counterpartyId!));
+}
+
+// BR-378 — 👤B. Idempotency-Key required — this makes an order.
+export async function postAcceptPileOffer(req: Request, res: Response): Promise<void> {
+  const buyerCounterpartyId = req.auth!.counterpartyId!;
+  const result = await pileOfferService.acceptPileOffer(
+    req.params.id as string,
+    buyerCounterpartyId,
+    {
+      actorId: buyerCounterpartyId,
+      actorType: 'counterparty',
+      correlationId: req.correlationId,
+    },
+  );
+  ok(res, req, { soId: result.soId, boxes: result.boxes }, 201);
+}
+
+// BR-378 — 👤B. He walks away; the boxes go back on the listing.
+export async function postDeclinePileOffer(req: Request, res: Response): Promise<void> {
+  const buyerCounterpartyId = req.auth!.counterpartyId!;
+  ok(
+    res,
+    req,
+    await pileOfferService.declinePileOffer(req.params.id as string, buyerCounterpartyId, {
+      actorId: buyerCounterpartyId,
+      actorType: 'counterparty',
+      correlationId: req.correlationId,
+    }),
+  );
 }
 
 // API-040 — 👤B.
