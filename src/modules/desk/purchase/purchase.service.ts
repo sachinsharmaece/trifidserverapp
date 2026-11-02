@@ -1202,7 +1202,12 @@ export interface PileAwaitingDecisionItem {
   brand: string;
   ratePaise: number;
   boxes: number;
+  /** What he listed on the line: the boxes he can send start here (capped by what was asked). */
   lineQty: number;
+  /** The expiry the line was listed with (a year, or month and year); null when none was given. */
+  listedExpiry: string | null;
+  /** My stock needs a batch to confirm (BR-105); company billing does not. */
+  provenance: 'company' | 'auth';
   buyers: number;
   openedAt: string;
   confirmWindowEndsAt: string;
@@ -1257,6 +1262,8 @@ export async function getPilesAwaitingDecision(): Promise<PileAwaitingDecisionIt
       ratePaise: line?.ratePaise ?? 0,
       boxes,
       lineQty,
+      listedExpiry: line?.expiryExact ?? null,
+      provenance: (line?.provenance ?? 'company') as 'company' | 'auth',
       buyers: new Set(myRequests.map((r) => (r.buyerId as Types.ObjectId).toString())).size,
       openedAt: pile.openedAt.toISOString(),
       confirmWindowEndsAt: pile.confirmWindowEndsAt.toISOString(),

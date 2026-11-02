@@ -653,10 +653,12 @@ export async function confirmPile(sellerCounterpartyId, pileId, input, correlati
         : null;
     if (!line || !listing)
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Listing line not found.' });
-    if (!input.expiryExact) {
+    // The expiry he gives now, else the one the listing was entered with. The year is the least needed.
+    const expiryExact = input.expiryExact ?? line.expiryExact ?? undefined;
+    if (!expiryExact) {
         throw new AppError({
             code: 'EXPIRY_REQUIRED',
-            messageEn: 'Exact expiry is required to confirm (BR-102).',
+            messageEn: 'The expiry is required to confirm — at least the year (BR-102).',
         });
     }
     if (line.provenance === 'auth' && !input.batch) {
@@ -673,12 +675,12 @@ export async function confirmPile(sellerCounterpartyId, pileId, input, correlati
         pile.decision = 'confirmed';
         pile.decidedAt = now;
         pile.confirmedQty = Math.min(input.canSendBoxes, totalAsked);
-        pile.expiryExact = input.expiryExact;
+        pile.expiryExact = expiryExact;
         pile.batch = input.batch ?? null;
         pile.sellerLockedUntil = addHours(now, 24); // BR-032.
         await pile.save({ session });
         line.expiryFixed = true; // IC-01/BR-102 — the exact month may now display.
-        line.expiryExact = input.expiryExact;
+        line.expiryExact = expiryExact;
         await line.save({ session });
         await syncEnquiriesForPile(pile._id, session, now);
     });

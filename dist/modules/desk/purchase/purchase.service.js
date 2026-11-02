@@ -794,6 +794,8 @@ export async function getPilesAwaitingDecision() {
             ratePaise: line?.ratePaise ?? 0,
             boxes,
             lineQty,
+            listedExpiry: line?.expiryExact ?? null,
+            provenance: (line?.provenance ?? 'company'),
             buyers: new Set(myRequests.map((r) => r.buyerId.toString())).size,
             openedAt: pile.openedAt.toISOString(),
             confirmWindowEndsAt: pile.confirmWindowEndsAt.toISOString(),

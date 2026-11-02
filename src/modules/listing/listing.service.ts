@@ -162,9 +162,10 @@ function assertShelfLifeMeetsFloor(expiryBand: ExpiryBand, expiryExact: string |
   // expectation (BR-102), but when a seller does supply one up front it is
   // still checked against the floor rather than accepted blindly.
   if (!expiryExact) return;
-  const [monthStr, yearStr] = expiryExact.split('/');
-  const month = Number(monthStr);
-  const year = Number(yearStr);
+  // `03/2027` or, with no month known, `2027` — counted to December, the benefit of the doubt.
+  const parts = expiryExact.split('/');
+  const month = parts.length === 2 ? Number(parts[0]) : 12;
+  const year = Number(parts[parts.length - 1]);
   if (!month || !year) return;
   const expiryDate = new Date(year, month - 1, 1);
   if (expiryDate.getTime() - Date.now() < SIX_MONTHS_MS) {
