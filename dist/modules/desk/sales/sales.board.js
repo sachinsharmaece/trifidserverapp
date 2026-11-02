@@ -181,6 +181,12 @@ export async function getBoardForBuyer(buyerDocId) {
             deliveryBand: p.line.deliveryBand,
             provenance: p.line.provenance,
             closed: decisionByLine.get(p.line._id.toString()) ?? null,
+            poolOpen: poolByKey.has(`${String(p.line.skuId)}|${buildConditionSetKey({
+                expiryBand: p.line.expiryBand,
+                moqBand: p.line.moqBand,
+                deliveryBand: p.line.deliveryBand,
+                provenance: p.line.provenance,
+            })}`),
             inPool: (() => {
                 const pool = poolByKey.get(`${String(p.line.skuId)}|${buildConditionSetKey({
                     expiryBand: p.line.expiryBand,
