@@ -10,6 +10,9 @@ import * as listingService from '../listing/listing.service.js';
 import * as ordersService from '../orders/orders.service.js';
 import { cheapestOfferOnHisBoard, placeOnListedOffer, } from './proxy.wantsIt.js';
 import { AppError } from '../../shared/errors.js';
+import { writeAuditLog } from '../../shared/audit.js';
+import { changePoolCommitment, withdrawFromPool } from '../pool/pool.service.js';
+import { Types } from 'mongoose';
 function ok(res, req, data, status = 200) {
     res.status(status).json({ data, meta: { correlationId: req.correlationId } });
 }
@@ -60,6 +63,53 @@ export async function postBuyerCallWantsIt(req, res) {
         note: callNote,
     });
     ok(res, req, result, 201);
+}
+// 2 Nov — change or withdraw a buyer's place in a pool, on a call. Free only while it is not
+// binding (BR-154); audited, and written to his call history with the note.
+export async function postBuyerCallPoolChange(req, res) {
+    const { buyerCounterpartyId, callNote, direction, qty } = req.body;
+    const poolId = String(req.params.id);
+    const result = await changePoolCommitment(buyerCounterpartyId, poolId, qty);
+    await writeAuditLog({
+        actorId: actingStaffId(req),
+        actorType: 'staff',
+        entity: 'pool',
+        entityId: new Types.ObjectId(poolId),
+        field: 'commitment_qty',
+        oldValue: { qty: result.previousQty },
+        newValue: { qty: result.qty, buyerCounterpartyId },
+        correlationId: req.correlationId,
+    });
+    await recordCallAction({
+        buyerCounterpartyId,
+        employeeId: actingStaffId(req),
+        direction,
+        outcome: null,
+        note: `Changed his pool place from ${result.previousQty} to ${result.qty} boxes. ${callNote}`,
+    });
+    ok(res, req, result);
+}
+export async function postBuyerCallPoolWithdraw(req, res) {
+    const { buyerCounterpartyId, callNote, direction } = req.body;
+    const poolId = String(req.params.id);
+    await withdrawFromPool(buyerCounterpartyId, poolId);
+    await writeAuditLog({
+        actorId: actingStaffId(req),
+        actorType: 'staff',
+        entity: 'pool',
+        entityId: new Types.ObjectId(poolId),
+        field: 'commitment_withdrawn',
+        newValue: { buyerCounterpartyId },
+        correlationId: req.correlationId,
+    });
+    await recordCallAction({
+        buyerCounterpartyId,
+        employeeId: actingStaffId(req),
+        direction,
+        outcome: null,
+        note: `Withdrew him from the pool. ${callNote}`,
+    });
+    ok(res, req, { poolId });
 }
 // "Log a buyer call" for a call that names several products, under the one call note.
 // 29 Oct — each line goes where its product belongs: if it is on his board he is put on the

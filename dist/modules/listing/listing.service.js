@@ -546,6 +546,12 @@ export async function getBuyerFeed(buyerCounterpartyId, cursor, limit) {
     const nextCursor = cursor + limit < cards.length ? cursor + limit : undefined;
     return { items: page, nextCursor };
 }
+async function closedByLine(lineIds) {
+    if (lineIds.length === 0)
+        return new Map();
+    const piles = await Pile.find({ listingLineId: { $in: lineIds }, decision: { $ne: null } }, { listingLineId: 1, decision: 1 });
+    return new Map(piles.map((p) => [p.listingLineId.toString(), p.decision]));
+}
 /** API-031. Every rate on a product, cheapest first, plus pools on that product. */
 export async function getProductOffers(buyerCounterpartyId, productId) {
     const { buyer, counterparty } = await requireActiveBuyer(buyerCounterpartyId);
@@ -554,8 +560,10 @@ export async function getProductOffers(buyerCounterpartyId, productId) {
     priced.sort((a, b) => a.buyerRatePaise - b.buyerRatePaise);
     const skuIds = [...new Set(priced.map((v) => v.line.skuId.toString()))];
     const pools = await Pool.find({ skuId: { $in: skuIds }, isActive: true });
+    const closed = await closedByLine(priced.map((v) => v.line._id));
     return {
         offers: priced.map((v) => ({
+            closed: closed.get(v.line._id.toString()) ?? null,
             listingLineId: v.line._id.toString(),
             // 29 Oct — so his ask form can tell a listed pack and send him to Buy instead.
             skuId: v.line.skuId.toString(),
@@ -621,6 +629,7 @@ export async function getListingLineForBuy(buyerCounterpartyId, listingLineId) {
         moqExact: line.moqExact,
         availableBoxes: line.qty,
         conditions: toConditionTags(line),
+        closed: (await closedByLine([line._id])).get(String(line._id)) ?? null,
     };
 }
 /**

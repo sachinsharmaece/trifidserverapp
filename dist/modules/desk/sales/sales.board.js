@@ -1,6 +1,9 @@
 import { Listing } from '../../../models/Listing.js';
 import { ListingLine } from '../../../models/ListingLine.js';
 import { Product } from '../../../models/Product.js';
+import { Pile } from '../../../models/Pile.js';
+import { Pool, buildConditionSetKey } from '../../../models/Pool.js';
+import { PoolCommitment } from '../../../models/PoolCommitment.js';
 import { Manufacturer } from '../../../models/Manufacturer.js';
 import { Sku } from '../../../models/Sku.js';
 import { So } from '../../../models/So.js';
@@ -137,6 +140,31 @@ export async function getBoardForBuyer(buyerDocId) {
     const manufacturerNameById = new Map(manufacturers.map((m) => [m._id.toString(), m.name]));
     const skus = await Sku.find({ _id: { $in: priced.map((p) => p.line.skuId) } });
     const packLabelBySkuId = new Map(skus.map((s) => [s._id.toString(), s.packLabel]));
+    // One read each, however long the board is: the seller's decision on every line, and his place
+    // in every pool these lines open.
+    const lineIds = priced.map((p) => p.line._id);
+    const decidedPiles = await Pile.find({ listingLineId: { $in: lineIds }, decision: { $ne: null } }, { listingLineId: 1, decision: 1 });
+    const decisionByLine = new Map(decidedPiles.map((pile) => [
+        pile.listingLineId.toString(),
+        pile.decision,
+    ]));
+    const pools = await Pool.find({
+        skuId: { $in: priced.map((p) => p.line.skuId) },
+        isActive: true,
+    });
+    const poolByKey = new Map(pools.map((pool) => [`${String(pool.skuId)}|${pool.conditionSetKey}`, pool]));
+    const poolIds = pools.map((pool) => pool._id);
+    const [committedRows, heldRows] = poolIds.length
+        ? await Promise.all([
+            PoolCommitment.aggregate([
+                { $match: { poolId: { $in: poolIds }, withdrawnAt: null } },
+                { $group: { _id: '$poolId', boxes: { $sum: '$qty' } } },
+            ]),
+            PoolCommitment.find({ poolId: { $in: poolIds }, buyerId: buyerDocId, withdrawnAt: null }),
+        ])
+        : [[], []];
+    const committedByPool = new Map(committedRows.map((r) => [r._id.toString(), r.boxes]));
+    const heldByPool = new Map(heldRows.map((c) => [c.poolId.toString(), c]));
     const rows = [];
     for (const product of products) {
         const productId = product._id.toString();
@@ -152,6 +180,26 @@ export async function getBoardForBuyer(buyerDocId) {
             moqBand: p.line.moqBand,
             deliveryBand: p.line.deliveryBand,
             provenance: p.line.provenance,
+            closed: decisionByLine.get(p.line._id.toString()) ?? null,
+            inPool: (() => {
+                const pool = poolByKey.get(`${String(p.line.skuId)}|${buildConditionSetKey({
+                    expiryBand: p.line.expiryBand,
+                    moqBand: p.line.moqBand,
+                    deliveryBand: p.line.deliveryBand,
+                    provenance: p.line.provenance,
+                })}`);
+                const held = pool ? heldByPool.get(pool._id.toString()) : undefined;
+                if (!pool || !held)
+                    return null;
+                return {
+                    poolId: pool._id.toString(),
+                    boxes: held.qty,
+                    committedBoxes: committedByPool.get(pool._id.toString()) ?? 0,
+                    moq: pool.moq,
+                    status: pool.status,
+                    canChange: !held.isBinding,
+                };
+            })(),
         }))
             .sort((a, b) => a.ratePaise - b.ratePaise);
         rows.push({

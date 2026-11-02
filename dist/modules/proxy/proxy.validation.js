@@ -81,6 +81,22 @@ export const proxyWantsItSchema = z
     direction: z.enum(['in', 'out']).optional(),
 })
     .strict();
+// 2 Nov — Sales changes or withdraws a buyer's place in a pool on a call.
+export const proxyPoolChangeSchema = z
+    .object({
+    buyerCounterpartyId: z.string().min(1),
+    qty: z.number().int().min(1),
+    callNote: callNoteSchema,
+    direction: z.enum(['in', 'out']).optional(),
+})
+    .strict();
+export const proxyPoolWithdrawSchema = z
+    .object({
+    buyerCounterpartyId: z.string().min(1),
+    callNote: callNoteSchema,
+    direction: z.enum(['in', 'out']).optional(),
+})
+    .strict();
 // Read-side query for the Sales call workspace's ask/quote pickers — no
 // call note, nothing is written.
 export const proxyListBuyerAsksQuerySchema = z

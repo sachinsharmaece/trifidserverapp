@@ -1,4 +1,5 @@
 import { Buyer } from '../../models/Buyer.js';
+import { PoolCommitment } from '../../models/PoolCommitment.js';
 import { Pool, buildConditionSetKey } from '../../models/Pool.js';
 import { Sku } from '../../models/Sku.js';
 import { AppError } from '../../shared/errors.js';
@@ -26,6 +27,19 @@ export async function placeOnListedOffer(buyerCounterpartyId, listingLineId, inp
             throw new AppError({
                 code: 'BELOW_MOQ',
                 messageEn: `Minimum order for this offer is ${line.moqExact} boxes, and its pool is closed.`,
+                field: 'qty',
+            });
+        }
+        // 2 Nov — he already has a place here: say so, and point at Change / Withdraw, instead of the
+        // buyer-facing "You are already committed".
+        const buyer = await Buyer.findOne({ counterpartyId: buyerCounterpartyId }, { _id: 1 });
+        const held = buyer
+            ? await PoolCommitment.findOne({ poolId: pool._id, buyerId: buyer._id, withdrawnAt: null })
+            : null;
+        if (held) {
+            throw new AppError({
+                code: 'VALIDATION_FAILED',
+                messageEn: `He is already in this pool with ${held.qty} ${held.qty === 1 ? 'box' : 'boxes'}. Change or withdraw it instead.`,
                 field: 'qty',
             });
         }
