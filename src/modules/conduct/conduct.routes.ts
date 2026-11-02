@@ -1,3 +1,4 @@
+import { param, requireInScope } from '../../shared/scope.js';
 import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
 import { requirePermission } from '../../middleware/requirePermission.js';
@@ -43,6 +44,8 @@ conductRouter.get(
   '/staff/conduct/counterparties/:counterpartyId/history',
   authenticate,
   requirePermission(PERMISSIONS.CONDUCT_RECORD),
+  requireInScope('sales', param('counterpartyId', 'counterparty')),
+  requireInScope('purchase', param('counterpartyId', 'counterparty')),
   controller.getConductHistory,
 );
 

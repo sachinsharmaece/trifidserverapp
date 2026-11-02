@@ -5,6 +5,7 @@ import { Employee } from '../models/Employee.js';
 import { Counterparty } from '../models/Counterparty.js';
 import { Buyer } from '../models/Buyer.js';
 import { Seller } from '../models/Seller.js';
+import { SellerArea } from '../models/SellerArea.js';
 import { BuyerLocation } from '../models/BuyerLocation.js';
 import { Tehsil } from '../models/Tehsil.js';
 import { Manufacturer } from '../models/Manufacturer.js';
@@ -19,7 +20,9 @@ import { So } from '../models/So.js';
 import { Po } from '../models/Po.js';
 import { Ask } from '../models/Ask.js';
 import { Quote } from '../models/Quote.js';
-import * as territoryService from '../modules/territory/territory.service.js';
+import { ensureDistrict } from '../modules/territory/territory.masters.js';
+import { State } from '../models/State.js';
+import { seedStates } from '../db/seedStates.js';
 import * as catalogService from '../modules/catalog/catalog.service.js';
 import * as pricingService from '../modules/pricing/pricing.service.js';
 import * as onboardingService from '../modules/onboarding/onboarding.service.js';
@@ -70,6 +73,50 @@ function gstinFor(stateCode: string, pan: string): string {
   return `${first14}${computeGstinChecksum(first14)}`;
 }
 
+/** Dev seed only — a seller approval without the leader/assignee rules (Phase 4). */
+async function activateDemoSeller(
+  registrationId: string,
+  tehsilId: unknown,
+  dispatchCutoffTime: string,
+  trustTier: 'Verified' | 'Trusted',
+  seedReason: string,
+  employeeId: string,
+): Promise<void> {
+  const seller = await Seller.findOne({ counterpartyId: registrationId });
+  await SellerArea.create({
+    sellerId: seller!._id,
+    tehsilId,
+    setBy: employeeId,
+    setAt: new Date(),
+  });
+  await Seller.updateOne(
+    { _id: seller!._id },
+    {
+      $set: {
+        dispatchCutoffTime,
+        trustTier,
+        tierSeededBy: employeeId,
+        tierSeededReason: seedReason,
+        tehsilId,
+      },
+    },
+  );
+  await Counterparty.updateOne({ _id: registrationId }, { $set: { status: 'active' } });
+}
+
+/** Dev seed only — what an approval sets, without the approval's leader/assignee rules. */
+async function activateDemoBuyer(
+  registrationId: string,
+  tehsilId: unknown,
+  category: 'Retailer' | 'Dealer' | 'Distributor' | 'Trader',
+): Promise<void> {
+  await Buyer.updateOne(
+    { counterpartyId: registrationId },
+    { $set: { tehsilId, category, classified: true } },
+  );
+  await Counterparty.updateOne({ _id: registrationId }, { $set: { status: 'active' } });
+}
+
 async function seed(): Promise<void> {
   await connectToDatabase(env.mongodbUri);
 
@@ -87,7 +134,15 @@ async function seed(): Promise<void> {
   // --- Tehsil ---------------------------------------------------------
   let tehsil = await Tehsil.findOne({ name: 'Indore', district: 'Indore' });
   if (!tehsil) {
-    await territoryService.createTehsil('Indore', 'Indore', 'Madhya Pradesh');
+    await seedStates();
+    const mp = await State.findOne({ gstStateCode: '23' });
+    const indore = await ensureDistrict(mp!._id, 'Indore');
+    await Tehsil.create({
+      name: 'Indore',
+      districtId: indore.districtId,
+      district: indore.name,
+      state: mp!.name,
+    });
     tehsil = await Tehsil.findOne({ name: 'Indore', district: 'Indore' });
   }
   console.log(`Tehsil: Indore, Indore, MP (${tehsil!._id})`);
@@ -165,15 +220,9 @@ async function seed(): Promise<void> {
       },
       consent: { noticeVersion: 'v1', marketingOptIn: false },
     });
-    await onboardingService.approveBuyer(
-      registrationId,
-      {
-        tehsilId: (tehsil!._id as { toString(): string }).toString(),
-        tradePosition: 'dealer',
-        isTrader: false,
-      },
-      actor,
-    );
+    // Phase 3 — approval is now a Sales Leader's, with an assignee; this dev
+    // seed activates its demo buyers directly instead.
+    await activateDemoBuyer(registrationId, tehsil!._id, 'Dealer');
     buyerCounterparty = await Counterparty.findOne({ mobile: BUYER_MOBILE });
     console.log(`Buyer registered and approved: ${BUYER_MOBILE} (Dealer)`);
   } else {
@@ -226,15 +275,15 @@ async function seed(): Promise<void> {
       },
       consent: { noticeVersion: 'v1', marketingOptIn: false },
     });
-    await onboardingService.approveSeller(
+    // Phase 4 — approval is a Purchase Leader's, with an assignee; this dev
+    // seed activates its demo sellers directly instead.
+    await activateDemoSeller(
       registrationId,
-      {
-        tehsilIds: [(tehsil!._id as { toString(): string }).toString()],
-        dispatchCutoffTime: '16:00',
-        trustTier: 'Verified', // so this seller is eligible to supply a pool (BR-153).
-        seedReason: 'M5 demo data — seeded eligible for pools.',
-      },
-      actor,
+      tehsil!._id,
+      '16:00',
+      'Verified', // so this seller is eligible to supply a pool (BR-153).
+      'M5 demo data — seeded eligible for pools.',
+      actor.employeeId,
     );
     sellerCounterparty = await Counterparty.findOne({ mobile: SELLER_MOBILE });
     console.log(`Seller registered and approved: ${SELLER_MOBILE} (Verified)`);
@@ -314,15 +363,9 @@ async function seed(): Promise<void> {
       },
       consent: { noticeVersion: 'v1', marketingOptIn: false },
     });
-    await onboardingService.approveBuyer(
-      registrationId,
-      {
-        tehsilId: (tehsil!._id as { toString(): string }).toString(),
-        tradePosition: 'retailer',
-        isTrader: false,
-      },
-      actor,
-    );
+    // Phase 3 — approval is now a Sales Leader's, with an assignee; this dev
+    // seed activates its demo buyers directly instead.
+    await activateDemoBuyer(registrationId, tehsil!._id, 'Retailer');
     buyer2Counterparty = await Counterparty.findOne({ mobile: BUYER2_MOBILE });
     console.log(`Buyer registered and approved: ${BUYER2_MOBILE} (Retailer)`);
   } else {
@@ -375,15 +418,15 @@ async function seed(): Promise<void> {
       },
       consent: { noticeVersion: 'v1', marketingOptIn: false },
     });
-    await onboardingService.approveSeller(
+    // Phase 4 — approval is a Purchase Leader's, with an assignee; this dev
+    // seed activates its demo sellers directly instead.
+    await activateDemoSeller(
       registrationId,
-      {
-        tehsilIds: [(tehsil!._id as { toString(): string }).toString()],
-        dispatchCutoffTime: '17:00',
-        trustTier: 'Trusted', // so this seller also gets the demand-board head start.
-        seedReason: 'M5 demo data — seeded as a head-start-eligible seller.',
-      },
-      actor,
+      tehsil!._id,
+      '17:00',
+      'Trusted', // so this seller also gets the demand-board head start.
+      'M5 demo data — seeded as a head-start-eligible seller.',
+      actor.employeeId,
     );
     seller2Counterparty = await Counterparty.findOne({ mobile: SELLER2_MOBILE });
     console.log(`Seller registered and approved: ${SELLER2_MOBILE} (Trusted)`);

@@ -14,6 +14,8 @@ import { SellerDebit } from '../../../models/SellerDebit.js';
 import { SellerCatalogueEntry } from '../../../models/SellerCatalogueEntry.js';
 import { SellerDealership } from '../../../models/SellerDealership.js';
 import { Tehsil } from '../../../models/Tehsil.js';
+import { Employee } from '../../../models/Employee.js';
+import { SellerAssignment } from '../../../models/SellerAssignment.js';
 import { Pile } from '../../../models/Pile.js';
 import { PileRequest } from '../../../models/PileRequest.js';
 import { Movement } from '../../../models/Movement.js';
@@ -96,7 +98,30 @@ export interface ActiveDemandItem {
   brand: string;
   technical: string;
   manufacturerName: string;
+  /** 30 Oct — what the ask is for, so asks on one product can be told apart. */
+  packLabel: string | null; // null = all packs
+  expiryBand: string;
+  deliveryBand: string | null;
 }
+
+/**
+ * 30 Oct — Purchase → Demand shows one row per product, its asks under it (BR-371). The asks stay
+ * separate records (a quote answers one ask), but the product row adds up their boxes and counts
+ * each seller once across them.
+ */
+export interface DemandProductGroup {
+  productId: string | null;
+  brand: string;
+  technical: string;
+  manufacturerName: string;
+  askCount: number;
+  totalBoxes: number;
+  sellerCounts: Record<SellerDemandState, number>;
+  noSeller: boolean;
+  asks: ActiveDemandItem[];
+}
+
+type SellerSets = Record<'quoted' | 'active' | 'dormant', Set<string>>;
 
 async function skuIdsForAsk(ask: InstanceType<typeof Ask>): Promise<Types.ObjectId[]> {
   if (ask.skuId) return [ask.skuId as Types.ObjectId];
@@ -110,9 +135,72 @@ async function skuIdsForAsk(ask: InstanceType<typeof Ask>): Promise<Types.Object
 export async function getActiveDemandList(filters: {
   noSellerOnly?: boolean;
 }): Promise<ActiveDemandItem[]> {
+  return (await computeActiveDemand(filters)).items;
+}
+
+/** 30 Oct — the same asks, one group per product, most boxes asked first (BR-371). */
+export async function getActiveDemandByProduct(filters: {
+  noSellerOnly?: boolean;
+}): Promise<DemandProductGroup[]> {
+  const { items, sellerSetsByAskId, productIdByAskId } = await computeActiveDemand(filters);
+  const groups = new Map<
+    string,
+    { productId: string | null; items: ActiveDemandItem[]; sets: SellerSets }
+  >();
+  for (const item of items) {
+    const productId = productIdByAskId.get(item.askId) ?? null;
+    const key = productId ?? `ask:${item.askId}`;
+    const group = groups.get(key) ?? {
+      productId,
+      items: [],
+      sets: { quoted: new Set(), active: new Set(), dormant: new Set() },
+    };
+    group.items.push(item);
+    const sets = sellerSetsByAskId.get(item.askId)!;
+    for (const state of ['quoted', 'active', 'dormant'] as const) {
+      for (const id of sets[state]) group.sets[state].add(id);
+    }
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .map(({ productId, items: asks, sets }) => {
+      // A seller counts once, in his best state across the asks: quoted, then listed, then dormant.
+      const active = [...sets.active].filter((id) => !sets.quoted.has(id));
+      const dormant = [...sets.dormant].filter(
+        (id) => !sets.quoted.has(id) && !sets.active.has(id),
+      );
+      const sellerCounts = {
+        quoted: sets.quoted.size,
+        active: active.length,
+        dormant: dormant.length,
+        dark: 0,
+      };
+      const first = asks[0]!;
+      return {
+        productId,
+        brand: first.brand,
+        technical: first.technical,
+        manufacturerName: first.manufacturerName,
+        askCount: asks.length,
+        totalBoxes: asks.reduce((sum, a) => sum + a.qty, 0),
+        sellerCounts,
+        noSeller: sellerCounts.quoted + sellerCounts.active + sellerCounts.dormant === 0,
+        asks,
+      };
+    })
+    .sort((a, b) => b.totalBoxes - a.totalBoxes || a.brand.localeCompare(b.brand));
+}
+
+async function computeActiveDemand(filters: { noSellerOnly?: boolean }): Promise<{
+  items: ActiveDemandItem[];
+  sellerSetsByAskId: Map<string, SellerSets>;
+  /** The product each ask is on, a single-pack ask included — what the groups key on. */
+  productIdByAskId: Map<string, string>;
+}> {
   const asks = await Ask.find({ state: { $in: ['open', 'quoted'] } }).sort({ createdAt: -1 });
   const items: Array<Omit<ActiveDemandItem, 'brand' | 'technical' | 'manufacturerName'>> = [];
   const productIdByAskId = new Map<string, string>();
+  const sellerSetsByAskId = new Map<string, SellerSets>();
 
   for (const ask of asks) {
     const skuIds = await skuIdsForAsk(ask);
@@ -156,14 +244,24 @@ export async function getActiveDemandList(filters: {
 
     if (filters.noSellerOnly && !noSeller) continue;
 
+    const askIdStr = (ask._id as Types.ObjectId).toString();
+    sellerSetsByAskId.set(askIdStr, {
+      quoted: quotedSellerIds,
+      active: activeSellerIds,
+      dormant: everSuppliedSellerIds,
+    });
+    const packSku = ask.skuId && !ask.allPacks ? await Sku.findById(ask.skuId) : null;
     items.push({
-      askId: (ask._id as Types.ObjectId).toString(),
+      askId: askIdStr,
       qty: ask.qty,
       skuId: ask.skuId ? (ask.skuId as Types.ObjectId).toString() : null,
       productId: ask.productId ? (ask.productId as Types.ObjectId).toString() : null,
       createdAt: (ask as unknown as { createdAt: Date }).createdAt.toISOString(),
       sellerCounts,
       noSeller,
+      packLabel: packSku?.packLabel ?? null,
+      expiryBand: ask.conditionRequirement?.expiryBand ?? 'over12',
+      deliveryBand: ask.conditionRequirement?.deliveryBand ?? null,
     });
   }
 
@@ -178,7 +276,7 @@ export async function getActiveDemandList(filters: {
     manufacturers.map((m) => [(m._id as Types.ObjectId).toString(), m]),
   );
 
-  return items.map((item) => {
+  const named = items.map((item) => {
     const productId = productIdByAskId.get(item.askId);
     const product = productId ? productById.get(productId) : undefined;
     const manufacturer = product
@@ -191,6 +289,7 @@ export async function getActiveDemandList(filters: {
       manufacturerName: manufacturer?.name ?? '—',
     };
   });
+  return { items: named, sellerSetsByAskId, productIdByAskId };
 }
 
 // ---------------------------------------------------------------------------
@@ -717,19 +816,38 @@ export interface SellerCatalogueEntryInput {
  * whole "what does he carry" form, product level or pack level. */
 export async function upsertSellerCatalogueEntry(
   input: SellerCatalogueEntryInput,
-  actor: { employeeId: string },
+  actor: { employeeId: string; correlationId?: string },
 ): Promise<{ entryId: string }> {
   const seller = await Seller.findById(input.sellerId);
   if (!seller) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Seller not found.' });
   const product = await Product.findById(input.productId);
   if (!product) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Product not found.' });
+  if (!product.active || product.deletedAt) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'This product is inactive — Admin has switched it off in Manage → Products.',
+      field: 'productId',
+    });
+  }
 
   const entry = await SellerCatalogueEntry.findOneAndUpdate(
     { sellerId: input.sellerId, productId: input.productId },
     { $set: { skuIds: input.skuIds ?? [], setBy: actor.employeeId, setAt: new Date() } },
     { upsert: true, new: true },
   );
-  return { entryId: (entry!._id as Types.ObjectId).toString() };
+  const entryId = (entry!._id as Types.ObjectId).toString();
+  // 25 Oct — "Add to his catalogue" from the listing screen is audited like
+  // every other change a desk makes to a seller's file.
+  await writeAuditLog({
+    actorId: actor.employeeId,
+    actorType: 'staff',
+    entity: 'seller_catalogue_entry',
+    entityId: entryId,
+    field: 'upsert',
+    newValue: { sellerId: input.sellerId, productId: input.productId, skuIds: input.skuIds ?? [] },
+    correlationId: actor.correlationId ?? 'unknown',
+  });
+  return { entryId };
 }
 
 export interface SellerCataloguePackItem {
@@ -750,7 +868,12 @@ export interface SellerCatalogueItem {
   technical: string;
   manufacturerName: string;
   productState: string;
+  /** 25 Oct — a draft company blocks a listing as surely as a draft product. */
+  manufacturerState: string;
+  /** False when Admin switched the product off (only a hand-entered row can carry one). */
+  productActive: boolean;
   packsDetailed: boolean;
+  /** Active packs only — a pack switched off in Manage cannot be listed. */
   packs: SellerCataloguePackItem[];
   setAt: string;
   setBy: string | null;
@@ -774,7 +897,7 @@ export async function getSellerCatalogue(sellerId: string): Promise<SellerCatalo
   const manufacturerById = new Map(
     manufacturers.map((m) => [(m._id as Types.ObjectId).toString(), m]),
   );
-  const allSkus = await Sku.find({ productId: { $in: productIds } });
+  const allSkus = await Sku.find({ productId: { $in: productIds }, active: true, deletedAt: null });
   const skusByProduct = new Map<string, (typeof allSkus)[number][]>();
   for (const sku of allSkus) {
     const key = (sku.productId as Types.ObjectId).toString();
@@ -809,6 +932,8 @@ export async function getSellerCatalogue(sellerId: string): Promise<SellerCatalo
       technical: product?.technical ?? '—',
       manufacturerName: manufacturer?.name ?? '—',
       productState: product?.state ?? 'live',
+      manufacturerState: manufacturer?.state ?? 'live',
+      productActive: Boolean(product && product.active && !product.deletedAt),
       packsDetailed: entry.skuIds.length > 0,
       packs: relevantSkus.map((s) => {
         const skuKey = (s._id as Types.ObjectId).toString();
@@ -970,6 +1095,10 @@ export interface SupplyMatrixSellerRow {
   sellerId: string;
   firm: string;
   trustTier: string;
+  /** Phase 4 — his own district, and who he is assigned to (null = the Queue). */
+  district: string | null;
+  assignedTo: string | null;
+  assignedToEmployeeId: string | null;
   carryCount: number;
   listedCount: number;
   manufacturerNames: string[];
@@ -984,6 +1113,19 @@ export async function getSupplyMatrixBySeller(): Promise<SupplyMatrixSellerRow[]
     counterparties.map((c) => [(c._id as Types.ObjectId).toString(), c]),
   );
   const { entriesBySeller, listedProductIdsBySeller } = await computeSellerCatalogueCoverage();
+  const sellerAssignments = await SellerAssignment.find({
+    sellerId: { $in: sellers.map((x) => x._id) },
+  });
+  const ownerBySeller = new Map(
+    sellerAssignments.map((a) => [String(a.sellerId), String(a.ownerEmployeeId)]),
+  );
+  const owners = await Employee.find({ _id: { $in: [...ownerBySeller.values()] } }, { person: 1 });
+  const ownerName = new Map(owners.map((e) => [String(e._id), e.person]));
+  const homeTehsils = await Tehsil.find(
+    { _id: { $in: sellers.map((x) => x.tehsilId).filter(Boolean) } },
+    { district: 1 },
+  );
+  const districtOf = new Map(homeTehsils.map((t) => [String(t._id), t.district]));
   const allEntries = [...entriesBySeller.values()].flat();
   const products = await Product.find({ _id: { $in: allEntries.map((e) => e.productId) } });
   const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
@@ -1025,6 +1167,9 @@ export async function getSupplyMatrixBySeller(): Promise<SupplyMatrixSellerRow[]
       sellerId: key,
       firm: counterpartyById.get((s.counterpartyId as Types.ObjectId).toString())?.firm ?? '—',
       trustTier: s.trustTier,
+      district: s.tehsilId ? (districtOf.get(String(s.tehsilId)) ?? null) : null,
+      assignedTo: ownerBySeller.has(key) ? (ownerName.get(ownerBySeller.get(key)!) ?? null) : null,
+      assignedToEmployeeId: ownerBySeller.get(key) ?? null,
       carryCount: myEntries.length,
       listedCount: myEntries.filter((e) =>
         myListedProductIds.has((e.productId as Types.ObjectId).toString()),
@@ -1535,7 +1680,7 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
     firm: counterparty.firm ?? '—',
     gstin: counterparty.gstin ?? '—',
     ownerName: counterparty.ownerName ?? '—',
-    mobile: counterparty.mobile,
+    mobile: counterparty.mobile ?? counterparty.contactMobile ?? '—',
     licenceNo: counterparty.licenceNo ?? '—',
     trustTier: seller.trustTier,
     dispatchCutoffTime: seller.dispatchCutoffTime,

@@ -2,10 +2,11 @@ import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
 import { requirePermission } from '../../middleware/requirePermission.js';
 import { requireReauth } from '../../middleware/requireReauth.js';
+import { requireIdempotencyKey } from '../../middleware/idempotency.js';
 import { validateBody, validateQuery } from '../../middleware/validate.js';
 import { PERMISSIONS } from '../../config/permissions.js';
 import * as controller from './admin.controller.js';
-import { assignBookSchema, configUpdateSchema, createAbsenceSchema, createEmployeeSchema, listEmployeesQuerySchema, } from './admin.validation.js';
+import { assignBookSchema, configUpdateSchema, createAbsenceSchema, createEmployeeSchema, deactivateEmployeeSchema, listEmployeesQuerySchema, revealPiiSchema, updateEmployeeSchema, } from './admin.validation.js';
 export const adminRouter = Router();
 // `authenticate` is applied per route, not via `adminRouter.use(...)` — see
 // the comment in modules/file/file.routes.ts for why a blanket, path-less
@@ -15,10 +16,18 @@ export const adminRouter = Router();
 adminRouter.get('/admin/config', authenticate, requirePermission(PERMISSIONS.CONFIG_READ), controller.getConfig);
 adminRouter.put('/admin/config/:key', authenticate, requirePermission(PERMISSIONS.CONFIG_WRITE), validateBody(configUpdateSchema), controller.putConfig);
 // API-132
-adminRouter.post('/admin/employees', authenticate, requirePermission(PERMISSIONS.EMPLOYEE_WRITE), validateBody(createEmployeeSchema), controller.postEmployee);
+adminRouter.post('/admin/employees', authenticate, requirePermission(PERMISSIONS.EMPLOYEE_WRITE), requireIdempotencyKey(), validateBody(createEmployeeSchema), controller.postEmployee);
 // M10 — issue or re-issue an authenticator for a Controller/Admin/Founder (CH §24.3).
 // Re-authentication required: it hands out the second factor for someone else's account.
 adminRouter.post('/admin/employees/:id/mfa', authenticate, requirePermission(PERMISSIONS.EMPLOYEE_WRITE), requireReauth, controller.postEmployeeMfa);
+// Phase 2 — one employee (masked PII) for the Edit form; edit; switch off /
+// on; Admin-only PII reveal. Every write needs an Idempotency-Key.
+adminRouter.get('/admin/employees/:id', authenticate, requirePermission(PERMISSIONS.EMPLOYEE_READ), controller.getEmployee);
+adminRouter.put('/admin/employees/:id', authenticate, requirePermission(PERMISSIONS.EMPLOYEE_WRITE), requireIdempotencyKey(), validateBody(updateEmployeeSchema), controller.putEmployee);
+adminRouter.get('/admin/employees/:id/deactivation-impact', authenticate, requirePermission(PERMISSIONS.EMPLOYEE_WRITE), controller.getDeactivationImpact);
+adminRouter.post('/admin/employees/:id/deactivate', authenticate, requirePermission(PERMISSIONS.EMPLOYEE_WRITE), requireIdempotencyKey(), validateBody(deactivateEmployeeSchema), controller.postDeactivate);
+adminRouter.post('/admin/employees/:id/reactivate', authenticate, requirePermission(PERMISSIONS.EMPLOYEE_WRITE), requireIdempotencyKey(), controller.postReactivate);
+adminRouter.post('/admin/employees/:id/reveal', authenticate, requirePermission(PERMISSIONS.EMPLOYEE_PII_REVEAL), validateBody(revealPiiSchema), controller.postRevealPii);
 // API-134 (new — needed by trifid-adminapp's one live screen this session;
 // added to API_CONTRACT.md alongside this change).
 adminRouter.get('/admin/employees', authenticate, requirePermission(PERMISSIONS.EMPLOYEE_READ), validateQuery(listEmployeesQuerySchema), controller.getEmployees);
@@ -28,4 +37,4 @@ adminRouter.get('/admin/lanes', authenticate, requirePermission(PERMISSIONS.EMPL
 adminRouter.post('/admin/absences', authenticate, requirePermission(PERMISSIONS.EMPLOYEE_WRITE), validateBody(createAbsenceSchema), controller.postAbsence);
 // New — not in the original API_CONTRACT.md. BR-261/BR-276 — the manual
 // book-assignment action; the automatic queue-to-book trigger is M4.
-adminRouter.post('/admin/book-assignments', authenticate, requirePermission(PERMISSIONS.BOOK_ASSIGN), validateBody(assignBookSchema), controller.postBookAssignment);
+adminRouter.post('/admin/book-assignments', authenticate, requirePermission(PERMISSIONS.BOOK_ASSIGN), requireIdempotencyKey(), validateBody(assignBookSchema), controller.postBookAssignment);

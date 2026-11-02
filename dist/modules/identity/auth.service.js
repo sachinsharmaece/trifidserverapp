@@ -2,9 +2,10 @@ import { randomInt, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { verify as verifyTotp } from 'otplib';
 import { env, isProduction } from '../../config/env.js';
-import { MFA_REQUIRED_ROLE_KEYS } from '../../config/permissions.js';
+import { MFA_REQUIRED_ROLE_KEYS, ROLE_SEED } from '../../config/permissions.js';
 import { AuthOtp } from '../../models/AuthOtp.js';
 import { AuthSession } from '../../models/AuthSession.js';
+import { permissionsForPositions } from '../../config/positions.js';
 import { Counterparty } from '../../models/Counterparty.js';
 import { Employee } from '../../models/Employee.js';
 import { Role } from '../../models/Role.js';
@@ -103,7 +104,8 @@ function buildCounterpartyMeDto(counterparty) {
     const base = {
         actorType: 'counterparty',
         counterpartyId: counterparty._id.toString(),
-        mobile: counterparty.mobile,
+        // Only a firm with a login mobile can be signed in to reach this.
+        mobile: counterparty.mobile ?? '',
         status: counterparty.status,
     };
     if (counterparty.kind === 'buyer')
@@ -239,15 +241,41 @@ export async function verifyOtp(requestId, code, deviceFingerprint, correlationI
     const session = await issueCounterpartySession(counterparty, deviceFingerprint, correlationId);
     return session;
 }
+const SEEDED_ROLE_PERMISSIONS = new Map(ROLE_SEED.map((role) => [role.key, role.permissionKeys]));
 async function loadEmployeeRoles(employee) {
     const roles = await Role.find({ _id: { $in: employee.roleIds } });
     const roleKeys = roles.map((role) => role.key);
-    const permissionKeys = [...new Set(roles.flatMap((role) => role.permissionKeys))];
+    // 26 Oct — a built-in role's permissions are read from the code (ROLE_SEED),
+    // not from its database row. Roles are not editable in the app, so the two
+    // are meant to match; but every server rewrites those rows when it starts,
+    // and an older server sharing the database (a deployed `develop` beside a
+    // newer branch) put back its own shorter lists — Admin lost the approve
+    // rights this way. Only an unknown role falls back to its stored list.
+    const permissionKeys = [
+        ...new Set([
+            ...roles.flatMap((role) => SEEDED_ROLE_PERMISSIONS.get(role.key) ?? role.permissionKeys),
+            // Phase 2 — a position grants a few leader permissions of its own
+            // (config/positions.ts), on top of what the roles grant.
+            ...permissionsForPositions(employee.positions ?? []),
+        ]),
+    ];
     return { roleKeys, permissionKeys };
 }
 /** CH §24.3 — the roles that must use a second factor. */
 function roleRequiresMfa(roleKeys) {
     return roleKeys.some((key) => MFA_REQUIRED_ROLE_KEYS.has(key));
+}
+/**
+ * 27 Oct — a lockout that has run out starts the count again. The counter was
+ * only reset by a successful sign-in, so after a lockout ended one more typo
+ * (6 ≥ 5) locked the person out for another 30 minutes.
+ */
+async function clearExpiredLockout(employee) {
+    if (employee.lockedUntil && employee.lockedUntil.getTime() <= Date.now()) {
+        employee.failedLoginAttempts = 0;
+        employee.lockedUntil = null;
+        await employee.save();
+    }
 }
 async function registerStaffFailure(employee) {
     employee.failedLoginAttempts += 1;
@@ -310,6 +338,7 @@ export async function staffLogin(email, password) {
     if (employee.lockedUntil && employee.lockedUntil.getTime() > Date.now()) {
         throw new AppError({ code: 'LOCKED_OUT', messageEn: 'Too many attempts. Try again later.' });
     }
+    await clearExpiredLockout(employee);
     const passwordMatches = await bcrypt.compare(password, employee.passwordHash);
     if (!passwordMatches) {
         await registerStaffFailure(employee);
@@ -359,6 +388,7 @@ export async function staffMfaVerify(mfaToken, code, correlationId) {
     if (employee.lockedUntil && employee.lockedUntil.getTime() > Date.now()) {
         throw new AppError({ code: 'LOCKED_OUT', messageEn: 'Too many attempts. Try again later.' });
     }
+    await clearExpiredLockout(employee);
     const codeIsValid = await checkMfaCode(employee.mfaSecret, code);
     if (!codeIsValid) {
         await registerStaffFailure(employee);
@@ -428,6 +458,10 @@ export async function refreshSession(presentedToken) {
                 code: 'SESSION_REPLACED',
                 messageEn: 'Session expired. Sign in again.',
             });
+        }
+        // Phase 2 — a switched-off employee could keep refreshing before this.
+        if (!employee.active) {
+            throw new AppError({ code: 'ACCOUNT_NOT_ACTIVE', messageEn: 'This account is not active.' });
         }
         const { roleKeys, permissionKeys } = await loadEmployeeRoles(employee);
         claims = {

@@ -10,6 +10,7 @@ import { SellerBlock } from '../../models/SellerBlock.js';
 import { Counterparty } from '../../models/Counterparty.js';
 import { Refund } from '../../models/Refund.js';
 import { So } from '../../models/So.js';
+import { assertBuyerApproved } from '../../shared/guards.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { addHours, formatForDisplay } from '../../shared/clock.js';
@@ -20,7 +21,10 @@ import {
 import type { Paise } from '../../shared/money.js';
 import { createSoInSession } from '../chain/chain.service.js';
 import { getPostedReceiptsPaiseForSo } from '../payment/payment.service.js';
-import { computeBuyerFacingRatePaise } from '../listing/listing.service.js';
+import {
+  computeBuyerFacingRatePaise,
+  defaultDeliveryLocationId,
+} from '../listing/listing.service.js';
 
 const PAY_WINDOW_HOURS = 16; // BR-156.
 const RECONFIRM_THRESHOLD = 0.75; // BR-154.
@@ -158,7 +162,7 @@ async function findCurrentSupplier(
 
 interface CommitInput {
   qty: number;
-  deliveryLocationId: string;
+  deliveryLocationId?: string;
 }
 
 /**
@@ -182,6 +186,7 @@ export async function commitToPool(
       messageEn: 'This account is blocked. Call the sales desk for help.',
     });
   }
+  await assertBuyerApproved(buyer.counterpartyId as Types.ObjectId); // 1 Nov — see guards.ts.
   const pool = await Pool.findById(poolId);
   if (!pool || !pool.isActive)
     throw new AppError({ code: 'POOL_CLOSED', messageEn: 'This pool is not open.' });
@@ -200,18 +205,21 @@ export async function commitToPool(
   }
 
   const isBinding = pool.status === 'reconfirm' || pool.status === 'triggered';
+  const deliveryLocationId = input.deliveryLocationId
+    ? (input.deliveryLocationId as unknown as Types.ObjectId)
+    : await defaultDeliveryLocationId(buyer._id as Types.ObjectId);
   if (existing) {
     existing.withdrawnAt = null;
     existing.qty = input.qty;
     existing.isBinding = isBinding;
-    existing.deliveryLocationId = input.deliveryLocationId as unknown as Types.ObjectId;
+    existing.deliveryLocationId = deliveryLocationId;
     await existing.save();
   } else {
     await PoolCommitment.create({
       poolId: pool._id,
       buyerId: buyer._id,
       qty: input.qty,
-      deliveryLocationId: input.deliveryLocationId,
+      deliveryLocationId,
       isBinding,
     });
   }

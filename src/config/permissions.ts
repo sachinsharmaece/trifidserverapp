@@ -106,6 +106,35 @@ export const PERMISSIONS = {
   // only); a draft is usable in a seller's catalogue at once but cannot back
   // a live listing until Admin confirms it with the pre-existing CATALOG_WRITE.
   CATALOG_DRAFT_CREATE: 'catalog:draft_create',
+  // Phase 1 location masters — adding a State, District or Tehsil (from Manage
+  // or from "+ Add new" inside a form) and editing a tehsil. Admin and team
+  // leaders only (DEC-059; leaders get it with their position in Phase 2);
+  // an executive sees "Not in the list? Ask your leader." Reads stay on
+  // TERRITORY_READ.
+  LOCATION_MASTER_WRITE: 'location:master_write',
+  // Phase 1 — editing an unverified pincode's tehsil and marking it verified.
+  // Admin only.
+  PINCODE_VERIFY: 'location:pincode_verify',
+  // Phase 2 (DEC-061, DEC-063) — showing an employee's full PAN or Aadhaar.
+  // Admin only (Admin holds every permission; no other role is given it).
+  // Every reveal is audited.
+  EMPLOYEE_PII_REVEAL: 'employee:pii_reveal',
+  // Phase 3 — approving a registration is per side (fixes F1: both desks held
+  // the one onboarding:approve and the server never checked the kind).
+  // BUYER_APPROVE: Sales Leaders (by position, for their team or the Queue)
+  // and Admin. SELLER_APPROVE: Purchase Leaders (by position, Phase 4) and
+  // Admin.
+  BUYER_APPROVE: 'onboarding:approve_buyer',
+  SELLER_APPROVE: 'onboarding:approve_seller',
+  // Phase 3 — Admin's whole-company rights over buyers: assign to anyone,
+  // edit any buyer, change GSTIN/PAN. Leaders act within their team.
+  BUYER_ADMIN: 'buyer:admin',
+  // Phase 4 — the same for sellers: Admin assigns any seller to anyone, edits
+  // any seller, changes his GSTIN. Purchase Leaders act within their team.
+  SELLER_ADMIN: 'seller:admin',
+  // Phase 5 (DEC-060) — sees every buyer and seller whatever the team:
+  // Controller and Founder (and Admin, who holds everything).
+  LEADS_SEE_ALL: 'leads:see_all',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -121,6 +150,8 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
     permissionKeys: [
       PERMISSIONS.CATALOG_WRITE,
       PERMISSIONS.TERRITORY_READ,
+      // Phase 1 — no longer adds tehsils (that is LOCATION_MASTER_WRITE, Admin
+      // and leaders only); no route checks TERRITORY_WRITE any more.
       PERMISSIONS.TERRITORY_WRITE,
       PERMISSIONS.ONBOARDING_READ,
       PERMISSIONS.ONBOARDING_APPROVE,
@@ -154,6 +185,10 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
     key: 'sales',
     label: 'Sales',
     permissionKeys: [
+      // Phase 1 — the State/District/Tehsil pickers on the buyer form and on
+      // approval. Sales had no territory read at all, so the Registrations
+      // desk could not load the tehsil list a buyer approval needs.
+      PERMISSIONS.TERRITORY_READ,
       PERMISSIONS.ONBOARDING_READ,
       PERMISSIONS.ONBOARDING_APPROVE,
       PERMISSIONS.BOOK_ASSIGN,
@@ -262,6 +297,8 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.FUNNEL_READ,
       // Enquiry journey — Controller runs the trade, so may reassign either desk's owner.
       PERMISSIONS.ENQUIRY_MANAGE,
+      // Phase 5 — Controller sees every desk's buyers and sellers.
+      PERMISSIONS.LEADS_SEE_ALL,
     ],
   },
   {
@@ -294,6 +331,8 @@ export const ROLE_SEED: Array<{ key: string; label: string; permissionKeys: Perm
       PERMISSIONS.REGISTER_PURCHASE_READ,
       // M8 — the read-only Founder overview.
       PERMISSIONS.FOUNDER_OVERVIEW_READ,
+      // Phase 5 — Founder sees everything, read-only (DEC-063).
+      PERMISSIONS.LEADS_SEE_ALL,
     ],
   },
 ];

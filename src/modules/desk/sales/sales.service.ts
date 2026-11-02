@@ -1,3 +1,4 @@
+import { env } from '../../../config/env.js';
 import { Types, type ClientSession } from 'mongoose';
 import { Counterparty } from '../../../models/Counterparty.js';
 import { Product } from '../../../models/Product.js';
@@ -30,6 +31,10 @@ export async function ensureBookAssignment(
   buyerId: Types.ObjectId,
   session?: ClientSession,
 ): Promise<void> {
+  // DEC-062 — "Assigned to" is set at approval now; a Queue buyer's first
+  // order no longer hands him to the least-busy Sales person, unless
+  // FIRST_ORDER_AUTO_ASSIGN restores it.
+  if (!env.firstOrderAutoAssign) return;
   const existing = await BookAssignment.findOne({ buyerId }).session(session ?? null);
   if (existing) return;
 

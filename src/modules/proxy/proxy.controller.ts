@@ -5,9 +5,15 @@ import { Pile } from '../../models/Pile.js';
 import { Quote } from '../../models/Quote.js';
 import { ListingLine } from '../../models/ListingLine.js';
 import { appendProxyLog } from '../../shared/proxyLog.js';
+import { recordCallAction } from '../desk/sales/sales.calls.js';
 import * as demandService from '../demand/demand.service.js';
 import * as listingService from '../listing/listing.service.js';
 import * as ordersService from '../orders/orders.service.js';
+import {
+  cheapestOfferOnHisBoard,
+  placeOnListedOffer,
+  type WantsItResult,
+} from './proxy.wantsIt.js';
 import { AppError } from '../../shared/errors.js';
 import type {
   proxyRaiseAskSchema,
@@ -20,6 +26,7 @@ import type {
   proxyConfirmPileSchema,
   proxyPileDecisionSchema,
   proxyListBuyerAsksQuerySchema,
+  proxyWantsItSchema,
 } from './proxy.validation.js';
 import type { z } from 'zod';
 
@@ -37,9 +44,8 @@ function actingStaffId(req: Request): string {
 // buyer's own POST /asks would call; the call note lands on the Ask this
 // creates.
 export async function postBuyerCallAsk(req: Request, res: Response): Promise<void> {
-  const { buyerCounterpartyId, callNote, expectedRatePaise, ...input } = req.body as z.infer<
-    typeof proxyRaiseAskSchema
-  >;
+  const { buyerCounterpartyId, callNote, expectedRatePaise, direction, ...input } =
+    req.body as z.infer<typeof proxyRaiseAskSchema>;
   // DEC-051 — the enquiry it opens is recorded as a Sales call, by this staff member.
   const result = await demandService.raiseAsk(buyerCounterpartyId, input, {
     channel: 'sales_call',
@@ -51,21 +57,73 @@ export async function postBuyerCallAsk(req: Request, res: Response): Promise<voi
     callNote,
     action: 'raise_ask',
   });
+  await recordCallAction({
+    buyerCounterpartyId,
+    employeeId: actingStaffId(req),
+    direction,
+    outcome: 'asked_for_a_rate',
+    note: callNote,
+    producedAskId: result.askId,
+  });
   ok(res, req, result, 201);
 }
 
-// "Log a buyer call" for a call that names several products: one ask per line, each
-// created by the same raiseAsk the single route uses and carrying the same call note.
-// Not all-or-nothing — each ask stands on its own (own quotes, own enquiry) — so a line
-// that fails is reported by position and the rest stay saved; the rep retries only that one.
+// 29 Oct — "He wants it" on a listed offer: a pile request (Purchase → Confirmations) or the
+// pool for that offer, never an ask — an ask is only for what is not on his board.
+export async function postBuyerCallWantsIt(req: Request, res: Response): Promise<void> {
+  const { buyerCounterpartyId, callNote, direction, qty, deliveryLocationId } = req.body as z.infer<
+    typeof proxyWantsItSchema
+  >;
+  const result = await placeOnListedOffer(buyerCounterpartyId, String(req.params.id), {
+    qty,
+    raisedBy: actingStaffId(req),
+    ...(deliveryLocationId ? { deliveryLocationId } : {}),
+  });
+  await recordCallAction({
+    buyerCounterpartyId,
+    employeeId: actingStaffId(req),
+    direction,
+    outcome: 'asked_for_a_rate',
+    note: callNote,
+  });
+  ok(res, req, result, 201);
+}
+
+// "Log a buyer call" for a call that names several products, under the one call note.
+// 29 Oct — each line goes where its product belongs: if it is on his board he is put on the
+// cheapest offer (a pile, or its pool — Purchase → Confirmations); if not, it is an ask
+// (Purchase → Demand). Not all-or-nothing — each line stands on its own — so a line that
+// fails is reported by position and the rest stay saved; the rep retries only that one.
 export async function postBuyerCallAsks(req: Request, res: Response): Promise<void> {
-  const { buyerCounterpartyId, callNote, lines } = req.body as z.infer<typeof proxyRaiseAsksSchema>;
+  const { buyerCounterpartyId, callNote, lines, direction } = req.body as z.infer<
+    typeof proxyRaiseAsksSchema
+  >;
   const results: Array<
-    { index: number; askId: string } | { index: number; error: string; code: string | null }
+    | ({ index: number } & (
+        | { kind: 'ask'; askId: string; merged: boolean } // merged — added to his open ask (BR-371)
+        | WantsItResult
+      ))
+    | { index: number; error: string; code: string | null }
   > = [];
   for (const [index, line] of lines.entries()) {
     try {
       const { expectedRatePaise, ...askLine } = line;
+      const offerId = await cheapestOfferOnHisBoard(buyerCounterpartyId, askLine);
+      if (offerId) {
+        const placed = await placeOnListedOffer(buyerCounterpartyId, offerId, {
+          qty: askLine.qty,
+          raisedBy: actingStaffId(req),
+        });
+        await recordCallAction({
+          buyerCounterpartyId,
+          employeeId: actingStaffId(req),
+          direction,
+          outcome: 'asked_for_a_rate',
+          note: callNote,
+        });
+        results.push({ index, ...placed });
+        continue;
+      }
       const result = await demandService.raiseAsk(buyerCounterpartyId, askLine, {
         channel: 'sales_call',
         raisedBy: actingStaffId(req),
@@ -76,7 +134,15 @@ export async function postBuyerCallAsks(req: Request, res: Response): Promise<vo
         callNote,
         action: 'raise_ask',
       });
-      results.push({ index, askId: result.askId });
+      await recordCallAction({
+        buyerCounterpartyId,
+        employeeId: actingStaffId(req),
+        direction,
+        outcome: 'asked_for_a_rate',
+        note: callNote,
+        producedAskId: result.askId,
+      });
+      results.push({ index, kind: 'ask', askId: result.askId, merged: result.merged });
     } catch (error) {
       if (!(error instanceof AppError)) throw error; // A real fault, not a rejected line.
       results.push({ index, error: error.messageEn, code: error.code });
@@ -99,7 +165,7 @@ export async function getBuyerCallAsks(req: Request, res: Response): Promise<voi
 // Maps to API-042 — advancing an ask, or confirming a rate over the phone;
 // this codebase has one accept endpoint for both.
 export async function postBuyerCallAcceptFill(req: Request, res: Response): Promise<void> {
-  const { buyerCounterpartyId, callNote, ...input } = req.body as z.infer<
+  const { buyerCounterpartyId, callNote, direction, ...input } = req.body as z.infer<
     typeof proxyAcceptAskFillSchema
   >;
   const askId = req.params.id as string;
@@ -116,12 +182,22 @@ export async function postBuyerCallAcceptFill(req: Request, res: Response): Prom
       appendProxyLog(So, soId, { actingStaffId: staffId, callNote, action: 'accept_fill' }),
     ),
   );
+  await recordCallAction({
+    buyerCounterpartyId,
+    employeeId: staffId,
+    direction,
+    outcome: 'placed_an_order',
+    note: callNote,
+    producedAskId: askId,
+  });
   ok(res, req, result, 201);
 }
 
 // Maps to API-043 — walking away, free, never a strike.
 export async function postBuyerCallDecline(req: Request, res: Response): Promise<void> {
-  const { buyerCounterpartyId, callNote } = req.body as z.infer<typeof proxyDeclineAskSchema>;
+  const { buyerCounterpartyId, callNote, direction } = req.body as z.infer<
+    typeof proxyDeclineAskSchema
+  >;
   const askId = req.params.id as string;
   await demandService.declineAsk(buyerCounterpartyId, askId);
   await appendProxyLog(Ask, askId, {
@@ -129,13 +205,21 @@ export async function postBuyerCallDecline(req: Request, res: Response): Promise
     callNote,
     action: 'decline_ask',
   });
+  await recordCallAction({
+    buyerCounterpartyId,
+    employeeId: actingStaffId(req),
+    direction,
+    outcome: null,
+    note: `Declined the ask. ${callNote}`,
+    producedAskId: askId,
+  });
   ok(res, req, { declined: true });
 }
 
 // Maps to API-071 — the WF-11 promoted-fallback accept/decline, a buyer
 // decision Sales may also log on a call.
 export async function postBuyerCallAcceptPromotion(req: Request, res: Response): Promise<void> {
-  const { buyerCounterpartyId, callNote } = req.body as z.infer<
+  const { buyerCounterpartyId, callNote, direction } = req.body as z.infer<
     typeof proxyPromotionDecisionSchema
   >;
   const soId = req.params.id as string;
@@ -145,11 +229,18 @@ export async function postBuyerCallAcceptPromotion(req: Request, res: Response):
     callNote,
     action: 'accept_promotion',
   });
+  await recordCallAction({
+    buyerCounterpartyId,
+    employeeId: actingStaffId(req),
+    direction,
+    outcome: null,
+    note: `Accepted the promoted offer. ${callNote}`,
+  });
   ok(res, req, { accepted: true });
 }
 
 export async function postBuyerCallRejectPromotion(req: Request, res: Response): Promise<void> {
-  const { buyerCounterpartyId, callNote } = req.body as z.infer<
+  const { buyerCounterpartyId, callNote, direction } = req.body as z.infer<
     typeof proxyPromotionDecisionSchema
   >;
   const soId = req.params.id as string;
@@ -158,6 +249,13 @@ export async function postBuyerCallRejectPromotion(req: Request, res: Response):
     actingStaffId: actingStaffId(req),
     callNote,
     action: 'reject_promotion',
+  });
+  await recordCallAction({
+    buyerCounterpartyId,
+    employeeId: actingStaffId(req),
+    direction,
+    outcome: null,
+    note: `Turned down the promoted offer. ${callNote}`,
   });
   ok(res, req, { rejected: true });
 }

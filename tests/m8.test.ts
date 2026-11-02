@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import request from 'supertest';
 import { Types } from 'mongoose';
 import { createApp } from '../src/app.js';
+import { salesLeader } from './buyerHelpers.js';
 import { env } from '../src/config/env.js';
 import { withTransaction } from '../src/db/transaction.js';
 import { Ask } from '../src/models/Ask.js';
@@ -716,7 +717,6 @@ describe('registration_invite — on approve and on reject', () => {
   }, 60000);
 
   it('rejecting a registration queues registration_invite (rejected) with a coded outcome, never the free-text reason', async () => {
-    const sales = await staffToken(app, 'sales');
     const { randomMobile, randomGstin } = await import('./helpers.js');
     const registerRes = await request(app)
       .post('/api/v1/registrations/buyer')
@@ -737,7 +737,9 @@ describe('registration_invite — on approve and on reject', () => {
     const registrationId = registerRes.body.data.registrationId as string;
     const res = await request(app)
       .post(`/api/v1/staff/registrations/${registrationId}/reject`)
-      .set('Authorization', `Bearer ${sales.token}`)
+      .set('Idempotency-Key', `decide-${Date.now()}-${Math.random()}`)
+      // Phase 3 — a buyer is decided by his Sales Leader (or Admin).
+      .set('Authorization', `Bearer ${(await salesLeader(app)).token}`)
       .send({ reason: 'Documents unreadable — secret internal note' });
     expect(res.status).toBe(200);
     const rows = await outboxRows(registrationId, 'registration_invite');

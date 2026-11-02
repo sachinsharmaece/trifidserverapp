@@ -1,4 +1,18 @@
 import * as catalogService from './catalog.service.js';
+import * as catalogDelete from './catalog.delete.js';
+import { writeAuditLog } from '../../shared/audit.js';
+/** 24 Oct — every product and pack change is audited (DEC-065). */
+async function audit(req, entity, entityId, field, newValue) {
+    await writeAuditLog({
+        actorId: req.auth.employeeId,
+        actorType: 'staff',
+        entity,
+        entityId,
+        field,
+        newValue,
+        correlationId: req.correlationId,
+    });
+}
 function ok(res, req, data, status = 200) {
     res.status(status).json({ data, meta: { correlationId: req.correlationId } });
 }
@@ -34,11 +48,14 @@ export async function getSkus(req, res) {
 }
 // New — the admin catalog-management screen's own unfiltered list.
 export async function getAllProducts(req, res) {
-    const { cursor, limit } = req.validatedQuery;
-    const result = await catalogService.listAllProducts(cursor, limit ?? 25);
+    const { cursor, limit, q, deleted, sort, dir } = req.validatedQuery;
+    const result = await catalogService.listAllProducts(cursor, limit ?? 25, q, deleted === 'true', {
+        sort,
+        dir,
+    });
     res.status(200).json({
         data: result.items,
-        meta: { correlationId: req.correlationId, nextCursor: result.nextCursor },
+        meta: { correlationId: req.correlationId, nextCursor: result.nextCursor, total: result.total },
     });
 }
 export async function getProductById(req, res) {
@@ -46,19 +63,49 @@ export async function getProductById(req, res) {
 }
 export async function postProduct(req, res) {
     const result = await catalogService.createProduct(req.body);
+    await audit(req, 'product', result.productId, 'create', { ...req.body, skuIds: result.skuIds });
     ok(res, req, result, 201);
 }
 export async function patchProduct(req, res) {
     const result = await catalogService.updateProduct(req.params.id, req.body);
+    await audit(req, 'product', result.productId, 'edit', req.body);
+    ok(res, req, result);
+}
+/** 29 Oct — soft delete (BR-370); refused while the product is in use. */
+export async function deleteProduct(req, res) {
+    const result = await catalogDelete.deleteProduct(req.params.id, req.auth.employeeId);
+    await audit(req, 'product', result.productId, 'delete', { deleted: true });
+    ok(res, req, result);
+}
+export async function postProductRestore(req, res) {
+    const result = await catalogDelete.restoreProduct(req.params.id);
+    await audit(req, 'product', result.productId, 'restore', { deleted: false, active: false });
     ok(res, req, result);
 }
 export async function patchSku(req, res) {
     const result = await catalogService.updateSku(req.params.id, req.body);
+    await audit(req, 'sku', result.skuId, 'edit', req.body);
     ok(res, req, result);
 }
 export async function postSkuImport(req, res) {
     const { productId, rows } = req.body;
     const result = await catalogService.importSkus(productId, rows);
+    for (const row of result.filter((r) => r.accepted && r.skuId)) {
+        await audit(req, 'sku', row.skuId, 'create', { productId, ...rows[row.index] });
+    }
+    ok(res, req, result, 201);
+}
+// 24 Oct — the Manage desk's own pack list, and "Add pack" typed as on create.
+export async function getAdminSkus(req, res) {
+    ok(res, req, await catalogService.listAdminSkus(req.params.id));
+}
+export async function postProductPacks(req, res) {
+    const productId = req.params.id;
+    const { packs } = req.body;
+    const result = await catalogService.addProductPacks(productId, packs);
+    for (const [index, skuId] of result.skuIds.entries()) {
+        await audit(req, 'sku', skuId, 'create', { productId, ...packs[index] });
+    }
     ok(res, req, result, 201);
 }
 export async function getTechnicalMasters(req, res) {

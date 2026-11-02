@@ -15,6 +15,7 @@ import {
   listPricedLinesVisibleToBuyerDoc,
 } from '../../listing/listing.service.js';
 import { asksOnProductFilter } from '../../demand/askScope.js';
+import { isProductSellable, unsellableProductIds } from '../../listing/listing.sellable.js';
 import type { RateTier } from '../../pricing/pricing.service.js';
 
 const DEFAULT_TIER: RateTier = 'Retailer';
@@ -29,11 +30,10 @@ const DEFAULT_TIER: RateTier = 'Retailer';
  * rather than reimplementing the margin lookup for a "no buyer" case.
  */
 function buyerShapedForTier(tier: RateTier): InstanceType<typeof Buyer> {
-  const isTrader = tier === 'Trader';
-  const tradePosition = isTrader
-    ? null
-    : (tier.toLowerCase() as 'distributor' | 'dealer' | 'retailer');
-  return { isTrader, tradePosition } as unknown as InstanceType<typeof Buyer>;
+  // Phase 3 — the category is the tier (DEC-058).
+  return { category: tier, isTrader: false, tradePosition: null } as unknown as InstanceType<
+    typeof Buyer
+  >;
 }
 
 async function rateForTierOrBuyer(
@@ -71,7 +71,11 @@ export interface BoardProductRow {
 
 /** GET /staff/sales/board — every product with at least one live listing line. */
 export async function getBoardProducts(): Promise<BoardProductRow[]> {
-  const liveListings = await Listing.find({ state: 'live' });
+  // 30 Oct — an inactive or deleted product is not on the board (BR-370).
+  const liveListings = await Listing.find({
+    state: 'live',
+    productId: { $nin: await unsellableProductIds() },
+  });
   const liveListingIds = liveListings.map((l) => l._id);
   const productIdByListingId = new Map(
     liveListings.map((l) => [
@@ -282,7 +286,10 @@ export async function getBoardProduct(
   const skuIds = skus.map((s) => s._id);
   const skuById = new Map(skus.map((s) => [(s._id as Types.ObjectId).toString(), s]));
 
-  const liveListings = await Listing.find({ productId: product._id, state: 'live' });
+  // 30 Oct — nothing on the ladder while the product is inactive or deleted (BR-370).
+  const liveListings = (await isProductSellable(product._id as Types.ObjectId))
+    ? await Listing.find({ productId: product._id, state: 'live' })
+    : [];
   const listingIds = liveListings.map((l) => l._id);
   const lines = await ListingLine.find({
     listingId: { $in: listingIds },

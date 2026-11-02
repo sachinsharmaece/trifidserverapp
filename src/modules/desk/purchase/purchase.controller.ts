@@ -1,3 +1,4 @@
+import { listAssignable } from '../../../shared/team.js';
 import type { Request, Response } from 'express';
 import * as purchaseService from './purchase.service.js';
 import * as catalogService from '../../catalog/catalog.service.js';
@@ -32,6 +33,12 @@ function staffActor(req: Request): { employeeId: string; correlationId: string }
 
 export async function getActiveDemandList(req: Request, res: Response): Promise<void> {
   const noSellerOnly = req.query.noSeller === 'true';
+  // 30 Oct — `by=product`: one row per product with its asks under it (BR-371); without it,
+  // the flat list of asks as before.
+  if (req.query.by === 'product') {
+    ok(res, req, await purchaseService.getActiveDemandByProduct({ noSellerOnly }));
+    return;
+  }
   ok(res, req, await purchaseService.getActiveDemandList({ noSellerOnly }));
 }
 
@@ -265,4 +272,15 @@ export async function postDraftSku(req: Request, res: Response): Promise<void> {
   const input = draftSkuSchema.parse(req.body);
   const result = await catalogService.createSkuDraft(input, req.auth!.employeeId!);
   ok(res, req, result, 201);
+}
+
+export async function getAssignees(req: Request, res: Response): Promise<void> {
+  ok(
+    res,
+    req,
+    await listAssignable('purchase', {
+      employeeId: req.auth!.employeeId!,
+      permissions: req.auth!.permissions,
+    }),
+  );
 }

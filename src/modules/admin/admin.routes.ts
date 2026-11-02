@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
 import { requirePermission } from '../../middleware/requirePermission.js';
 import { requireReauth } from '../../middleware/requireReauth.js';
+import { requireIdempotencyKey } from '../../middleware/idempotency.js';
 import { validateBody, validateQuery } from '../../middleware/validate.js';
 import { PERMISSIONS } from '../../config/permissions.js';
 import * as controller from './admin.controller.js';
@@ -10,7 +11,10 @@ import {
   configUpdateSchema,
   createAbsenceSchema,
   createEmployeeSchema,
+  deactivateEmployeeSchema,
   listEmployeesQuerySchema,
+  revealPiiSchema,
+  updateEmployeeSchema,
 } from './admin.validation.js';
 
 export const adminRouter = Router();
@@ -40,6 +44,7 @@ adminRouter.post(
   '/admin/employees',
   authenticate,
   requirePermission(PERMISSIONS.EMPLOYEE_WRITE),
+  requireIdempotencyKey(),
   validateBody(createEmployeeSchema),
   controller.postEmployee,
 );
@@ -51,6 +56,50 @@ adminRouter.post(
   requirePermission(PERMISSIONS.EMPLOYEE_WRITE),
   requireReauth,
   controller.postEmployeeMfa,
+);
+// Phase 2 — one employee (masked PII) for the Edit form; edit; switch off /
+// on; Admin-only PII reveal. Every write needs an Idempotency-Key.
+adminRouter.get(
+  '/admin/employees/:id',
+  authenticate,
+  requirePermission(PERMISSIONS.EMPLOYEE_READ),
+  controller.getEmployee,
+);
+adminRouter.put(
+  '/admin/employees/:id',
+  authenticate,
+  requirePermission(PERMISSIONS.EMPLOYEE_WRITE),
+  requireIdempotencyKey(),
+  validateBody(updateEmployeeSchema),
+  controller.putEmployee,
+);
+adminRouter.get(
+  '/admin/employees/:id/deactivation-impact',
+  authenticate,
+  requirePermission(PERMISSIONS.EMPLOYEE_WRITE),
+  controller.getDeactivationImpact,
+);
+adminRouter.post(
+  '/admin/employees/:id/deactivate',
+  authenticate,
+  requirePermission(PERMISSIONS.EMPLOYEE_WRITE),
+  requireIdempotencyKey(),
+  validateBody(deactivateEmployeeSchema),
+  controller.postDeactivate,
+);
+adminRouter.post(
+  '/admin/employees/:id/reactivate',
+  authenticate,
+  requirePermission(PERMISSIONS.EMPLOYEE_WRITE),
+  requireIdempotencyKey(),
+  controller.postReactivate,
+);
+adminRouter.post(
+  '/admin/employees/:id/reveal',
+  authenticate,
+  requirePermission(PERMISSIONS.EMPLOYEE_PII_REVEAL),
+  validateBody(revealPiiSchema),
+  controller.postRevealPii,
 );
 // API-134 (new — needed by trifid-adminapp's one live screen this session;
 // added to API_CONTRACT.md alongside this change).
@@ -85,6 +134,7 @@ adminRouter.post(
   '/admin/book-assignments',
   authenticate,
   requirePermission(PERMISSIONS.BOOK_ASSIGN),
+  requireIdempotencyKey(),
   validateBody(assignBookSchema),
   controller.postBookAssignment,
 );

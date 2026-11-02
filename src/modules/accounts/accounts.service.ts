@@ -242,7 +242,7 @@ export async function buildAccountsSnapshot(now: Date = new Date()): Promise<Acc
       area: buyer.tehsilId ? (tehsilName.get(key(buyer.tehsilId)) ?? '') : '',
       gstin: cp.gstin ?? '—',
       bank: maskedAccount(activeDetail(buyer.counterpartyId)?.accountEncrypted),
-      mobile: maskMobile(cp.mobile),
+      mobile: maskMobile(cp.mobile ?? cp.contactMobile ?? undefined),
       openingPaise: buyer.openingBalancePaise,
       since: istDay(cp.createdAt as Date),
     });
@@ -261,7 +261,7 @@ export async function buildAccountsSnapshot(now: Date = new Date()): Promise<Acc
       area: area ? (tehsilName.get(key(area.tehsilId)) ?? '') : '',
       gstin: cp.gstin ?? '—',
       bank: maskedAccount(activeDetail(seller.counterpartyId)?.accountEncrypted),
-      mobile: maskMobile(cp.mobile),
+      mobile: maskMobile(cp.mobile ?? cp.contactMobile ?? undefined),
       openingPaise: seller.openingBalancePaise,
       since: istDay(cp.createdAt as Date),
       verified: bankPayable(seller.counterpartyId),

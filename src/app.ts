@@ -32,6 +32,9 @@ import { notificationRouter } from './modules/notification/notification.routes.j
 import { founderRouter } from './modules/founder/founder.routes.js';
 import { proxyRouter } from './modules/proxy/proxy.routes.js';
 import { enquiryRouter } from './modules/enquiry/enquiry.routes.js';
+import { leadRouter } from './modules/lead/lead.routes.js';
+import { pushRouter } from './modules/push/push.routes.js';
+import { noticeRouter } from './modules/notice/notice.routes.js';
 import { env } from './config/env.js';
 
 const API_PREFIX = '/api/v1';
@@ -86,6 +89,9 @@ export function createApp(): Express {
   app.use(API_PREFIX, notificationRouter);
   app.use(API_PREFIX, founderRouter);
   app.use(API_PREFIX, proxyRouter);
+  app.use(API_PREFIX, leadRouter);
+  app.use(API_PREFIX, pushRouter);
+  app.use(API_PREFIX, noticeRouter);
   // 2026-10-02 — pivoting away from Enquiry for now (ENQUIRY_FLOW_ENABLED,
   // config/env.ts). Unmounting rather than 404ing per-route: this router is
   // fully self-contained (/staff/enquiries* only), nothing else shares it.

@@ -8,7 +8,9 @@ const pileRequestSchema = new Schema({
     pileId: { type: Schema.Types.ObjectId, ref: 'Pile', required: true },
     buyerId: { type: Schema.Types.ObjectId, ref: 'Buyer', required: true },
     qty: { type: Number, required: true, min: 1 },
-    deliveryLocationId: { type: Schema.Types.ObjectId, ref: 'BuyerLocation', required: true },
+    // 29 Oct — null: his registered address. Buyers are approved with an address but no
+    // delivery location (only staff add those, BR-094), so requiring one blocked every buy.
+    deliveryLocationId: { type: Schema.Types.ObjectId, ref: 'BuyerLocation', default: null },
     requestedAt: { type: Date, required: true, default: () => new Date() },
     // DEC-051 — the enquiry this request is. Null only on requests made before it existed.
     enquiryId: { type: Schema.Types.ObjectId, ref: 'Enquiry', default: null },

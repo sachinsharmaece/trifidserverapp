@@ -1,3 +1,5 @@
+import { sellerOfPo } from '../../shared/scopeResolvers.js';
+import { byBuyerId, bySellerId, param, requireInScope, scopeList } from '../../shared/scope.js';
 import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
 import { requirePermission } from '../../middleware/requirePermission.js';
@@ -16,6 +18,7 @@ paymentRouter.get(
   '/staff/upcoming-receipts',
   authenticate,
   requirePermission(PERMISSIONS.RECEIPT_READ),
+  scopeList('sales', byBuyerId),
   controller.getUpcomingReceipts,
 );
 paymentRouter.post(
@@ -49,6 +52,7 @@ paymentRouter.get(
   '/staff/payables/:id',
   authenticate,
   requirePermission(PERMISSIONS.PAYOUT_READ),
+  requireInScope('purchase', sellerOfPo('id')),
   controller.getPoPayable,
 );
 // Staff-assisted enquiries, decision (B) — 🏢 Accounts. A fourth, explicit
@@ -99,24 +103,28 @@ paymentRouter.get(
   '/staff/registers/sales',
   authenticate,
   requirePermission(PERMISSIONS.REGISTER_SALES_READ),
+  scopeList('sales', byBuyerId),
   controller.getSalesRegister,
 );
 paymentRouter.get(
   '/staff/registers/purchase',
   authenticate,
   requirePermission(PERMISSIONS.REGISTER_PURCHASE_READ),
+  scopeList('purchase', bySellerId),
   controller.getPurchaseRegister,
 );
 paymentRouter.get(
   '/staff/buyers/:buyerId/ledger',
   authenticate,
   requirePermission(PERMISSIONS.REGISTER_READ),
+  requireInScope('sales', param('buyerId')),
   controller.getBuyerLedger,
 );
 paymentRouter.get(
   '/staff/sellers/:sellerId/ledger',
   authenticate,
   requirePermission(PERMISSIONS.REGISTER_READ),
+  requireInScope('purchase', param('sellerId')),
   controller.getSellerLedger,
 );
 
@@ -126,6 +134,7 @@ paymentRouter.get(
   '/staff/accounts/gst-unfiled',
   authenticate,
   requirePermission(PERMISSIONS.GST_UNFILED_READ),
+  scopeList('purchase', bySellerId),
   controller.getGstUnfiledQueue,
 );
 paymentRouter.post(

@@ -41,6 +41,11 @@ import { addDays, formatForDisplay } from '../../shared/clock.js';
 // derivation to compute what a buyer is shown in the feed/buy screen,
 // **before** M5 existed. Kept here rather than duplicated (BR-043).
 export function toRateTier(buyer) {
+    // Phase 3 (DEC-058) — the category is the margin-matrix column, read
+    // directly. The old position + trader flag are the fallback for a buyer
+    // the category migration has not reached.
+    if (buyer.category)
+        return buyer.category;
     if (buyer.isTrader)
         return 'Trader';
     // BR-044 — an unclassified buyer sees the Retailer rate, marked indicative.

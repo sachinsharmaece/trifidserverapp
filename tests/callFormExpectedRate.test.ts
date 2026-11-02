@@ -30,7 +30,8 @@ describe('Log a buyer call — expected rate', () => {
             conditionRequirement: { expiryBand: 'over12' },
             expectedRatePaise: 125000,
           },
-          { skuId, qty: 2, conditionRequirement: { expiryBand: 'over12' } },
+          // 30 Oct — another expiry, so it is its own ask: the same line twice now adds to one (BR-371).
+          { skuId, qty: 2, conditionRequirement: { expiryBand: 'under12' } },
         ],
       });
     expect(res.status).toBe(201);
@@ -124,5 +125,26 @@ describe('GET /catalog/product-search', () => {
 
     const anon = await request(app).get('/api/v1/catalog/product-search');
     expect(anon.status).toBe(401);
+  });
+
+  it('the same line twice in one call: the second is added to the first ask, and says so (30 Oct)', async () => {
+    const sales = await staffToken(app, 'sales');
+    const buyerId = await createApprovedBuyer(app, sales.token);
+    const counterpartyId = (await Buyer.findById(buyerId))!.counterpartyId!.toString();
+    const skuId = await createTestSku('Medium');
+    const line = { skuId, qty: 4, conditionRequirement: { expiryBand: 'over12' as const } };
+    const res = await request(app)
+      .post('/api/v1/staff/proxy/buyer/asks/batch')
+      .set('Authorization', `Bearer ${sales.token}`)
+      .send({
+        buyerCounterpartyId: counterpartyId,
+        callNote: 'He said it twice.',
+        lines: [line, { ...line, qty: 6 }],
+      });
+    expect(res.status).toBe(201);
+    const [first, second] = res.body.data.results as Array<{ askId: string; merged: boolean }>;
+    expect(first).toMatchObject({ kind: 'ask', merged: false });
+    expect(second).toMatchObject({ kind: 'ask', merged: true, askId: first!.askId });
+    expect((await Ask.findById(first!.askId))!.qty).toBe(10);
   });
 });

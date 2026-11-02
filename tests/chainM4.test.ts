@@ -214,6 +214,10 @@ describe('M4 — the trade chain (DoD): one trade completes all six stages again
     // WF-08 — the SO enters the sales register the moment leg 2 dispatches.
     const salesRegister = await paymentService.getSalesRegister();
     expect(salesRegister.some((row) => row.soId === soId)).toBe(true);
+    // The row names the firm, so the screen never has to show a raw id.
+    const registerRow = salesRegister.find((row) => row.soId === soId)!;
+    expect(registerRow.buyerFirm).not.toBe('—');
+    expect(registerRow.buyerFirm).not.toMatch(/^[a-f0-9]{24}$/);
 
     // Books — the seller is now payable; build and release a payout.
     const payableRes = await request(app)

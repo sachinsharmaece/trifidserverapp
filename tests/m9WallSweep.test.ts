@@ -292,20 +292,9 @@ const KNOWN_GAPS: Array<{
   message: RegExp;
   qr: string;
 }> = [
-  {
-    id: 'registration-list-buyer-firms-to-purchase',
-    audience: 'purchase',
-    url: /\/staff\/registrations(\?|$)/,
-    message: /buyer identity value present/,
-    qr: 'QR-060',
-  },
-  {
-    id: 'registration-list-seller-firms-to-sales',
-    audience: 'sales',
-    url: /\/staff\/registrations(\?|$)/,
-    message: /seller identity value present/,
-    qr: 'QR-060',
-  },
+  // Phase 3 (F1) closed both QR-060 gaps — the Registrations list now shows
+  // each desk only its own side (buyer registrations to Sales, seller ones to
+  // Purchase), so they are deleted here as this sweep requires.
 ];
 const observedGaps = new Set<string>();
 

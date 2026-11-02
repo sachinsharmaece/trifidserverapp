@@ -30,7 +30,10 @@ const productSchema = new Schema(
     taxPercent: { type: Number, required: true, min: 0, max: 100, default: 18 },
     class: { type: String, enum: ['High', 'Medium', 'Low'], required: true, default: 'Medium' },
     active: { type: Boolean, required: true, default: true },
+    // 29 Oct — soft delete from Manage → Products: the row stays, so past orders keep its name;
+    // every list and picker skips it. Restore clears both and leaves it inactive.
     deletedAt: { type: Date, default: null },
+    deletedBy: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },
     state: { type: String, enum: ['draft', 'live'], required: true, default: 'live' },
     createdBy: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },
   },

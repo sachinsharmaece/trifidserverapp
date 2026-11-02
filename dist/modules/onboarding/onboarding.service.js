@@ -18,6 +18,13 @@ import { env, isProduction } from '../../config/env.js';
 import { encryptAccountNumber } from '../../shared/encryption.js';
 import { enqueueNotification } from '../notification/notification.outbox.js';
 import { toBankDetailDto } from './onboarding.dto.js';
+import { checkBuyerIdentity } from './buyer.identity.js';
+import { BookAssignment } from '../../models/BookAssignment.js';
+import { SellerAssignment } from '../../models/SellerAssignment.js';
+import { assertMayAssign, callerCovers } from '../../shared/team.js';
+import { recordPincodeIfUnknown, assertLocationChain } from '../territory/territory.masters.js';
+import { Employee } from '../../models/Employee.js';
+import { panFromGstin } from '../../shared/validators.js';
 // DISABLE_INPUT_VALIDATION (see middleware/validate.ts) also lifts these
 // service-layer checksum/shape checks, which sit below the Zod boundary and
 // so aren't skipped by validateBody alone. Never true in production.
@@ -65,7 +72,7 @@ function accountNameMismatchReason(accountName, ownerName, firm) {
  * ask the seller about it is barely a signal at all. Still never blocks:
  * the return value is a warning to show, not a reason to fail the call.
  */
-async function auditAccountNameMismatchIfAny(params, session) {
+export async function auditAccountNameMismatchIfAny(params, session) {
     const reason = accountNameMismatchReason(params.accountName, params.ownerName, params.firm);
     if (!reason)
         return null;
@@ -84,7 +91,7 @@ async function auditAccountNameMismatchIfAny(params, session) {
 // approved until a single OTP to the real phone number has confirmed it is
 // genuine, even with every other field filled in correctly. Self-service
 // registrations (staffAssisted: false) are untouched by this gate.
-function assertStaffAssistedOtpConfirmed(counterparty) {
+export function assertStaffAssistedOtpConfirmed(counterparty) {
     if (counterparty.staffAssisted && !counterparty.staffAssistedOtpVerifiedAt) {
         throw new AppError({
             code: 'OTP_CONFIRMATION_REQUIRED',
@@ -93,7 +100,7 @@ function assertStaffAssistedOtpConfirmed(counterparty) {
         });
     }
 }
-function assertBankDetailIsWellFormed(bankDetail) {
+export function assertBankDetailIsWellFormed(bankDetail) {
     if (!validationDisabled && !isValidIfsc(bankDetail.ifsc)) {
         throw new AppError({
             code: 'VALIDATION_FAILED',
@@ -105,7 +112,7 @@ function assertBankDetailIsWellFormed(bankDetail) {
 // BR-340 — three consent records, versioned and timestamped. Marketing is a
 // separate opt-in: if declined, no record is written at all (absence is the
 // correct "not consented" state under DPDP, not a record saying so).
-async function writeConsents(counterpartyId, consent, session) {
+export async function writeConsents(counterpartyId, consent, session) {
     const now = new Date();
     await Consent.create([
         { counterpartyId, type: 'terms', noticeVersion: consent.noticeVersion, givenAt: now },
@@ -122,7 +129,7 @@ async function writeConsents(counterpartyId, consent, session) {
             : []),
     ], { session, ordered: true });
 }
-async function createPendingBankDetail(counterpartyId, input, session) {
+export async function createPendingBankDetail(counterpartyId, input, session) {
     await BankDetail.create([
         {
             counterpartyId,
@@ -136,9 +143,15 @@ async function createPendingBankDetail(counterpartyId, input, session) {
 /** API-010. WF-01 steps 1–5. */
 export async function registerBuyer(input, staffAssisted, correlationId = 'unknown') {
     // Blank strings become undefined so the sparse-unique GSTIN index never
-    // sees two '' values.
-    const gstin = input.gstin?.trim() || undefined;
-    await assertGstinAndMobileAreFree(gstin, input.mobile, Boolean(staffAssisted));
+    // sees two '' values. The buyer app's mobile is his login, so a mobile in
+    // use is refused rather than warned (mode 'self').
+    const identity = await checkBuyerIdentity({
+        mode: 'self',
+        gstin: input.gstin,
+        pan: input.pan,
+        mobile: input.mobile,
+    });
+    const gstin = identity.gstin;
     if (input.bankDetail && !staffAssisted)
         assertBankDetailIsWellFormed(input.bankDetail);
     let accountNameWarning = null;
@@ -146,8 +159,10 @@ export async function registerBuyer(input, staffAssisted, correlationId = 'unkno
         const [counterparty] = await Counterparty.create([
             {
                 mobile: input.mobile,
+                contactMobile: input.mobile,
                 firm: input.firm || undefined,
                 gstin,
+                pan: identity.pan,
                 ownerName: input.ownerName || undefined,
                 licenceNo: input.licenceNo || undefined,
                 kind: 'buyer',
@@ -163,7 +178,13 @@ export async function registerBuyer(input, staffAssisted, correlationId = 'unkno
         ], { session });
         if (!counterparty)
             throw new Error('Counterparty.create returned no document.');
-        const [buyer] = await Buyer.create([{ counterpartyId: counterparty._id, gstPpobAddress: input.gstPpobAddress || undefined }], { session });
+        const [buyer] = await Buyer.create([
+            {
+                counterpartyId: counterparty._id,
+                gstPpobAddress: input.gstPpobAddress || undefined,
+                address: input.gstPpobAddress || undefined,
+            },
+        ], { session });
         if (!buyer)
             throw new Error('Buyer.create returned no document.');
         if (input.dealerships && input.dealerships.length > 0) {
@@ -202,9 +223,10 @@ export async function registerBuyer(input, staffAssisted, correlationId = 'unkno
     return { registrationId, accountNameWarning };
 }
 /** API-011. WF-02. */
-export async function registerSeller(input, staffAssisted, correlationId = 'unknown') {
+export async function registerSeller(input, staffAssisted, correlationId = 'unknown', extras) {
     await assertGstinAndMobileAreFree(input.gstin, input.mobile);
-    assertBankDetailIsWellFormed(input.bankDetail);
+    if (input.bankDetail)
+        assertBankDetailIsWellFormed(input.bankDetail);
     const dealershipIds = [...new Set((input.dealerships ?? []).map((d) => d.manufacturerId))];
     if (dealershipIds.length > 0) {
         const known = await Manufacturer.countDocuments({ _id: { $in: dealershipIds } });
@@ -221,10 +243,12 @@ export async function registerSeller(input, staffAssisted, correlationId = 'unkn
         const [counterparty] = await Counterparty.create([
             {
                 mobile: input.mobile,
+                contactMobile: input.mobile,
                 firm: input.firm,
                 gstin: input.gstin,
+                pan: panFromGstin(input.gstin),
                 ownerName: input.ownerName,
-                licenceNo: input.licenceNo,
+                licenceNo: input.licenceNo || undefined,
                 kind: 'seller',
                 status: 'pending',
                 ...(staffAssisted
@@ -232,16 +256,31 @@ export async function registerSeller(input, staffAssisted, correlationId = 'unkn
                         staffAssisted: true,
                         staffAssistedByEmployeeId: staffAssisted.employeeId,
                         staffAssistedCallNote: staffAssisted.callNote,
+                        ...(extras ? { proprietorAgreedAt: new Date() } : {}),
                     }
                     : {}),
             },
         ], { session });
         if (!counterparty)
             throw new Error('Counterparty.create returned no document.');
-        const [seller] = await Seller.create([{ counterpartyId: counterparty._id }], { session });
+        const [seller] = await Seller.create([
+            {
+                counterpartyId: counterparty._id,
+                ...(extras
+                    ? {
+                        tehsilId: extras.tehsilId,
+                        address: extras.location.address,
+                        pincode: extras.location.pincode ?? null,
+                        margPartyCode: extras.margPartyCode ?? null,
+                    }
+                    : {}),
+            },
+        ], { session });
         if (!seller)
             throw new Error('Seller.create returned no document.');
-        await SellerReference.create(input.references.map((reference) => ({ sellerId: seller._id, ...reference })), { session, ordered: true });
+        if (input.references?.length) {
+            await SellerReference.create(input.references.map((reference) => ({ sellerId: seller._id, ...reference })), { session, ordered: true });
+        }
         if (dealershipIds.length > 0) {
             await SellerDealership.create(dealershipIds.map((manufacturerId) => ({
                 sellerId: seller._id,
@@ -249,26 +288,53 @@ export async function registerSeller(input, staffAssisted, correlationId = 'unkn
                 setBy: staffAssisted?.employeeId ?? null,
             })), { session, ordered: true });
         }
-        await createPendingBankDetail(counterparty._id, input.bankDetail, session);
+        // Without one he cannot be paid (BANK_DETAIL_NOT_PAYABLE) until staff add it (BR-017).
+        if (input.bankDetail)
+            await createPendingBankDetail(counterparty._id, input.bankDetail, session);
         await writeConsents(counterparty._id, input.consent, session);
+        if (extras?.location.pincode) {
+            await recordPincodeIfUnknown({ pincode: extras.location.pincode, tehsilId: extras.location.tehsilId }, extras.caller, session);
+        }
+        if (extras?.assignee && seller) {
+            await SellerAssignment.create([
+                {
+                    sellerId: seller._id,
+                    ownerEmployeeId: extras.assignee,
+                    assignedAt: new Date(),
+                    assignedBy: extras.caller.employeeId,
+                    reason: 'Assigned at registration.',
+                },
+            ], { session });
+        }
         if (staffAssisted) {
+            // F10 — the staff member is the actor (the old entry named the seller).
             await writeAuditLog({
-                actorId: counterparty._id.toString(),
-                actorType: 'counterparty',
+                actorId: staffAssisted.employeeId,
+                actorType: 'staff',
                 entity: 'counterparty',
                 entityId: counterparty._id,
                 field: 'staff_assisted_registration',
-                reason: `Logged by staff ${staffAssisted.employeeId}: ${staffAssisted.callNote}`,
+                newValue: extras
+                    ? {
+                        kind: 'seller',
+                        tehsilId: extras.location.tehsilId,
+                        assignedToEmployeeId: extras.assignee,
+                        proprietorAgreed: true,
+                    }
+                    : { kind: 'seller' },
+                reason: staffAssisted.callNote,
                 correlationId: staffAssisted.correlationId,
             }, session);
         }
-        accountNameWarning = await auditAccountNameMismatchIfAny({
-            accountName: input.bankDetail.accountName,
-            ownerName: input.ownerName,
-            firm: input.firm,
-            entityId: counterparty._id,
-            correlationId: staffAssisted?.correlationId ?? correlationId,
-        }, session);
+        if (input.bankDetail) {
+            accountNameWarning = await auditAccountNameMismatchIfAny({
+                accountName: input.bankDetail.accountName,
+                ownerName: input.ownerName,
+                firm: input.firm,
+                entityId: counterparty._id,
+                correlationId: staffAssisted?.correlationId ?? correlationId,
+            }, session);
+        }
         return counterparty._id.toString();
     });
     return { registrationId, accountNameWarning };
@@ -304,11 +370,36 @@ export async function getRegistration(registrationId, requesterCounterpartyId) {
     }
     return result;
 }
-/** API-013. */
-export async function listRegistrations(stage, cursor, limit) {
+/**
+ * API-013. Phase 3 — `kinds` limits the list to the desk's own side (F1):
+ * Sales staff see buyer registrations, Purchase staff seller ones, the full
+ * view both. `kind: 'both'` shows on either side.
+ */
+export async function listRegistrations(stage, cursor, limit, options = {}) {
     const query = {};
     if (stage)
         query.status = stage;
+    if (options.kinds) {
+        // An empty list (a desk asking for the other side) matches nothing.
+        query.kind = { $in: options.kinds.length ? [...options.kinds, 'both'] : [] };
+    }
+    // 26 Oct — the search box: part of the firm name, GSTIN, PAN or mobile.
+    const term = options.q?.trim();
+    if (term) {
+        const pattern = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+        const digits = term.replace(/\D/g, '');
+        query.$or = [
+            { firm: pattern },
+            { ownerName: pattern },
+            { gstin: pattern },
+            { pan: pattern },
+            ...(digits.length >= 4
+                ? [{ mobile: new RegExp(digits) }, { contactMobile: new RegExp(digits) }]
+                : []),
+        ];
+    }
+    // 29 Oct — how many in all, for "Showing N of M" and the desk counts.
+    const total = await Counterparty.countDocuments(query);
     if (cursor)
         query._id = { $gt: cursor };
     const registrations = await Counterparty.find(query)
@@ -316,85 +407,58 @@ export async function listRegistrations(stage, cursor, limit) {
         .limit(limit + 1);
     const hasMore = registrations.length > limit;
     const page = hasMore ? registrations.slice(0, limit) : registrations;
-    const items = page.map((counterparty) => ({
-        registrationId: counterparty._id.toString(),
-        firm: counterparty.firm ?? undefined,
-        gstin: counterparty.gstin ?? undefined,
-        kind: counterparty.kind,
-        status: counterparty.status,
-        createdAt: counterparty.createdAt,
-        staffAssisted: counterparty.staffAssisted ?? false,
-    }));
+    const buyers = await Buyer.find({ counterpartyId: { $in: page.map((c) => c._id) } }, { counterpartyId: 1, tehsilId: 1 });
+    const buyerByCounterparty = new Map(buyers.map((b) => [String(b.counterpartyId), b]));
+    const assignments = await BookAssignment.find({ buyerId: { $in: buyers.map((b) => b._id) } });
+    const ownerByBuyer = new Map(assignments.map((a) => [String(a.buyerId), String(a.ownerEmployeeId)]));
+    const owners = await Employee.find({ _id: { $in: [...ownerByBuyer.values()] } }, { person: 1 });
+    const ownerName = new Map(owners.map((e) => [String(e._id), e.person]));
+    const tehsils = await Tehsil.find({ _id: { $in: buyers.map((b) => b.tehsilId).filter(Boolean) } }, { district: 1 });
+    const districtOfTehsil = new Map(tehsils.map((t) => [String(t._id), t.district]));
+    // Phase 4 — the same two columns for seller registrations.
+    const sellers = await Seller.find({ counterpartyId: { $in: page.map((c) => c._id) } }, { counterpartyId: 1, tehsilId: 1 });
+    const sellerByCounterparty = new Map(sellers.map((x) => [String(x.counterpartyId), x]));
+    const sellerAssignments = await SellerAssignment.find({
+        sellerId: { $in: sellers.map((x) => x._id) },
+    });
+    const ownerBySeller = new Map(sellerAssignments.map((a) => [String(a.sellerId), String(a.ownerEmployeeId)]));
+    const sellerOwners = await Employee.find({ _id: { $in: [...ownerBySeller.values()] } }, { person: 1 });
+    for (const e of sellerOwners)
+        ownerName.set(String(e._id), e.person);
+    const sellerTehsils = await Tehsil.find({ _id: { $in: sellers.map((x) => x.tehsilId).filter(Boolean) } }, { district: 1 });
+    for (const t of sellerTehsils)
+        districtOfTehsil.set(String(t._id), t.district);
+    const items = page.map((counterparty) => {
+        const buyer = buyerByCounterparty.get(String(counterparty._id));
+        const seller = counterparty.kind === 'seller'
+            ? sellerByCounterparty.get(String(counterparty._id))
+            : undefined;
+        const ownerId = seller
+            ? ownerBySeller.get(String(seller._id))
+            : buyer
+                ? ownerByBuyer.get(String(buyer._id))
+                : undefined;
+        const tehsilId = seller?.tehsilId ?? buyer?.tehsilId;
+        return {
+            registrationId: counterparty._id.toString(),
+            firm: counterparty.firm ?? undefined,
+            gstin: counterparty.gstin ?? undefined,
+            pan: counterparty.pan ?? undefined,
+            kind: counterparty.kind,
+            status: counterparty.status,
+            createdAt: counterparty.createdAt,
+            staffAssisted: counterparty.staffAssisted ?? false,
+            assignedTo: ownerId ? (ownerName.get(ownerId) ?? null) : null,
+            district: tehsilId ? (districtOfTehsil.get(String(tehsilId)) ?? null) : null,
+        };
+    });
     const nextCursor = hasMore
         ? page[page.length - 1]._id.toString()
         : undefined;
-    return { items, nextCursor };
+    return { total, items, nextCursor };
 }
-/** API-014, buyer branch. BR-081 — rejects without a tehsil, enforced by the required field on the schema. */
-export async function approveBuyer(registrationId, input, actor) {
-    const tehsil = await Tehsil.findById(input.tehsilId);
-    if (!tehsil) {
-        throw new AppError({
-            code: 'VALIDATION_FAILED',
-            messageEn: 'That tehsil does not exist.',
-            field: 'tehsilId',
-        });
-    }
-    const counterparty = await Counterparty.findOne({
-        _id: registrationId,
-        kind: { $in: ['buyer', 'both'] },
-    });
-    if (!counterparty) {
-        throw new AppError({ code: 'NOT_FOUND', messageEn: 'Buyer registration not found.' });
-    }
-    if (counterparty.status !== 'pending') {
-        throw new AppError({
-            code: 'VALIDATION_FAILED',
-            messageEn: 'This registration has already been decided.',
-        });
-    }
-    // B-28 — registration-time validation already requires both (min(1) on
-    // the schema); this is the backstop for a record that predates it or was
-    // written outside that path, so approval can't turn a blank firm/GSTIN
-    // into an active account.
-    if (!counterparty.firm?.trim() || !counterparty.gstin?.trim()) {
-        throw new AppError({
-            code: 'VALIDATION_FAILED',
-            messageEn: 'This registration is missing a firm name or GSTIN and cannot be approved as is.',
-        });
-    }
-    // TEMP: buyer OTP gate disabled 2026-09-28 at product's request — re-enable
-    // by restoring this call before launch. Seller keeps the gate (below).
-    // assertStaffAssistedOtpConfirmed(counterparty);
-    await withTransaction(async (session) => {
-        await Buyer.updateOne({ counterpartyId: counterparty._id }, {
-            $set: {
-                tehsilId: input.tehsilId,
-                tradePosition: input.tradePosition,
-                isTrader: input.isTrader,
-                classified: true,
-            },
-        }, { session });
-        counterparty.status = 'active';
-        await counterparty.save({ session });
-        await enqueueNotification({
-            counterpartyId: counterparty._id,
-            templateKey: 'registration_invite',
-            params: { outcome: 'approved' },
-            correlationId: actor.correlationId,
-        }, session);
-        await writeAuditLog({
-            actorId: actor.employeeId,
-            actorType: 'staff',
-            entity: 'counterparty',
-            entityId: counterparty._id,
-            field: 'status',
-            oldValue: 'pending',
-            newValue: 'active',
-            correlationId: actor.correlationId,
-        }, session);
-    });
-}
+// API-014, buyer branch — approveBuyer lives in buyer.registration.ts (Phase 3).
+export { approveBuyer } from './buyer.registration.js';
 const TRUST_TIER_ORDER = ['New', 'Verified', 'Trusted', 'Committed'];
 /** API-014, seller branch. BR-083 — rejects without an area. */
 export async function approveSeller(registrationId, input, actor) {
@@ -419,11 +483,24 @@ export async function approveSeller(registrationId, input, actor) {
             messageEn: 'This registration has already been decided.',
         });
     }
-    assertStaffAssistedOtpConfirmed(counterparty);
+    // DEC-056 — the OTP wait is off unless REQUIRE_REGISTRATION_OTP is on.
+    if (env.requireRegistrationOtp)
+        assertStaffAssistedOtpConfirmed(counterparty);
     const seller = await Seller.findOne({ counterpartyId: counterparty._id });
     if (!seller) {
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Seller profile not found.' });
     }
+    // Phase 4 — a Purchase Leader for his team or the Queue, or Admin.
+    await assertCallerMayDecideSeller(seller._id, actor);
+    await assertMayAssign('purchase', actor, input.assignedToEmployeeId);
+    if (!input.location && !seller.tehsilId) {
+        throw new AppError({
+            code: 'VALIDATION_FAILED',
+            messageEn: "Pick the seller's own location before approving him.",
+            field: 'location.tehsilId',
+        });
+    }
+    const place = input.location ? await assertLocationChain(input.location) : null;
     // BR-246 — monotonic: a seed can only ever move the tier forward, never back.
     if (input.trustTier) {
         const currentIndex = TRUST_TIER_ORDER.indexOf(seller.trustTier);
@@ -444,6 +521,22 @@ export async function approveSeller(registrationId, input, actor) {
             setAt: new Date(),
         })), { session, ordered: true });
         seller.dispatchCutoffTime = input.dispatchCutoffTime;
+        if (input.location && place) {
+            seller.tehsilId = place.tehsilId;
+            seller.address = input.location.address;
+            seller.pincode = input.location.pincode ?? null;
+            if (input.location.pincode) {
+                await recordPincodeIfUnknown({ pincode: input.location.pincode, tehsilId: input.location.tehsilId }, actor, session);
+            }
+        }
+        await SellerAssignment.findOneAndUpdate({ sellerId: seller._id }, {
+            $set: {
+                ownerEmployeeId: input.assignedToEmployeeId,
+                assignedAt: new Date(),
+                assignedBy: actor.employeeId,
+                reason: 'Assigned at approval.',
+            },
+        }, { upsert: true, session });
         if (input.trustTier && input.trustTier !== seller.trustTier) {
             seller.trustTier = input.trustTier;
             seller.tierSeededBy = actor.employeeId;
@@ -469,6 +562,21 @@ export async function approveSeller(registrationId, input, actor) {
             correlationId: actor.correlationId,
         }, session);
     });
+}
+/**
+ * Phase 4 — approve or reject a seller registration: a Purchase Leader for a
+ * seller in his team or the Queue, or Admin (SELLER_APPROVE is checked on
+ * the route).
+ */
+export async function assertCallerMayDecideSeller(sellerId, caller) {
+    const current = await SellerAssignment.findOne({ sellerId });
+    const covered = await callerCovers('purchase', caller, current ? String(current.ownerEmployeeId) : null, { queueAllowed: true });
+    if (!covered) {
+        throw new AppError({
+            code: 'PERMISSION_DENIED',
+            messageEn: "Only the Purchase Leader of this seller's team, or Admin, can decide on him.",
+        });
+    }
 }
 /** API-015. */
 export async function rejectRegistration(registrationId, reason, actor) {

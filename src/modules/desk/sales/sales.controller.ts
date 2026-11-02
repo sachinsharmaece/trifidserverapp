@@ -1,3 +1,4 @@
+import { listAssignableSalesPeople } from '../../../shared/team.js';
 import type { Request, Response } from 'express';
 import * as salesService from './sales.service.js';
 import type { ComplaintDestination } from './sales.service.js';
@@ -175,9 +176,43 @@ export async function getPool(req: Request, res: Response): Promise<void> {
 
 // Sales desk v2 — buyers.
 export async function getBuyers(req: Request, res: Response): Promise<void> {
-  const q = req.query.q as string | undefined;
-  const tab = req.query.tab as 'book' | 'queue' | undefined;
-  ok(res, req, await salesBuyersService.listBuyers({ q, tab }));
+  const str = (key: string) =>
+    typeof req.query[key] === 'string' && req.query[key] ? (req.query[key] as string) : undefined;
+  const tab = str('tab') as 'book' | 'queue' | undefined;
+  const filters = {
+    q: str('q'),
+    tab,
+    category: str('category'),
+    districtId: str('districtId'),
+    assignedTo: str('assignedTo'),
+    // 29 Oct — an unknown sort or direction falls back to firm A→Z rather than failing.
+    sort: (salesBuyersService.BUYER_LIST_SORTS as readonly string[]).includes(str('sort') ?? '')
+      ? (str('sort') as salesBuyersService.BuyerListSort)
+      : undefined,
+    dir: str('dir') === 'desc' ? ('desc' as const) : ('asc' as const),
+  };
+  // 29 Oct — with `limit`, one page (`cursor` is the offset) plus the total and
+  // the tab's filter options; without it, the whole list as before.
+  const limit = Number(str('limit'));
+  if (!Number.isInteger(limit) || limit < 1) {
+    ok(res, req, await salesBuyersService.listBuyers(filters));
+    return;
+  }
+  const offset = Math.max(0, Number(str('cursor') ?? 0) || 0);
+  const page = await salesBuyersService.listBuyersPage(filters, {
+    offset,
+    limit: Math.min(limit, 100),
+  });
+  const next = offset + Math.min(limit, 100);
+  res.status(200).json({
+    data: page.items,
+    meta: {
+      correlationId: req.correlationId,
+      nextCursor: next < page.total ? String(next) : undefined,
+      total: page.total,
+      facets: page.facets,
+    },
+  });
 }
 export async function getBuyerBoard(req: Request, res: Response): Promise<void> {
   ok(res, req, await salesBoardService.getBoardForBuyer(req.params.buyerId as string));
@@ -224,4 +259,15 @@ export async function postMspResponse(req: Request, res: Response): Promise<void
     correlationId: req.correlationId,
   });
   ok(res, req, { done: true });
+}
+
+export async function getAssignees(req: Request, res: Response): Promise<void> {
+  ok(
+    res,
+    req,
+    await listAssignableSalesPeople({
+      employeeId: req.auth!.employeeId!,
+      permissions: req.auth!.permissions,
+    }),
+  );
 }

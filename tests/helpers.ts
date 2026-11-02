@@ -34,10 +34,12 @@ function randomDigits(length: number): string {
 
 // A checksum-valid, format-valid GSTIN with random (fictional) parts —
 // enough to exercise real validation logic in a test without needing a
-// real firm's real GSTIN.
-export async function randomGstin(): Promise<string> {
+// real firm's real GSTIN. Phase 3 — issued in Madhya Pradesh (state code
+// 23) by default, since approval now checks the GSTIN's state code against
+// the buyer's location and the test locations are in MP.
+export async function randomGstin(stateCode = '23'): Promise<string> {
   const { computeGstinChecksum } = await import('../src/shared/validators.js');
-  const first14 = `${randomDigits(2)}${randomLetters(5)}${randomDigits(4)}${randomLetters(1)}1Z`;
+  const first14 = `${stateCode}${randomLetters(5)}${randomDigits(4)}${randomLetters(1)}1Z`;
   return `${first14}${computeGstinChecksum(first14)}`;
 }
 

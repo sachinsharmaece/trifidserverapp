@@ -3,6 +3,44 @@ import { ZodError } from 'zod';
 import { AppError } from '../shared/errors.js';
 import { logger } from '../shared/logger.js';
 
+type ZodIssue = ZodError['issues'][number];
+
+// Zod's own wording ("Too small: expected string to have >=1 characters")
+// reached staff screens wherever a schema field had no message of its own
+// (B-49 fixed those one field at a time). A schema's own message is kept as
+// is; only Zod's built-in defaults are swapped for plain language here.
+const ZOD_DEFAULT_MESSAGE =
+  /^(Invalid input|Too small|Too big|Invalid option|Unrecognized key|Invalid string|Invalid format|Invalid element|Invalid key|Invalid union|Expected )/;
+
+function plainIssueMessage(issue: ZodIssue): string {
+  if (!ZOD_DEFAULT_MESSAGE.test(issue.message)) return issue.message;
+  const detail = issue as ZodIssue & { input?: unknown; minimum?: unknown; maximum?: unknown };
+  switch (issue.code) {
+    case 'invalid_type':
+      return detail.input === undefined || detail.input === null
+        ? 'This field is required.'
+        : 'This value is not in the right form.';
+    case 'too_small':
+      if (issue.origin === 'string') {
+        return Number(detail.minimum) <= 1
+          ? 'This field is required.'
+          : `Enter at least ${String(detail.minimum)} characters.`;
+      }
+      if (issue.origin === 'array') return `Add at least ${String(detail.minimum)}.`;
+      return `Must be at least ${String(detail.minimum)}.`;
+    case 'too_big':
+      if (issue.origin === 'string') return `Enter at most ${String(detail.maximum)} characters.`;
+      if (issue.origin === 'array') return `Add at most ${String(detail.maximum)}.`;
+      return `Must be at most ${String(detail.maximum)}.`;
+    case 'invalid_value':
+      return 'Pick one of the listed options.';
+    case 'unrecognized_keys':
+      return 'This form sent a field the server does not accept.';
+    default:
+      return 'This value is not valid.';
+  }
+}
+
 // ARCHITECTURE.md §7.1 — one error shape everywhere. Never leaks a stack
 // trace, a raw Mongoose error, or a secret to the client.
 export const errorHandler: ErrorRequestHandler = (error, request, response, next) => {
@@ -32,13 +70,15 @@ export const errorHandler: ErrorRequestHandler = (error, request, response, next
     response.status(400).json({
       error: {
         code: 'VALIDATION_FAILED',
-        message_en: firstIssue?.message ?? 'The request could not be validated.',
+        message_en: firstIssue
+          ? plainIssueMessage(firstIssue)
+          : 'The request could not be validated.',
         field: firstIssue?.path.join('.'),
         retryable: false,
         correlationId,
         fieldErrors: error.issues.map((issue) => ({
           field: issue.path.join('.'),
-          message: issue.message,
+          message: plainIssueMessage(issue),
         })),
       },
     });

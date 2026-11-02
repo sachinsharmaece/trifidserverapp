@@ -11,6 +11,8 @@ const expectedRatePaiseSchema = z.number().int().min(1).optional();
 export const proxyRaiseAskSchema = raiseAskSchema.extend({
     buyerCounterpartyId: z.string().min(1),
     callNote: callNoteSchema,
+    // 28 Oct — Incoming/Outgoing, from the call page's toggle, for the call history.
+    direction: z.enum(['in', 'out']).optional(),
     expectedRatePaise: expectedRatePaiseSchema,
 });
 // One call, several products: the same lines the single ask takes, one ask per line.
@@ -19,6 +21,8 @@ export const proxyRaiseAsksSchema = z
     .object({
     buyerCounterpartyId: z.string().min(1),
     callNote: callNoteSchema,
+    // 28 Oct — Incoming/Outgoing, from the call page's toggle, for the call history.
+    direction: z.enum(['in', 'out']).optional(),
     lines: z
         .array(raiseAskSchema.extend({ expectedRatePaise: expectedRatePaiseSchema }))
         .min(1)
@@ -28,17 +32,23 @@ export const proxyRaiseAsksSchema = z
 export const proxyAcceptAskFillSchema = acceptAskFillSchema.extend({
     buyerCounterpartyId: z.string().min(1),
     callNote: callNoteSchema,
+    // 28 Oct — Incoming/Outgoing, from the call page's toggle, for the call history.
+    direction: z.enum(['in', 'out']).optional(),
 });
 export const proxyDeclineAskSchema = z
     .object({
     buyerCounterpartyId: z.string().min(1),
     callNote: callNoteSchema,
+    // 28 Oct — Incoming/Outgoing, from the call page's toggle, for the call history.
+    direction: z.enum(['in', 'out']).optional(),
 })
     .strict();
 export const proxyPromotionDecisionSchema = z
     .object({
     buyerCounterpartyId: z.string().min(1),
     callNote: callNoteSchema,
+    // 28 Oct — Incoming/Outgoing, from the call page's toggle, for the call history.
+    direction: z.enum(['in', 'out']).optional(),
 })
     .strict();
 export const proxyCreateListingSchema = createListingSchema.extend({
@@ -57,6 +67,18 @@ export const proxyPileDecisionSchema = z
     .object({
     sellerCounterpartyId: z.string().min(1),
     callNote: callNoteSchema,
+})
+    .strict();
+// 29 Oct — "He wants it" on a line of his board: Sales puts him on that listed offer (a pile
+// request, or the pool when he wants fewer than its minimum order). The delivery address is his
+// primary one unless one is named.
+export const proxyWantsItSchema = z
+    .object({
+    buyerCounterpartyId: z.string().min(1),
+    qty: z.number().int().min(1),
+    deliveryLocationId: z.string().min(1).optional(),
+    callNote: callNoteSchema,
+    direction: z.enum(['in', 'out']).optional(),
 })
     .strict();
 // Read-side query for the Sales call workspace's ask/quote pickers — no

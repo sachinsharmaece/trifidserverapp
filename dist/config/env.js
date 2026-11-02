@@ -51,6 +51,18 @@ export const env = {
     // either back to 'true' to restore it, no code changes needed. Unset/false
     // by default (off). See CHANGELOG.md's 2026-10-02 entry.
     enquiryFlowEnabled: process.env.ENQUIRY_FLOW_ENABLED === 'true',
+    // Phase 3 (DEC-056) — staff-assisted registrations no longer wait on the
+    // buyer's/seller's first OTP sign-in before they can be approved. The OTP
+    // gate is kept, off; 'true' restores it.
+    requireRegistrationOtp: process.env.REQUIRE_REGISTRATION_OTP === 'true',
+    // Phase 3 (DEC-062) — "Assigned to" is set at approval, so a Queue buyer's
+    // first order no longer hands him to the least-busy Sales person (BR-276).
+    // 'true' restores the old automatic assignment.
+    firstOrderAutoAssign: process.env.FIRST_ORDER_AUTO_ASSIGN === 'true',
+    // Phase 5 (DEC-060) — each person sees only his own / his team's buyers and
+    // sellers. Off by default: switch it on only once every employee has his
+    // positions and reporting lines (Team page), or executives see nothing.
+    ownershipScopeEnforced: process.env.OWNERSHIP_SCOPE_ENFORCED === 'true',
     chainStageTrackingEnabled: process.env.CHAIN_STAGE_TRACKING_ENABLED === 'true',
     staffPasswordMinLength: optionalNumber('STAFF_PASSWORD_MIN_LENGTH', 12),
     staffLockoutAttempts: optionalNumber('STAFF_LOCKOUT_ATTEMPTS', 5),
@@ -77,6 +89,14 @@ export const env = {
     // 32 raw bytes, base64-encoded. The dev default below is for local/test
     // use only and must never be reused anywhere real.
     bankDetailEncryptionKey: required('BANK_DETAIL_ENCRYPTION_KEY', 'C5AaiVbyfQH2zjw2fCPmUnvU9MebeT13CUFfsuCka4c='),
+    // Phase 2 (DEC-061) — employee PAN and Aadhaar, encrypted at rest. A key of
+    // its own, never the bank-detail key, so one leak or rotation does not
+    // touch the other. 32 raw bytes, base64. **No fallback in production**: the
+    // server refuses to start without it there. Outside production a fixed
+    // throwaway key is used so local runs and tests work.
+    piiEncryptionKey: process.env.NODE_ENV === 'production'
+        ? required('PII_ENCRYPTION_KEY')
+        : required('PII_ENCRYPTION_KEY', 'dGVzdC1vbmx5LXBpaS1rZXktbm90LWZvci1wcm9kISE='),
     queueUrl: process.env.QUEUE_URL ?? '',
     workerHeartbeatSeconds: optionalNumber('WORKER_HEARTBEAT_SECONDS', 60),
     corsAllowedOrigins: required('CORS_ALLOWED_ORIGINS', 'http://localhost:3000,http://localhost:5173')
