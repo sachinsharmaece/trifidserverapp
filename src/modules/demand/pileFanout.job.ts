@@ -1,4 +1,4 @@
-import type { Types } from 'mongoose';
+import type { ClientSession, Types } from 'mongoose';
 import { withTransaction } from '../../db/transaction.js';
 import { Pile } from '../../models/Pile.js';
 import { PileRequest } from '../../models/PileRequest.js';
@@ -14,6 +14,55 @@ import {
   enqueueNotification,
   counterpartyIdForBuyer,
 } from '../notification/notification.outbox.js';
+
+/** What one order off a pile needs to know about the line and who is acting. */
+export interface PileOrderContext {
+  skuId: string;
+  sellerId: string;
+  sellerNetPaise: number;
+  actor: { employeeId: string; correlationId: string };
+}
+
+/**
+ * One buyer's order off a pile (WF-05 steps 5–8): the SO for `boxes`, and his "order confirmed"
+ * message. Shared by the fan-out and by the desk's resolution of a short pile (BR-134), so an order
+ * is made the same way whichever of them raises it.
+ */
+export async function raiseOrderForRequest(
+  ctx: PileOrderContext,
+  request: { _id: unknown; buyerId: unknown; enquiryId?: unknown },
+  boxes: number,
+  session: ClientSession,
+): Promise<void> {
+  const { soNo } = await createSoInSession(
+    {
+      buyerId: (request.buyerId as Types.ObjectId).toString(),
+      sellerId: ctx.sellerId,
+      skuId: ctx.skuId,
+      boxes,
+      sellerNetPaise: ctx.sellerNetPaise,
+      placeOfSupply: 'intra_state', // Refined once M6's tax-jurisdiction lookup exists; see CHANGELOG.
+      pileRequestId: (request._id as Types.ObjectId).toString(),
+      ...(request.enquiryId ? { enquiryId: (request.enquiryId as Types.ObjectId).toString() } : {}),
+    },
+    ctx.actor,
+    session,
+  );
+
+  // WF-05 step 8 — "Write N notification outbox rows", inside this same transaction.
+  // CH §21.8 #3 — "Seller confirms supply." Queued AFTER createSoInSession's own
+  // `payment_due` for this buyer, so where the weekly cap (BR-283) allows only one
+  // message it is the money deadline that goes out, not this one — see QR-054.
+  await enqueueNotification(
+    {
+      counterpartyId: await counterpartyIdForBuyer(request.buyerId as Types.ObjectId, session),
+      templateKey: 'order_confirmed',
+      params: { soNo },
+      correlationId: ctx.actor.correlationId,
+    },
+    session,
+  );
+}
 
 /**
  * WF-05's actual fan-out, run by the worker process 5 seconds after
@@ -62,38 +111,13 @@ export async function runConfirmPileFanout(pileId: string): Promise<void> {
       correlationId: `pile-${pileId}`,
     };
 
-    for (const request of requests) {
-      const { soNo } = await createSoInSession(
-        {
-          buyerId: (request.buyerId as Types.ObjectId).toString(),
-          sellerId: (seller._id as Types.ObjectId).toString(),
-          skuId: (line.skuId as Types.ObjectId).toString(),
-          boxes: request.qty,
-          sellerNetPaise: line.ratePaise,
-          placeOfSupply: 'intra_state', // Refined once M6's tax-jurisdiction lookup exists; see CHANGELOG.
-          pileRequestId: (request._id as Types.ObjectId).toString(),
-          ...(request.enquiryId
-            ? { enquiryId: (request.enquiryId as Types.ObjectId).toString() }
-            : {}),
-        },
-        actor,
-        session,
-      );
-
-      // WF-05 step 8 — "Write N notification outbox rows", inside this same transaction.
-      // CH §21.8 #3 — "Seller confirms supply." Queued AFTER createSoInSession's own
-      // `payment_due` for this buyer, so where the weekly cap (BR-283) allows only one
-      // message it is the money deadline that goes out, not this one — see QR-054.
-      await enqueueNotification(
-        {
-          counterpartyId: await counterpartyIdForBuyer(request.buyerId as Types.ObjectId, session),
-          templateKey: 'order_confirmed',
-          params: { soNo },
-          correlationId: actor.correlationId,
-        },
-        session,
-      );
-    }
+    const ctx: PileOrderContext = {
+      skuId: (line.skuId as Types.ObjectId).toString(),
+      sellerId: (seller._id as Types.ObjectId).toString(),
+      sellerNetPaise: line.ratePaise,
+      actor,
+    };
+    for (const request of requests) await raiseOrderForRequest(ctx, request, request.qty, session);
 
     line.qty = Math.max(0, line.qty - canSend);
     await line.save({ session });

@@ -86,6 +86,21 @@ salesRouter.get(
   scopeList('sales', byBuyerId, 'openAsks'),
   controller.getBoardProduct,
 );
+// BR-134 — short piles. Scoped in the service: a pile shows only to someone who sees every buyer
+// on it, since dividing boxes between buyers needs all of them.
+salesRouter.get(
+  '/staff/sales/short-piles',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_WORKLIST_READ),
+  controller.getShortPiles,
+);
+salesRouter.post(
+  '/staff/sales/short-piles/:pileId/resolve',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_BUYER_CALL),
+  requireIdempotencyKey(),
+  controller.postResolveShortPile,
+);
 salesRouter.get(
   '/staff/sales/pools',
   authenticate,

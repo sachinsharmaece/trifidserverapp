@@ -1,4 +1,4 @@
-import mongoose, { type Types } from 'mongoose';
+import mongoose, { type ClientSession, type Types } from 'mongoose';
 import { Ask, ASK_STATES } from '../../models/Ask.js';
 import { Enquiry, type EnquiryChannel } from '../../models/Enquiry.js';
 import { deriveAskStatus } from '../enquiry/enquiry.status.js';
@@ -103,6 +103,12 @@ export interface RaiseAskOptions {
   enquiryId?: string;
   /** What he said he hopes to pay, noted by Sales on a call. Staff-internal; never shown outside Sales. */
   expectedRatePaise?: number;
+  /**
+   * 2 Nov — write inside the caller's transaction instead of opening one (the desk's short-pile
+   * resolution raises each buyer's leftover boxes as an ask together with his order). The market
+   * pulse is then left to the caller: it is not new interest, just boxes that did not fit.
+   */
+  session?: ClientSession;
 }
 
 /**
@@ -138,10 +144,14 @@ export async function raiseAsk(
         'conditionRequirement.deliveryBand': input.conditionRequirement.deliveryBand ?? null,
       },
       { $inc: { qty: input.qty } },
-      { new: true, sort: { createdAt: 1 } },
+      { new: true, sort: { createdAt: 1 }, session: options.session },
     );
     if (duplicate) {
-      await Enquiry.updateOne({ askId: duplicate._id }, { $inc: { qty: input.qty } });
+      await Enquiry.updateOne(
+        { askId: duplicate._id },
+        { $inc: { qty: input.qty } },
+        { session: options.session },
+      );
       return {
         askId: (duplicate._id as Types.ObjectId).toString(),
         enquiryId: duplicate.enquiryId ? (duplicate.enquiryId as Types.ObjectId).toString() : null,
@@ -169,7 +179,10 @@ export async function raiseAsk(
   };
   const firstStatus = deriveAskStatus({ state: 'open', visibleToAllAt }, now);
 
-  const { ask, enquiryId } = await withTransaction(async (session) => {
+  const inTransaction = options.session
+    ? <T>(work: (session: ClientSession) => Promise<T>) => work(options.session!)
+    : withTransaction;
+  const { ask, enquiryId } = await inTransaction(async (session) => {
     const enquiryId = options.enquiryId
       ? await convertPreTradeEnquiryInSession(
           options.enquiryId,
@@ -223,7 +236,7 @@ export async function raiseAsk(
     const sku = await Sku.findById(input.skuId);
     pulseProductId = sku?.productId as Types.ObjectId | undefined;
   }
-  if (pulseProductId) {
+  if (pulseProductId && !options.session) {
     await recordPulseEvent({
       buyerId: buyer._id as Types.ObjectId,
       productId: pulseProductId,

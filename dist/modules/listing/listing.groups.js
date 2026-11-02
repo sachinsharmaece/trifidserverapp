@@ -1,8 +1,9 @@
 import { Pile } from '../../models/Pile.js';
 /**
  * `null` = it takes requests (an open group, or the next one can open). Otherwise why not:
- *  - `confirmed` — the seller confirmed it and its orders are not made yet, or it came up short
- *    and the desk has still to adjudicate (BR-134);
+ *  - `confirmed` — the seller confirmed it and its orders are not made yet;
+ *  - `short` — the seller can send fewer boxes than were asked and the desk has still to say who
+ *    gets them (BR-134);
  *  - `requoted` — the seller revised it and the buyers have yet to accept or cancel;
  *  - `declined` — the seller turned it down;
  *  - `sold_out` — it was filled and no stock is left.
@@ -18,8 +19,10 @@ export function closedStateOf(line, groups) {
     if (latest.decision === 'declined')
         return 'declined';
     // Confirmed. In flight until the fan-out has run, and while a short pile awaits the desk.
-    if (!latest.executedAt || latest.shortfall)
+    if (!latest.executedAt)
         return 'confirmed';
+    if (latest.shortfall && !latest.shortfallResolved)
+        return 'short';
     return line.qty >= 1 ? null : 'sold_out';
 }
 /** A stored group, as the rule reads it. */
@@ -28,6 +31,7 @@ export function groupFacts(pile) {
         decision: (pile.decision ?? null),
         executedAt: pile.executedAt ?? null,
         shortfall: Boolean(pile.shortfall),
+        shortfallResolved: Boolean(pile.shortfallResolvedAt),
         openedAt: pile.openedAt,
     };
 }
@@ -36,7 +40,7 @@ export async function closedStateByLine(lines) {
     const result = new Map();
     if (lines.length === 0)
         return result;
-    const piles = await Pile.find({ listingLineId: { $in: lines.map((l) => l._id) } }, { listingLineId: 1, decision: 1, executedAt: 1, shortfall: 1, openedAt: 1 });
+    const piles = await Pile.find({ listingLineId: { $in: lines.map((l) => l._id) } }, { listingLineId: 1, decision: 1, executedAt: 1, shortfall: 1, shortfallResolvedAt: 1, openedAt: 1 });
     const byLine = new Map();
     for (const pile of piles) {
         const key = pile.listingLineId.toString();
@@ -53,6 +57,8 @@ export function closedMessage(state) {
     switch (state) {
         case 'confirmed':
             return 'The seller is still processing the last confirmation on this offer. Try again in a moment.';
+        case 'short':
+            return 'The seller could not send all the boxes asked for on this offer, and the desk is deciding who gets them. It takes no more requests until then.';
         case 'requoted':
             return 'The seller has revised this offer and is waiting on the buyers, so it takes no more requests.';
         case 'declined':

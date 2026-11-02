@@ -21,6 +21,10 @@ salesRouter.get('/staff/sales/calls', authenticate, requirePermission(PERMISSION
 salesRouter.get('/staff/sales/promises', authenticate, requirePermission(PERMISSIONS.SALES_WORKLIST_READ), scopeList('sales', byBuyerId), controller.getPromises);
 salesRouter.get('/staff/sales/board', authenticate, requirePermission(PERMISSIONS.SALES_WORKLIST_READ), controller.getBoard);
 salesRouter.get('/staff/sales/board/:productId', authenticate, requirePermission(PERMISSIONS.SALES_WORKLIST_READ), requireInScope('sales', field('query', 'buyerId', 'profile')), scopeList('sales', byBuyerId, 'openAsks'), controller.getBoardProduct);
+// BR-134 — short piles. Scoped in the service: a pile shows only to someone who sees every buyer
+// on it, since dividing boxes between buyers needs all of them.
+salesRouter.get('/staff/sales/short-piles', authenticate, requirePermission(PERMISSIONS.SALES_WORKLIST_READ), controller.getShortPiles);
+salesRouter.post('/staff/sales/short-piles/:pileId/resolve', authenticate, requirePermission(PERMISSIONS.PROXY_BUYER_CALL), requireIdempotencyKey(), controller.postResolveShortPile);
 salesRouter.get('/staff/sales/pools', authenticate, requirePermission(PERMISSIONS.SALES_WORKLIST_READ), controller.getPools);
 salesRouter.get('/staff/sales/pools/:poolId', authenticate, requirePermission(PERMISSIONS.SALES_WORKLIST_READ), scopeList('sales', byBuyerId, 'commitments'), controller.getPool);
 // Phase 3 — the "Assigned to" picker: who this caller may assign a buyer to.

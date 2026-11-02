@@ -91,9 +91,9 @@ export async function raiseAsk(buyerCounterpartyId, input, options = {}) {
             productId: input.productId ?? null,
             'conditionRequirement.expiryBand': input.conditionRequirement.expiryBand,
             'conditionRequirement.deliveryBand': input.conditionRequirement.deliveryBand ?? null,
-        }, { $inc: { qty: input.qty } }, { new: true, sort: { createdAt: 1 } });
+        }, { $inc: { qty: input.qty } }, { new: true, sort: { createdAt: 1 }, session: options.session });
         if (duplicate) {
-            await Enquiry.updateOne({ askId: duplicate._id }, { $inc: { qty: input.qty } });
+            await Enquiry.updateOne({ askId: duplicate._id }, { $inc: { qty: input.qty } }, { session: options.session });
             return {
                 askId: duplicate._id.toString(),
                 enquiryId: duplicate.enquiryId ? duplicate.enquiryId.toString() : null,
@@ -118,7 +118,10 @@ export async function raiseAsk(buyerCounterpartyId, input, options = {}) {
         askId,
     };
     const firstStatus = deriveAskStatus({ state: 'open', visibleToAllAt }, now);
-    const { ask, enquiryId } = await withTransaction(async (session) => {
+    const inTransaction = options.session
+        ? (work) => work(options.session)
+        : withTransaction;
+    const { ask, enquiryId } = await inTransaction(async (session) => {
         const enquiryId = options.enquiryId
             ? await convertPreTradeEnquiryInSession(options.enquiryId, enquiryFields, firstStatus, now, session)
             : await createTradeEnquiryInSession({
@@ -159,7 +162,7 @@ export async function raiseAsk(buyerCounterpartyId, input, options = {}) {
         const sku = await Sku.findById(input.skuId);
         pulseProductId = sku?.productId;
     }
-    if (pulseProductId) {
+    if (pulseProductId && !options.session) {
         await recordPulseEvent({
             buyerId: buyer._id,
             productId: pulseProductId,

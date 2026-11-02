@@ -11,6 +11,35 @@ import { writeAuditLog } from '../../shared/audit.js';
 import { syncEnquiriesForPile } from '../enquiry/enquiry.sync.js';
 import { enqueueNotification, counterpartyIdForBuyer, } from '../notification/notification.outbox.js';
 /**
+ * One buyer's order off a pile (WF-05 steps 5–8): the SO for `boxes`, and his "order confirmed"
+ * message. Shared by the fan-out and by the desk's resolution of a short pile (BR-134), so an order
+ * is made the same way whichever of them raises it.
+ */
+export async function raiseOrderForRequest(ctx, request, boxes, session) {
+    const { soNo } = await createSoInSession({
+        buyerId: request.buyerId.toString(),
+        sellerId: ctx.sellerId,
+        skuId: ctx.skuId,
+        boxes,
+        sellerNetPaise: ctx.sellerNetPaise,
+        placeOfSupply: 'intra_state', // Refined once M6's tax-jurisdiction lookup exists; see CHANGELOG.
+        pileRequestId: request._id.toString(),
+        ...(request.enquiryId
+            ? { enquiryId: request.enquiryId.toString() }
+            : {}),
+    }, ctx.actor, session);
+    // WF-05 step 8 — "Write N notification outbox rows", inside this same transaction.
+    // CH §21.8 #3 — "Seller confirms supply." Queued AFTER createSoInSession's own
+    // `payment_due` for this buyer, so where the weekly cap (BR-283) allows only one
+    // message it is the money deadline that goes out, not this one — see QR-054.
+    await enqueueNotification({
+        counterpartyId: await counterpartyIdForBuyer(request.buyerId, session),
+        templateKey: 'order_confirmed',
+        params: { soNo },
+        correlationId: ctx.actor.correlationId,
+    }, session);
+}
+/**
  * WF-05's actual fan-out, run by the worker process 5 seconds after
  * `demand.service.ts`'s `confirmPile` schedules it (BR-137's deferred
  * commit) — never run inline from the API request. **Nine steps, one
@@ -58,30 +87,14 @@ export async function runConfirmPileFanout(pileId) {
                 : 'system',
             correlationId: `pile-${pileId}`,
         };
-        for (const request of requests) {
-            const { soNo } = await createSoInSession({
-                buyerId: request.buyerId.toString(),
-                sellerId: seller._id.toString(),
-                skuId: line.skuId.toString(),
-                boxes: request.qty,
-                sellerNetPaise: line.ratePaise,
-                placeOfSupply: 'intra_state', // Refined once M6's tax-jurisdiction lookup exists; see CHANGELOG.
-                pileRequestId: request._id.toString(),
-                ...(request.enquiryId
-                    ? { enquiryId: request.enquiryId.toString() }
-                    : {}),
-            }, actor, session);
-            // WF-05 step 8 — "Write N notification outbox rows", inside this same transaction.
-            // CH §21.8 #3 — "Seller confirms supply." Queued AFTER createSoInSession's own
-            // `payment_due` for this buyer, so where the weekly cap (BR-283) allows only one
-            // message it is the money deadline that goes out, not this one — see QR-054.
-            await enqueueNotification({
-                counterpartyId: await counterpartyIdForBuyer(request.buyerId, session),
-                templateKey: 'order_confirmed',
-                params: { soNo },
-                correlationId: actor.correlationId,
-            }, session);
-        }
+        const ctx = {
+            skuId: line.skuId.toString(),
+            sellerId: seller._id.toString(),
+            sellerNetPaise: line.ratePaise,
+            actor,
+        };
+        for (const request of requests)
+            await raiseOrderForRequest(ctx, request, request.qty, session);
         line.qty = Math.max(0, line.qty - canSend);
         await line.save({ session });
         pile.executedAt = new Date();

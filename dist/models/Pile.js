@@ -24,6 +24,10 @@ const pileSchema = new Schema({
     // scheduled fan-out job has actually run; null between confirm and then
     // means "still cancellable" (worker/agendaProducer.ts).
     executedAt: { type: Date, default: null },
+    // 2 Nov — BR-134: a short pile (`shortfall`) waits for the desk to say who gets the boxes.
+    // Set once, when Sales has divided the boxes the seller can send; until then the line is shut.
+    shortfallResolvedAt: { type: Date, default: null },
+    shortfallResolvedBy: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },
     sellerLockedUntil: { type: Date, default: null }, // BR-032 — 24h from the seller's confirm.
     // Staff-assisted enquiries — present only when Purchase decided this
     // pile (confirm/requote/decline) on a phone call.
