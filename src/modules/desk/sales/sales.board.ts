@@ -2,6 +2,9 @@ import type { Types } from 'mongoose';
 import { Listing } from '../../../models/Listing.js';
 import { ListingLine } from '../../../models/ListingLine.js';
 import { Product } from '../../../models/Product.js';
+import { Pile } from '../../../models/Pile.js';
+import { Pool, buildConditionSetKey } from '../../../models/Pool.js';
+import { PoolCommitment } from '../../../models/PoolCommitment.js';
 import { Manufacturer } from '../../../models/Manufacturer.js';
 import { Sku } from '../../../models/Sku.js';
 import { So } from '../../../models/So.js';
@@ -169,6 +172,23 @@ export interface BoardForBuyerLine {
   moqBand: string;
   deliveryBand: string;
   provenance: string;
+  /**
+   * 2 Nov — the seller has already answered this line (BR-135): a line has one request group for
+   * life, so it takes no more requests. Shown as closed, with "He wants it" off.
+   */
+  closed: 'confirmed' | 'requoted' | 'declined' | null;
+  /**
+   * 2 Nov — he already holds a place in the pool this offer opened. `canChange` is false once
+   * it is binding (BR-154). Null when he has none.
+   */
+  inPool: {
+    poolId: string;
+    boxes: number;
+    committedBoxes: number;
+    moq: number;
+    status: string;
+    canChange: boolean;
+  } | null;
 }
 
 export interface BoardForBuyerProduct {
@@ -203,6 +223,39 @@ export async function getBoardForBuyer(buyerDocId: string): Promise<BoardForBuye
     skus.map((s) => [(s._id as Types.ObjectId).toString(), s.packLabel]),
   );
 
+  // One read each, however long the board is: the seller's decision on every line, and his place
+  // in every pool these lines open.
+  const lineIds = priced.map((p) => p.line._id as Types.ObjectId);
+  const decidedPiles = await Pile.find(
+    { listingLineId: { $in: lineIds }, decision: { $ne: null } },
+    { listingLineId: 1, decision: 1 },
+  );
+  const decisionByLine = new Map(
+    decidedPiles.map((pile) => [
+      (pile.listingLineId as Types.ObjectId).toString(),
+      pile.decision as 'confirmed' | 'requoted' | 'declined',
+    ]),
+  );
+  const pools = await Pool.find({
+    skuId: { $in: priced.map((p) => p.line.skuId) },
+    isActive: true,
+  });
+  const poolByKey = new Map(
+    pools.map((pool) => [`${String(pool.skuId)}|${pool.conditionSetKey}`, pool]),
+  );
+  const poolIds = pools.map((pool) => pool._id as Types.ObjectId);
+  const [committedRows, heldRows] = poolIds.length
+    ? await Promise.all([
+        PoolCommitment.aggregate<{ _id: Types.ObjectId; boxes: number }>([
+          { $match: { poolId: { $in: poolIds }, withdrawnAt: null } },
+          { $group: { _id: '$poolId', boxes: { $sum: '$qty' } } },
+        ]),
+        PoolCommitment.find({ poolId: { $in: poolIds }, buyerId: buyerDocId, withdrawnAt: null }),
+      ])
+    : [[], []];
+  const committedByPool = new Map(committedRows.map((r) => [r._id.toString(), r.boxes]));
+  const heldByPool = new Map(heldRows.map((c) => [(c.poolId as Types.ObjectId).toString(), c]));
+
   const rows: BoardForBuyerProduct[] = [];
   for (const product of products) {
     const productId = (product._id as Types.ObjectId).toString();
@@ -218,6 +271,27 @@ export async function getBoardForBuyer(buyerDocId: string): Promise<BoardForBuye
         moqBand: p.line.moqBand,
         deliveryBand: p.line.deliveryBand,
         provenance: p.line.provenance,
+        closed: decisionByLine.get((p.line._id as Types.ObjectId).toString()) ?? null,
+        inPool: (() => {
+          const pool = poolByKey.get(
+            `${String(p.line.skuId)}|${buildConditionSetKey({
+              expiryBand: p.line.expiryBand,
+              moqBand: p.line.moqBand,
+              deliveryBand: p.line.deliveryBand,
+              provenance: p.line.provenance,
+            })}`,
+          );
+          const held = pool ? heldByPool.get((pool._id as Types.ObjectId).toString()) : undefined;
+          if (!pool || !held) return null;
+          return {
+            poolId: (pool._id as Types.ObjectId).toString(),
+            boxes: held.qty,
+            committedBoxes: committedByPool.get((pool._id as Types.ObjectId).toString()) ?? 0,
+            moq: pool.moq,
+            status: pool.status,
+            canChange: !held.isBinding,
+          };
+        })(),
       }))
       .sort((a, b) => a.ratePaise - b.ratePaise);
     rows.push({

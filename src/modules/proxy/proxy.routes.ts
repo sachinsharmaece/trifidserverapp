@@ -19,6 +19,8 @@ import {
   proxyPileDecisionSchema,
   proxyListBuyerAsksQuerySchema,
   proxyWantsItSchema,
+  proxyPoolChangeSchema,
+  proxyPoolWithdrawSchema,
 } from './proxy.validation.js';
 
 /**
@@ -60,6 +62,23 @@ proxyRouter.post(
   requireIdempotencyKey(),
   validateBody(proxyWantsItSchema),
   controller.postBuyerCallWantsIt,
+);
+// 2 Nov — change or withdraw a buyer's place in a pool (free while not binding, BR-154).
+proxyRouter.post(
+  '/staff/proxy/buyer/pools/:id/change',
+  ...buyerCall,
+  requireInScope('sales', field('body', 'buyerCounterpartyId')),
+  requireIdempotencyKey(),
+  validateBody(proxyPoolChangeSchema),
+  controller.postBuyerCallPoolChange,
+);
+proxyRouter.post(
+  '/staff/proxy/buyer/pools/:id/withdraw',
+  ...buyerCall,
+  requireInScope('sales', field('body', 'buyerCounterpartyId')),
+  requireIdempotencyKey(),
+  validateBody(proxyPoolWithdrawSchema),
+  controller.postBuyerCallPoolWithdraw,
 );
 // Feeds the ask/quote pickers on "Advance an ask on a call".
 proxyRouter.get(

@@ -740,6 +740,22 @@ export interface BuyerOfferDto {
   ratePaise: Paise;
   conditions: BuyerConditionTagsDto;
   hasPool: boolean;
+  /** 2 Nov — the seller has already answered this line, so it takes no more requests. */
+  closed: LineClosed;
+}
+
+/** What the seller decided on a line's request group; null while it is still open (BR-135). */
+export type LineClosed = 'confirmed' | 'requoted' | 'declined' | null;
+
+async function closedByLine(lineIds: Types.ObjectId[]): Promise<Map<string, LineClosed>> {
+  if (lineIds.length === 0) return new Map();
+  const piles = await Pile.find(
+    { listingLineId: { $in: lineIds }, decision: { $ne: null } },
+    { listingLineId: 1, decision: 1 },
+  );
+  return new Map(
+    piles.map((p) => [(p.listingLineId as Types.ObjectId).toString(), p.decision as LineClosed]),
+  );
 }
 
 /** API-031. Every rate on a product, cheapest first, plus pools on that product. */
@@ -764,9 +780,11 @@ export async function getProductOffers(
 
   const skuIds = [...new Set(priced.map((v) => (v.line.skuId as Types.ObjectId).toString()))];
   const pools = await Pool.find({ skuId: { $in: skuIds }, isActive: true });
+  const closed = await closedByLine(priced.map((v) => v.line._id as Types.ObjectId));
 
   return {
     offers: priced.map((v) => ({
+      closed: closed.get((v.line._id as Types.ObjectId).toString()) ?? null,
       listingLineId: (v.line._id as Types.ObjectId).toString(),
       // 29 Oct — so his ask form can tell a listed pack and send him to Buy instead.
       skuId: (v.line.skuId as Types.ObjectId).toString(),
@@ -797,6 +815,8 @@ export interface BuyScreenDto {
   moqExact: number;
   availableBoxes: number;
   conditions: BuyerConditionTagsDto;
+  /** 2 Nov — the seller has already answered this line, so Buy would be refused. */
+  closed: LineClosed;
 }
 
 /** API-032. The buy screen. Server-side visibility re-checked, never trusted from a link. */
@@ -861,6 +881,7 @@ export async function getListingLineForBuy(
     moqExact: line.moqExact,
     availableBoxes: line.qty,
     conditions: toConditionTags(line),
+    closed: (await closedByLine([line._id as Types.ObjectId])).get(String(line._id)) ?? null,
   };
 }
 

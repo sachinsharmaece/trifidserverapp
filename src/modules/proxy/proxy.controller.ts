@@ -15,6 +15,9 @@ import {
   type WantsItResult,
 } from './proxy.wantsIt.js';
 import { AppError } from '../../shared/errors.js';
+import { writeAuditLog } from '../../shared/audit.js';
+import { changePoolCommitment, withdrawFromPool } from '../pool/pool.service.js';
+import { Types } from 'mongoose';
 import type {
   proxyRaiseAskSchema,
   proxyRaiseAsksSchema,
@@ -27,6 +30,8 @@ import type {
   proxyPileDecisionSchema,
   proxyListBuyerAsksQuerySchema,
   proxyWantsItSchema,
+  proxyPoolChangeSchema,
+  proxyPoolWithdrawSchema,
 } from './proxy.validation.js';
 import type { z } from 'zod';
 
@@ -87,6 +92,59 @@ export async function postBuyerCallWantsIt(req: Request, res: Response): Promise
     note: callNote,
   });
   ok(res, req, result, 201);
+}
+
+// 2 Nov — change or withdraw a buyer's place in a pool, on a call. Free only while it is not
+// binding (BR-154); audited, and written to his call history with the note.
+export async function postBuyerCallPoolChange(req: Request, res: Response): Promise<void> {
+  const { buyerCounterpartyId, callNote, direction, qty } = req.body as z.infer<
+    typeof proxyPoolChangeSchema
+  >;
+  const poolId = String(req.params.id);
+  const result = await changePoolCommitment(buyerCounterpartyId, poolId, qty);
+  await writeAuditLog({
+    actorId: actingStaffId(req),
+    actorType: 'staff',
+    entity: 'pool',
+    entityId: new Types.ObjectId(poolId),
+    field: 'commitment_qty',
+    oldValue: { qty: result.previousQty },
+    newValue: { qty: result.qty, buyerCounterpartyId },
+    correlationId: req.correlationId,
+  });
+  await recordCallAction({
+    buyerCounterpartyId,
+    employeeId: actingStaffId(req),
+    direction,
+    outcome: null,
+    note: `Changed his pool place from ${result.previousQty} to ${result.qty} boxes. ${callNote}`,
+  });
+  ok(res, req, result);
+}
+
+export async function postBuyerCallPoolWithdraw(req: Request, res: Response): Promise<void> {
+  const { buyerCounterpartyId, callNote, direction } = req.body as z.infer<
+    typeof proxyPoolWithdrawSchema
+  >;
+  const poolId = String(req.params.id);
+  await withdrawFromPool(buyerCounterpartyId, poolId);
+  await writeAuditLog({
+    actorId: actingStaffId(req),
+    actorType: 'staff',
+    entity: 'pool',
+    entityId: new Types.ObjectId(poolId),
+    field: 'commitment_withdrawn',
+    newValue: { buyerCounterpartyId },
+    correlationId: req.correlationId,
+  });
+  await recordCallAction({
+    buyerCounterpartyId,
+    employeeId: actingStaffId(req),
+    direction,
+    outcome: null,
+    note: `Withdrew him from the pool. ${callNote}`,
+  });
+  ok(res, req, { poolId });
 }
 
 // "Log a buyer call" for a call that names several products, under the one call note.

@@ -23,6 +23,9 @@ import { approveBuyerRegistration } from './buyerHelpers.js';
 import { randomUUID } from 'node:crypto';
 import { ListingLine } from '../src/models/ListingLine.js';
 import { PileRequest } from '../src/models/PileRequest.js';
+import { Pile } from '../src/models/Pile.js';
+import { PoolCommitment } from '../src/models/PoolCommitment.js';
+import { AuditLog } from '../src/models/AuditLog.js';
 import { createListing } from '../src/modules/listing/listing.service.js';
 
 /**
@@ -884,6 +887,187 @@ describe('29 Oct — a listed product goes to Confirmations, one not listed to D
       kind: 'pool',
       qty: 3,
       pool: { committedBoxes: 3, moq: 10, status: 'open' },
+    });
+  });
+
+  describe('2 Nov — a decided offer is shown closed, and his place in a pool can be changed', () => {
+    const boardLine = async (w: Awaited<ReturnType<typeof seedWorld>>, skuId: string) => {
+      const board = (await getAs(w.sales.token, `/staff/sales/buyers/${w.buyer.buyerDocId}/board`))
+        .body.data as Array<{ ladder: Array<Record<string, unknown>> }>;
+      return board.flatMap((p) => p.ladder).find((l) => l.skuId === skuId)!;
+    };
+    const poolOffer = async (w: Awaited<ReturnType<typeof seedWorld>>) => {
+      const seller = await Seller.findById(w.sellerDocId);
+      const poolSku = await createTestSku('Medium');
+      const sku = await Sku.findById(poolSku);
+      await createListing(String(seller!.counterpartyId), {
+        productId: String(sku!.productId),
+        scopeType: 'my_area',
+        lines: [
+          {
+            skuId: poolSku,
+            ratePaise: 30000,
+            expiryBand: 'over12',
+            moqExact: 10,
+            deliveryBand: '48h',
+            provenance: 'company',
+            qty: 50,
+          },
+        ],
+      } as never);
+      return poolSku;
+    };
+    const poolCall = (
+      token: string,
+      poolId: string,
+      action: 'change' | 'withdraw',
+      body: object,
+      key: string | null = randomUUID(),
+    ) => {
+      const req = request(app)
+        .post(`/api/v1/staff/proxy/buyer/pools/${poolId}/${action}`)
+        .set('Authorization', `Bearer ${token}`);
+      return (key ? req.set('Idempotency-Key', key) : req).send(body);
+    };
+
+    it('once the seller has decided a line, the board shows it closed — and a new request is refused', async () => {
+      const w = await seedWorld({ trustedSeller: false });
+      const lineId = await lineOf(w.skuId);
+      expect((await boardLine(w, w.skuId)).closed).toBeNull();
+      const first = await wantsIt(w.sales.token, lineId, {
+        buyerCounterpartyId: w.buyer.counterpartyId,
+        qty: 2,
+        callNote: 'First.',
+      });
+      expect(first.status).toBe(201);
+      // Still undecided: it is open and takes more.
+      expect((await boardLine(w, w.skuId)).closed).toBeNull();
+
+      for (const decision of ['confirmed', 'requoted', 'declined'] as const) {
+        await Pile.updateOne({ _id: first.body.data.pileId }, { decision, decidedAt: new Date() });
+        expect((await boardLine(w, w.skuId)).closed).toBe(decision);
+      }
+      const refused = await wantsIt(w.sales.token, lineId, {
+        buyerCounterpartyId: w.buyer.counterpartyId,
+        qty: 1,
+        callNote: 'Again.',
+      });
+      expect(refused.status).toBe(409);
+      expect(refused.body.error.code).toBe('PILE_ALREADY_DECIDED');
+
+      // The buyer's own app says the same: offers and the Buy screen carry it.
+      const offers = await getAs(w.buyer.token, `/products/${w.productId}/offers`);
+      expect(offers.body.data.offers[0].closed).toBe('declined');
+      const buy = await getAs(w.buyer.token, `/listings/lines/${lineId}`);
+      expect(buy.body.data.closed).toBe('declined');
+    });
+
+    it('his place in a pool shows on the board; repeat says so; change and withdraw work', async () => {
+      const w = await seedWorld({ trustedSeller: false });
+      const poolSku = await poolOffer(w);
+      const lineId = await lineOf(poolSku);
+      expect((await boardLine(w, poolSku)).inPool).toBeNull();
+
+      const joined = await wantsIt(w.sales.token, lineId, {
+        buyerCounterpartyId: w.buyer.counterpartyId,
+        qty: 3,
+        callNote: 'Only 3.',
+      });
+      expect(joined.body.data.kind).toBe('pool');
+      const poolId = joined.body.data.poolId as string;
+      expect((await boardLine(w, poolSku)).inPool).toMatchObject({
+        poolId,
+        boxes: 3,
+        committedBoxes: 3,
+        moq: 10,
+        status: 'open',
+        canChange: true,
+      });
+
+      // Asking again no longer says the buyer-facing "You are already committed".
+      const again = await wantsIt(w.sales.token, lineId, {
+        buyerCounterpartyId: w.buyer.counterpartyId,
+        qty: 2,
+        callNote: 'Two more.',
+      });
+      expect(again.status).toBe(400);
+      expect(again.body.error.message_en).toBe(
+        'He is already in this pool with 3 boxes. Change or withdraw it instead.',
+      );
+
+      const changed = await poolCall(w.sales.token, poolId, 'change', {
+        buyerCounterpartyId: w.buyer.counterpartyId,
+        qty: 5,
+        callNote: 'Wants 5 now.',
+        direction: 'in',
+      });
+      expect(changed.status).toBe(200);
+      expect(changed.body.data).toMatchObject({ previousQty: 3, qty: 5 });
+      expect((await boardLine(w, poolSku)).inPool).toMatchObject({ boxes: 5, committedBoxes: 5 });
+      expect((await PoolCommitment.findOne({ poolId }))!.qty).toBe(5);
+
+      const withdrawn = await poolCall(w.sales.token, poolId, 'withdraw', {
+        buyerCounterpartyId: w.buyer.counterpartyId,
+        callNote: 'Changed his mind.',
+      });
+      expect(withdrawn.status).toBe(200);
+      expect((await boardLine(w, poolSku)).inPool).toBeNull();
+      // And he can join again.
+      const rejoin = await wantsIt(w.sales.token, lineId, {
+        buyerCounterpartyId: w.buyer.counterpartyId,
+        qty: 4,
+        callNote: 'Back in.',
+      });
+      expect(rejoin.status).toBe(201);
+
+      // Audited, and in his call history with the note.
+      const audits = await AuditLog.find({ entity: 'pool', entityId: poolId }).sort({
+        createdAt: 1,
+      });
+      expect(audits.map((a) => a.field)).toEqual(['commitment_qty', 'commitment_withdrawn']);
+      const calls = (await getAs(w.sales.token, `/staff/sales/calls?buyerId=${w.buyer.buyerDocId}`))
+        .body.data as Array<{ note: string }>;
+      expect(calls.map((c) => c.note)).toEqual(
+        expect.arrayContaining([
+          'Changed his pool place from 3 to 5 boxes. Wants 5 now.',
+          'Withdrew him from the pool. Changed his mind.',
+        ]),
+      );
+    });
+
+    it('a binding place cannot be changed or withdrawn free (BR-154); the call needs a key, a note and the right desk', async () => {
+      const w = await seedWorld({ trustedSeller: false });
+      const poolSku = await poolOffer(w);
+      const joined = await wantsIt(w.sales.token, await lineOf(poolSku), {
+        buyerCounterpartyId: w.buyer.counterpartyId,
+        qty: 3,
+        callNote: 'In.',
+      });
+      const poolId = joined.body.data.poolId as string;
+      const body = { buyerCounterpartyId: w.buyer.counterpartyId, qty: 4, callNote: 'Change.' };
+
+      const noKey = await poolCall(w.sales.token, poolId, 'change', body, null);
+      expect(noKey.status).toBeGreaterThanOrEqual(400);
+      expect(
+        (await poolCall(w.sales.token, poolId, 'change', { ...body, callNote: '' })).status,
+      ).toBe(400);
+      expect((await poolCall(w.sales.token, poolId, 'change', { ...body, qty: 0 })).status).toBe(
+        400,
+      );
+      // Purchase does not run buyer calls.
+      expect((await poolCall(w.purchase.token, poolId, 'change', body)).status).toBe(403);
+
+      await PoolCommitment.updateOne({ poolId }, { isBinding: true });
+      expect((await boardLine(w, poolSku)).inPool).toMatchObject({ canChange: false });
+      const stuck = await poolCall(w.sales.token, poolId, 'change', body);
+      expect(stuck.status).toBe(400);
+      expect(stuck.body.error.message_en).toMatch(/binding/);
+      const stuckOut = await poolCall(w.sales.token, poolId, 'withdraw', {
+        buyerCounterpartyId: w.buyer.counterpartyId,
+        callNote: 'Out.',
+      });
+      expect(stuckOut.status).toBe(400);
+      expect((await PoolCommitment.findOne({ poolId }))!.qty).toBe(3);
     });
   });
 
