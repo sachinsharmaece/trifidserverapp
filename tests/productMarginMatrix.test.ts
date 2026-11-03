@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
+import { Types } from 'mongoose';
 import { createApp } from '../src/app.js';
 import { Buyer } from '../src/models/Buyer.js';
+import { Listing } from '../src/models/Listing.js';
+import { ListingLine } from '../src/models/ListingLine.js';
 import { ProductMarginMatrix } from '../src/models/ProductMarginMatrix.js';
+import { PromotionOffer } from '../src/models/PromotionOffer.js';
 import { Sku } from '../src/models/Sku.js';
 import { SoLine } from '../src/models/SoLine.js';
+import * as chainService from '../src/modules/chain/chain.service.js';
 import { computeBuyerFacingRatePaise } from '../src/modules/listing/listing.service.js';
 import { resolveBuyerMargin } from '../src/modules/pricing/pricing.service.js';
 import {
@@ -19,10 +24,15 @@ import {
   seedMarginCell,
   staffToken,
 } from './m4helpers.js';
+import {
+  createApprovedBuyerAtTehsil,
+  createApprovedSellerAtTehsils,
+  createTehsil,
+} from './m5helpers.js';
 
 const app = createApp();
 
-const SELLER_NET_PAISE = 10_000; // ₹100 per base unit, taxable.
+const SELLER_NET_PAISE = 15_000; // ₹150 a base unit — the seller's quote, GST included.
 
 async function productIdOf(skuId: string): Promise<string> {
   const sku = await Sku.findById(skuId);
@@ -42,25 +52,25 @@ function putMargin(
     .send({ cells, effectiveFrom: effectiveFrom.toISOString() });
 }
 
-describe('Product margin — the rupee rate maths (₹100 taxable, ₹9 inclusive margin)', () => {
-  it('adds the rupee margin after the GST gross-up, not before it', () => {
-    // 10000 × 1.18 = 11800, + 900 = 12700 → ₹127.00. A margin before gross-up would be ₹127.62.
-    expect(computeBuyerInclusiveRatePaiseWithRupeeMargin(SELLER_NET_PAISE, 900)).toBe(12700);
+describe('Product margin — the rupee rate maths (₹150 quote, ₹2 margin)', () => {
+  it('adds the rupee margin to the quote as it stands — no GST on top', () => {
+    // The quote already includes GST: ₹150 + ₹2 = ₹152, not ₹150 × 1.18 + ₹2 = ₹179.
+    expect(computeBuyerInclusiveRatePaiseWithRupeeMargin(SELLER_NET_PAISE, 200)).toBe(15200);
   });
 
   it('still prices a percentage margin the way it always did', () => {
     expect(computeBuyerRatePaiseWithMargin(SELLER_NET_PAISE, { kind: 'percent', pct: 0.08 })).toBe(
-      12744,
+      19116, // 15000 × 1.08 × 1.18
     );
     expect(
-      computeBuyerRatePaiseWithMargin(SELLER_NET_PAISE, { kind: 'rupees', marginPaise: 900 }),
-    ).toBe(12700);
+      computeBuyerRatePaiseWithMargin(SELLER_NET_PAISE, { kind: 'rupees', marginPaise: 200 }),
+    ).toBe(15200);
   });
 
-  it('reads a rupee margin as a percentage of taxable cost, for the frozen line', () => {
-    expect(marginPctOf(SELLER_NET_PAISE, { kind: 'rupees', marginPaise: 900 })).toBe(0.076271);
+  it('reads a rupee margin as a percentage of the quote, for the frozen line', () => {
+    expect(marginPctOf(SELLER_NET_PAISE, { kind: 'rupees', marginPaise: 200 })).toBe(0.013333);
     expect(marginPctOf(SELLER_NET_PAISE, { kind: 'percent', pct: 0.05 })).toBe(0.05);
-    expect(marginPctOf(0, { kind: 'rupees', marginPaise: 900 })).toBe(0);
+    expect(marginPctOf(0, { kind: 'rupees', marginPaise: 200 })).toBe(0);
   });
 
   it('refuses a negative or fractional rupee margin', () => {
@@ -240,6 +250,70 @@ describe('Product margin — which margin applies (BR-040)', () => {
   });
 });
 
+describe('Product margin — a rupee-margin order when its seller fails (WF-11)', () => {
+  it('measures the margin against the quote itself, so a slightly dearer replacement is still offered', async () => {
+    const admin = await staffToken(app, 'admin');
+    const sales = await staffToken(app, 'sales');
+    const purchase = await staffToken(app, 'purchase');
+    const actor = { employeeId: admin.employeeId, correlationId: 'product-margin-promotion' };
+
+    const tehsil = await createTehsil();
+    const skuId = await createTestSku('Medium'); // 20 base units per box
+    await seedMarginCell('Medium', 'Dealer', 0.02, admin.employeeId);
+    await putMargin(admin.token, await productIdOf(skuId), [
+      { tier: 'Dealer', marginPaise: 200 },
+    ]).expect(201);
+    const buyerId = await createApprovedBuyerAtTehsil(app, sales.token, tehsil, 'dealer');
+    const failedSellerId = await createApprovedSellerAtTehsils(app, purchase.token, [tehsil]);
+    const replacementId = await createApprovedSellerAtTehsils(app, purchase.token, [tehsil]);
+
+    const { soId } = await chainService.createSo(
+      {
+        buyerId,
+        sellerId: failedSellerId,
+        skuId,
+        boxes: 10,
+        sellerNetPaise: SELLER_NET_PAISE, // ₹150 quote; the buyer pays ₹152
+        placeOfSupply: 'intra_state',
+      },
+      actor,
+    );
+
+    // A live replacement a rupee dearer than the failed seller's quote.
+    const sku = (await Sku.findById(skuId))!;
+    const listing = await Listing.create({
+      sellerId: replacementId,
+      productId: sku.productId,
+      origin: 'seller_initiated',
+      scopeType: 'all_india',
+      state: 'live',
+      frozenTehsilIds: [tehsil],
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    await ListingLine.create({
+      listingId: listing._id,
+      skuId,
+      ratePaise: 15_100,
+      expiryBand: 'over12',
+      moqExact: 1,
+      deliveryBand: '2-5d',
+      provenance: 'company',
+      qty: 100,
+    });
+
+    const result = await chainService.transitionToSupplyFailed(
+      soId,
+      String(new Types.ObjectId()),
+      actor,
+    );
+
+    expect(result.promotionOfferId).toBeTruthy();
+    const offer = (await PromotionOffer.findById(result.promotionOfferId))!;
+    expect(String(offer.promotedSellerId)).toBe(replacementId);
+    expect(offer.deltaPaise).toBe(10 * 20 * 100); // ₹1 a unit more than the ₹2 margin it absorbs
+  });
+});
+
 describe('Product margin — end to end: a placed order and the buyer feed', () => {
   it('prices an SO from the product rupee cell, freezes it, and leaves other products on the class %', async () => {
     const admin = await staffToken(app, 'admin');
@@ -252,7 +326,7 @@ describe('Product margin — end to end: a placed order and the buyer feed', () 
     const ownSku = await createTestSku('Medium'); // 20 base units per box
     const classOnlySku = await createTestSku('Medium');
     const ownProductId = await productIdOf(ownSku);
-    await putMargin(admin.token, ownProductId, [{ tier: 'Dealer', marginPaise: 900 }]).expect(201);
+    await putMargin(admin.token, ownProductId, [{ tier: 'Dealer', marginPaise: 200 }]).expect(201);
 
     const placeSo = async (skuId: string) => {
       const res = await request(app)
@@ -272,13 +346,13 @@ describe('Product margin — end to end: a placed order and the buyer feed', () 
     };
 
     const own = await placeSo(ownSku);
-    expect(own.ratePaise).toBe(12700); // ₹127.00 a unit
-    expect(own.marginPaiseAtOrder).toBe(900);
-    expect(own.marginPctAtOrder).toBe(0.076271);
-    expect(own.totalPaise).toBe(2 * 20 * 12700);
+    expect(own.ratePaise).toBe(15200); // ₹152.00 a unit: ₹150 quote + ₹2
+    expect(own.marginPaiseAtOrder).toBe(200);
+    expect(own.marginPctAtOrder).toBe(0.013333);
+    expect(own.totalPaise).toBe(2 * 20 * 15200);
 
     const classOnly = await placeSo(classOnlySku);
-    expect(classOnly.ratePaise).toBe(12390); // 10000 × 1.05 × 1.18
+    expect(classOnly.ratePaise).toBe(18585); // 15000 × 1.05 × 1.18 — the class path is unchanged
     expect(classOnly.marginPaiseAtOrder).toBeNull();
     expect(classOnly.marginPctAtOrder).toBe(0.05);
 
@@ -286,18 +360,18 @@ describe('Product margin — end to end: a placed order and the buyer feed', () 
     await putMargin(
       admin.token,
       ownProductId,
-      [{ tier: 'Dealer', marginPaise: 1500 }],
+      [{ tier: 'Dealer', marginPaise: 500 }],
       new Date(Date.now() - 1000),
     ).expect(201);
-    expect((await SoLine.findById(own._id))!.ratePaise).toBe(12700);
+    expect((await SoLine.findById(own._id))!.ratePaise).toBe(15200);
 
     // The buyer-facing rate (feed, buy screen, enquiry) follows the same rule.
     const buyer = (await Buyer.findById(buyerId))!;
     expect(await computeBuyerFacingRatePaise(buyer, ownSku, SELLER_NET_PAISE as never)).toBe(
-      11800 + 1500,
+      15000 + 500,
     );
     expect(await computeBuyerFacingRatePaise(buyer, classOnlySku, SELLER_NET_PAISE as never)).toBe(
-      12390,
+      18585,
     );
   });
 });

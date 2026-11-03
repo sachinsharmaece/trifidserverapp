@@ -31,11 +31,11 @@ import { writeAuditLog } from '../../shared/audit.js';
 import { env } from '../../config/env.js';
 import type { Paise } from '../../shared/money.js';
 import {
-  computeBuyerInclusiveRatePaise,
   computeBuyerLineMoney,
   computeBuyerRatePaiseWithMargin,
   computeAbsorptionCapPaise,
   marginPctOf,
+  type BuyerMargin,
   type PlaceOfSupply,
 } from '../../shared/pricing.js';
 import { resolveBuyerMargin, type SkuClass, type RateTier } from '../pricing/pricing.service.js';
@@ -809,7 +809,13 @@ async function findPromotionCandidate(
   soLine: InstanceType<typeof SoLine>,
   excludeSellerId: Types.ObjectId,
 ): Promise<PromotionCandidate | null> {
-  const zeroMarginRate = computeBuyerInclusiveRatePaise(soLine.sellerNetPaise, 0);
+  // "Zero margin" is measured the way the line was priced: a product's rupee margin is added to
+  // the quote as it stands, the class percentage is applied to a taxable rate and grossed up.
+  const zeroMargin: BuyerMargin =
+    typeof soLine.marginPaiseAtOrder === 'number'
+      ? { kind: 'rupees', marginPaise: 0 }
+      : { kind: 'percent', pct: 0 };
+  const zeroMarginRate = computeBuyerRatePaiseWithMargin(soLine.sellerNetPaise, zeroMargin);
   const zeroMarginTotal = computeBuyerLineMoney(
     soLine.boxes,
     soLine.baseUnitsPerBoxAtOrder,
@@ -836,7 +842,7 @@ async function findPromotionCandidate(
     const sellerCounterparty = await Counterparty.findById(seller.counterpartyId);
     if (sellerCounterparty?.status !== 'active') continue; // Never promote a blacklisted or pending seller.
 
-    const candidateZeroMarginRate = computeBuyerInclusiveRatePaise(line.ratePaise, 0);
+    const candidateZeroMarginRate = computeBuyerRatePaiseWithMargin(line.ratePaise, zeroMargin);
     const candidateZeroMarginTotal = computeBuyerLineMoney(
       soLine.boxes,
       soLine.baseUnitsPerBoxAtOrder,
