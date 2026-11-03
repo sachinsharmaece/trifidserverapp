@@ -19,6 +19,7 @@ import { Buyer } from '../../../models/Buyer.js';
 import { MspRequest } from '../../../models/MspRequest.js';
 import { AppError } from '../../../shared/errors.js';
 import { writeAuditLog } from '../../../shared/audit.js';
+import { isHoldingEnabled } from '../../holding/holding.settings.js';
 /**
  * BR-276 — queue → book on a buyer's first order, automatically, no
  * screen involved. The Charter names the *trigger*, not the assignment
@@ -32,6 +33,8 @@ export async function ensureBookAssignment(buyerId, session) {
     // FIRST_ORDER_AUTO_ASSIGN restores it.
     if (!env.firstOrderAutoAssign)
         return;
+    if (await isHoldingEnabled())
+        return; // LOCK-34 — the holding rules decide who holds a buyer.
     const existing = await BookAssignment.findOne({ buyerId }).session(session ?? null);
     if (existing)
         return;

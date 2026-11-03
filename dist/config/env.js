@@ -64,6 +64,10 @@ export const env = {
     // positions and reporting lines (Team page), or executives see nothing.
     ownershipScopeEnforced: process.env.OWNERSHIP_SCOPE_ENFORCED === 'true',
     chainStageTrackingEnabled: process.env.CHAIN_STAGE_TRACKING_ENABLED === 'true',
+    // LOCK-34 — the nightly clock job (the 90-day / 60-day lapse watch) does
+    // nothing unless this is 'true', whatever the admin switch says. Off by
+    // default so nothing is released until the client says go.
+    dormancyJobEnabled: process.env.DORMANCY_JOB_ENABLED === 'true',
     staffPasswordMinLength: optionalNumber('STAFF_PASSWORD_MIN_LENGTH', 12),
     staffLockoutAttempts: optionalNumber('STAFF_LOCKOUT_ATTEMPTS', 5),
     staffIdleTimeoutMinutes: optionalNumber('STAFF_IDLE_TIMEOUT_MINUTES', 30),

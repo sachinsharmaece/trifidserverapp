@@ -10,6 +10,7 @@ import { writeAuditLog } from '../../shared/audit.js';
 import { visibilityFor } from '../../shared/scope.js';
 import { assertMayAssign, callerCovers, isLeaderOf, leaderOf, } from '../../shared/team.js';
 import { PERMISSIONS } from '../../config/permissions.js';
+import { isHoldingEnabled } from '../holding/holding.settings.js';
 const ADMIN_RIGHT = {
     sales: PERMISSIONS.BUYER_ADMIN,
     purchase: PERMISSIONS.SELLER_ADMIN,
@@ -86,6 +87,14 @@ export async function lookupLead(query, actor) {
  */
 export async function moveLead(side, profileId, target, actor, options) {
     const field = options.field ?? 'ownerEmployeeId';
+    // LOCK-34 — with the holding rules on, a buyer's holder is decided by intake, a claim or the
+    // Team Leader's Assign, never by hand: moving him here would leave the two out of step.
+    if (side === 'sales' && (await isHoldingEnabled())) {
+        throw new AppError({
+            code: 'PERMISSION_DENIED',
+            messageEn: 'Who holds a buyer is now decided by the Pool rules. Claim him from the Pool, or ask your Team Leader to assign him.',
+        });
+    }
     const profile = side === 'sales' ? await Buyer.findById(profileId) : await Seller.findById(profileId);
     if (!profile) {
         throw new AppError({

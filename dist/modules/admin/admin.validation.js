@@ -114,6 +114,8 @@ const teamFields = {
         .optional(),
     worksForTeamLeaderIds: z.array(objectId('a team')).optional(),
     worksForAllTeams: z.boolean().optional(),
+    // LOCK-34 — whether new leads are dealt to him.
+    receivingLeads: z.boolean().optional(),
 };
 export const createEmployeeSchema = z
     .object({

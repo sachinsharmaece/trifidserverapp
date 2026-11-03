@@ -4,11 +4,12 @@ import { env } from '../config/env.js';
 import { connectToDatabase, disconnectFromDatabase } from '../db/connect.js';
 import { logger } from '../shared/logger.js';
 import { writeHeartbeat } from './heartbeat.js';
-import { JOB_CONFIRM_PILE_FANOUT, JOB_DELIVERY_AUTO_CLOSE, JOB_DISPATCH_CHASE, JOB_HEAD_START_OPEN, JOB_LISTING_DROPPING, JOB_PAYMENT_WINDOW_EXPIRY, JOB_PILE_OFFER_EXPIRY, JOB_PROMOTION_OFFER_EXPIRY, JOB_NOTIFICATION_OUTBOX_DRAIN, JOB_TEMPLATE_STATUS_POLL, } from './agendaProducer.js';
+import { JOB_CONFIRM_PILE_FANOUT, JOB_DELIVERY_AUTO_CLOSE, JOB_DORMANCY_CLOCKS, JOB_DISPATCH_CHASE, JOB_HEAD_START_OPEN, JOB_LISTING_DROPPING, JOB_PAYMENT_WINDOW_EXPIRY, JOB_PILE_OFFER_EXPIRY, JOB_PROMOTION_OFFER_EXPIRY, JOB_NOTIFICATION_OUTBOX_DRAIN, JOB_TEMPLATE_STATUS_POLL, } from './agendaProducer.js';
 import { runConfirmPileFanout } from '../modules/demand/pileFanout.job.js';
 import { runHeadStartOpen } from '../modules/demand/headStartOpen.job.js';
 import { runListingDropping } from '../modules/listing/listingDropping.job.js';
 import { runDeliveryAutoClose, runDispatchChase, runPaymentWindowExpiry, runPileOfferExpiry, runPromotionOfferExpiry, } from '../modules/clocks/clocks.jobs.js';
+import { runDormancyClocks } from '../modules/holding/holding.job.js';
 import { runOutboxDrain } from '../modules/notification/notification.drain.js';
 import { runTemplateStatusPoll } from '../modules/notification/notification.poll.js';
 /**
@@ -76,6 +77,13 @@ async function startWorker() {
     agenda.define(JOB_PILE_OFFER_EXPIRY, async () => {
         await runPileOfferExpiry(); // BR-378
     });
+    // LOCK-34 — the 90-day / 60-day lapse watch. Does nothing until DORMANCY_JOB_ENABLED is
+    // 'true' (and the admin switch is on), so nothing is released before the client says go.
+    agenda.define(JOB_DORMANCY_CLOCKS, async () => {
+        if (!env.dormancyJobEnabled)
+            return;
+        await runDormancyClocks();
+    });
     agenda.on('ready', () => {
         logger.info({ msg: 'Worker process ready, agenda connected' });
     });
@@ -90,6 +98,7 @@ async function startWorker() {
     await agenda.every('5 minutes', JOB_PROMOTION_OFFER_EXPIRY);
     await agenda.every('1 hour', JOB_DELIVERY_AUTO_CLOSE);
     await agenda.every('5 minutes', JOB_PILE_OFFER_EXPIRY);
+    await agenda.every('0 2 * * *', JOB_DORMANCY_CLOCKS, undefined, { timezone: 'Asia/Kolkata' });
     // Write one immediately so a fresh deployment does not look stale for the
     // first WORKER_HEARTBEAT_SECONDS window.
     await writeHeartbeat();

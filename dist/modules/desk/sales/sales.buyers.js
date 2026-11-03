@@ -22,6 +22,8 @@ import { ASK_LEAK_STALENESS_HOURS, BILLED_SO_STATES, DELIVERED_SO_STATES, DISPAT
 import { listCallLogsForBuyer } from './sales.calls.js';
 import { CallLog } from '../../../models/CallLog.js';
 import { listOrders } from './sales.orders.js';
+import { isHoldingEnabled } from '../../holding/holding.settings.js';
+import { holdingInfoForParties } from '../../holding/holding.queries.js';
 // B-52 — `tradePosition` is stored lowercase (the enum); `rateTier` (the
 // pricing-side computation in chain.service.ts#toRateTier) already
 // capitalizes it for that reason, but this desk re-derives the same "tier"
@@ -212,6 +214,15 @@ export async function listBuyersPage(filters, page = {}) {
                 : null,
         };
     });
+    // LOCK-34 — with the holding rules on, each held buyer carries his kind and clock.
+    if (items.length > 0 && (await isHoldingEnabled())) {
+        const info = await holdingInfoForParties(items.map((i) => i.buyerId));
+        for (const item of items) {
+            const holding = info.get(item.buyerId);
+            if (holding)
+                item.holding = holding;
+        }
+    }
     return { items, total, facets };
 }
 const byName = new Intl.Collator('en', { sensitivity: 'base', numeric: true });

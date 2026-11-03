@@ -24,7 +24,8 @@ export async function scopeReadiness() {
         const positions = e.positions ?? [];
         if ((has(e, 'sales') || has(e, 'purchase')) && positions.length === 0)
             noPosition.push(e.person);
-        if (positions.includes('SALES_EXEC') && !e.reportsToSalesLeaderId) {
+        if ((positions.includes('SALES_EXEC') || positions.includes('SR_SALES_EXEC')) &&
+            !e.reportsToSalesLeaderId) {
             noLeader.push(`${e.person} (Sales)`);
         }
         // DEC-066 — a Sales Leader reports to Admin on the Purchase side.
