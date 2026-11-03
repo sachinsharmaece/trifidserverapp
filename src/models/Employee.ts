@@ -64,6 +64,10 @@ const employeeSchema = new Schema(
     // Phase 2 ---------------------------------------------------------------
     mobile: { type: String, default: null },
     positions: { type: [String], enum: POSITIONS, default: [] },
+    // LOCK-34 — a Team Leader turns this off for a caller on leave: new leads
+    // skip him, what he already holds stays. Older records have no value, which
+    // counts as on (queries use `$ne: false`).
+    receivingLeads: { type: Boolean, default: true },
     reportsToSalesLeaderId: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },
     reportsToPurchaseLeaderId: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },
     // Accounts / Logistics (DEC-060): the sales leaders whose teams this

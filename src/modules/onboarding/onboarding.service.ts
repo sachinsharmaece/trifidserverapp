@@ -20,6 +20,7 @@ import { encryptAccountNumber } from '../../shared/encryption.js';
 import { enqueueNotification } from '../notification/notification.outbox.js';
 import { toBankDetailDto, type BankDetailDto } from './onboarding.dto.js';
 import { checkBuyerIdentity } from './buyer.identity.js';
+import { assignNewParty } from '../holding/holding.service.js';
 import { BookAssignment } from '../../models/BookAssignment.js';
 import { SellerAssignment } from '../../models/SellerAssignment.js';
 import { assertMayAssign, callerCovers, type StaffCaller } from '../../shared/team.js';
@@ -252,6 +253,7 @@ export async function registerBuyer(
   if (input.bankDetail && !staffAssisted) assertBankDetailIsWellFormed(input.bankDetail);
 
   let accountNameWarning: string | null = null;
+  let newBuyerId: Types.ObjectId | null = null;
   const registrationId = await withTransaction(async (session) => {
     const [counterparty] = await Counterparty.create(
       [
@@ -289,6 +291,7 @@ export async function registerBuyer(
       { session },
     );
     if (!buyer) throw new Error('Buyer.create returned no document.');
+    newBuyerId = buyer._id as Types.ObjectId;
 
     if (input.dealerships && input.dealerships.length > 0) {
       await BuyerDealership.create(
@@ -336,6 +339,11 @@ export async function registerBuyer(
 
     return (counterparty._id as Types.ObjectId).toString();
   });
+
+  // LOCK-34 — a new party is dealt to a caller (a staff-entered one may be the caller's own call).
+  if (newBuyerId) {
+    await assignNewParty(newBuyerId, staffAssisted ? 'staff' : 'app', staffAssisted?.employeeId);
+  }
 
   return { registrationId, accountNameWarning };
 }

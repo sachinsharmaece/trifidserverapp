@@ -62,4 +62,13 @@ export const LEAD_SCOPE_EXEMPT: Record<string, string> = {
   '/staff/sales/short-piles':
     'Short piles — filtered in the service: a pile shows only to someone who sees every buyer on it.',
   '/staff/notices': "The caller's own in-app notices only.",
+  '/staff/sales/holdings/status':
+    'Whether the holding rules are on and what the caller is — no party on it.',
+  '/staff/sales/holdings/mine':
+    "The caller's own holdings only — each row is a party he already holds.",
+  '/staff/sales/holdings/uncalled-count': "A number: the caller's own uncalled count.",
+  '/staff/sales/party-pool':
+    'The Pool — name, tehsil, district and past holders only; no mobile, GSTIN or amounts until a party is claimed.',
+  '/staff/sales/party-pool/waiting':
+    'The Team Leader’s 3-day list — the same Pool card fields, and only a Team Leader or Admin may read it.',
 };

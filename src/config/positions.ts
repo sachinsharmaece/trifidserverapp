@@ -19,20 +19,27 @@ export const POSITIONS = [
   'SALES_LEADER',
   'PURCHASE_LEADER',
   'SALES_EXEC',
+  // LOCK-34 — a senior caller. Sits in a Sales team like a Sales Executive.
+  'SR_SALES_EXEC',
   'PURCHASE_EXEC',
 ] as const;
 export type Position = (typeof POSITIONS)[number];
+
+/** LOCK-34 — the positions that make calls and hold parties. */
+export const SALES_CALLER_POSITIONS = ['SALES_EXEC', 'SR_SALES_EXEC'] as const;
 
 export const POSITION_LABEL: Record<Position, string> = {
   SALES_LEADER: 'Sales Leader',
   PURCHASE_LEADER: 'Purchase Leader',
   SALES_EXEC: 'Sales Executive',
+  SR_SALES_EXEC: 'Sr. Sales Executive',
   PURCHASE_EXEC: 'Purchase Executive',
 };
 
 export const POSITION_ROLE: Record<Position, 'sales' | 'purchase'> = {
   SALES_LEADER: 'sales',
   SALES_EXEC: 'sales',
+  SR_SALES_EXEC: 'sales',
   PURCHASE_LEADER: 'purchase',
   PURCHASE_EXEC: 'purchase',
 };
@@ -43,6 +50,7 @@ export const POSITION_PERMISSIONS: Record<Position, PermissionKey[]> = {
   SALES_LEADER: [PERMISSIONS.LOCATION_MASTER_WRITE, PERMISSIONS.BUYER_APPROVE],
   PURCHASE_LEADER: [PERMISSIONS.LOCATION_MASTER_WRITE, PERMISSIONS.SELLER_APPROVE],
   SALES_EXEC: [],
+  SR_SALES_EXEC: [],
   PURCHASE_EXEC: [],
 };
 
