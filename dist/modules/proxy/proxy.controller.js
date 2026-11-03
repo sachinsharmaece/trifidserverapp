@@ -329,7 +329,7 @@ export async function postSellerCallQuote(req, res) {
 export async function postSellerCallConfirmPile(req, res) {
     const { sellerCounterpartyId, callNote, ...input } = req.body;
     const pileId = req.params.id;
-    const result = await demandService.confirmPile(sellerCounterpartyId, pileId, input, req.correlationId);
+    const result = await demandService.confirmPile(sellerCounterpartyId, pileId, input, req.correlationId, { staffAssisted: true });
     await appendProxyLog(Pile, pileId, {
         actingStaffId: actingStaffId(req),
         callNote,

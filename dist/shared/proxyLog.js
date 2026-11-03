@@ -11,7 +11,9 @@ export const proxyLogField = {
     type: [
         {
             actingStaffId: { type: Schema.Types.ObjectId, ref: 'Employee', required: true },
-            callNote: { type: String, required: true },
+            // 3 Nov — the note is optional on the actions the desks named (My view sheet); an empty
+            // note is stored as '' so `appendProxyLog` never fails after the action has committed.
+            callNote: { type: String, default: '' },
             action: { type: String, required: true },
             at: { type: Date, required: true, default: Date.now },
         },

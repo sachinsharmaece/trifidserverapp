@@ -9,6 +9,11 @@ import { createListingSchema } from '../listing/listing.validation.js';
 
 const callNoteSchema = z.string().min(1);
 
+// 3 Nov (My view sheet) — the call note is optional on the actions the desks named: log a buyer
+// call, advance an ask, a promoted-fallback decision, "He wants it", and a pile's confirm /
+// requote / decline. Every other staff action keeps `callNoteSchema`. An empty note is stored as ''.
+const optionalCallNoteSchema = z.string().trim().default('');
+
 // Every staff-assisted-enquiries proxy body carries the same two things on
 // top of the counterparty-facing schema it extends: which counterparty this
 // is being done on behalf of, and the mandatory one-line call note.
@@ -18,7 +23,7 @@ const expectedRatePaiseSchema = z.number().int().min(1).optional();
 
 export const proxyRaiseAskSchema = raiseAskSchema.extend({
   buyerCounterpartyId: z.string().min(1),
-  callNote: callNoteSchema,
+  callNote: optionalCallNoteSchema,
   // 28 Oct — Incoming/Outgoing, from the call page's toggle, for the call history.
   direction: z.enum(['in', 'out']).optional(),
   expectedRatePaise: expectedRatePaiseSchema,
@@ -29,7 +34,7 @@ export const MAX_ASKS_PER_CALL = 20;
 export const proxyRaiseAsksSchema = z
   .object({
     buyerCounterpartyId: z.string().min(1),
-    callNote: callNoteSchema,
+    callNote: optionalCallNoteSchema,
     // 28 Oct — Incoming/Outgoing, from the call page's toggle, for the call history.
     direction: z.enum(['in', 'out']).optional(),
     lines: z
@@ -41,7 +46,7 @@ export const proxyRaiseAsksSchema = z
 
 export const proxyAcceptAskFillSchema = acceptAskFillSchema.extend({
   buyerCounterpartyId: z.string().min(1),
-  callNote: callNoteSchema,
+  callNote: optionalCallNoteSchema,
   // 28 Oct — Incoming/Outgoing, from the call page's toggle, for the call history.
   direction: z.enum(['in', 'out']).optional(),
 });
@@ -67,7 +72,7 @@ export const proxyDeclineAskSchema = z
 export const proxyPromotionDecisionSchema = z
   .object({
     buyerCounterpartyId: z.string().min(1),
-    callNote: callNoteSchema,
+    callNote: optionalCallNoteSchema,
     // 28 Oct — Incoming/Outgoing, from the call page's toggle, for the call history.
     direction: z.enum(['in', 'out']).optional(),
   })
@@ -85,13 +90,13 @@ export const proxyPostQuoteSchema = postQuoteSchema.extend({
 
 export const proxyConfirmPileSchema = confirmPileSchema.extend({
   sellerCounterpartyId: z.string().min(1),
-  callNote: callNoteSchema,
+  callNote: optionalCallNoteSchema,
 });
 
 export const proxyPileDecisionSchema = z
   .object({
     sellerCounterpartyId: z.string().min(1),
-    callNote: callNoteSchema,
+    callNote: optionalCallNoteSchema,
   })
   .strict();
 
@@ -103,7 +108,7 @@ export const proxyWantsItSchema = z
     buyerCounterpartyId: z.string().min(1),
     qty: z.number().int().min(1),
     deliveryLocationId: z.string().min(1).optional(),
-    callNote: callNoteSchema,
+    callNote: optionalCallNoteSchema,
     direction: z.enum(['in', 'out']).optional(),
   })
   .strict();

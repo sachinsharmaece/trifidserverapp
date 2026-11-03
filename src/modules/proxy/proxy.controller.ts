@@ -426,6 +426,7 @@ export async function postSellerCallConfirmPile(req: Request, res: Response): Pr
     pileId,
     input,
     req.correlationId,
+    { staffAssisted: true },
   );
   await appendProxyLog(Pile, pileId, {
     actingStaffId: actingStaffId(req),
