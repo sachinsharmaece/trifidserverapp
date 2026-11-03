@@ -447,7 +447,7 @@ export interface DeskCard extends PoolCard {
 export async function teamLeaderQueue(
   actor: HoldingActor,
   now: Date = new Date(),
-): Promise<{ items: DeskCard[]; callers: DeskCaller[] }> {
+): Promise<{ items: DeskCard[]; callers: DeskCaller[]; unclaimedDays: number }> {
   await assertTeamLeaderOrAdmin(actor);
   const settings = await getSettings();
   const rows = (await buildPool(settings)).filter(
@@ -473,6 +473,7 @@ export async function teamLeaderQueue(
   const isAdmin = actor.permissions.includes(PERMISSIONS.BUYER_ADMIN);
   return {
     items,
+    unclaimedDays: settings.unclaimedDays,
     callers: callers
       .map((c) => ({
         employeeId: id(c._id),
