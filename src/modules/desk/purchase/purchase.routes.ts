@@ -241,6 +241,15 @@ purchaseRouter.get(
   scopeList('purchase', bySellerId),
   controller.getPoQueue,
 );
+// 3 Nov (My view sheet) — a PO's print data, for "Download PDF" on the PO screen. Read-only, and
+// gated like the PO list itself.
+purchaseRouter.get(
+  '/staff/purchase/pos/:poId/print',
+  authenticate,
+  requirePermission(PERMISSIONS.PO_EDIT),
+  requireInScope('purchase', sellerOfPo()),
+  controller.getPoPrint,
+);
 purchaseRouter.post(
   '/staff/purchase/pos/:poId/invoice',
   authenticate,

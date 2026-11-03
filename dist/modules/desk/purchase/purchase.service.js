@@ -737,9 +737,13 @@ export async function getSupplyMatrixBySeller() {
                 }),
             ]),
         ].sort((a, b) => a.localeCompare(b));
+        const counterparty = counterpartyById.get(s.counterpartyId.toString());
         return {
             sellerId: key,
-            firm: counterpartyById.get(s.counterpartyId.toString())?.firm ?? '—',
+            firm: counterparty?.firm ?? '—',
+            ownerName: counterparty?.ownerName ?? null,
+            mobile: counterparty?.contactMobile ?? counterparty?.mobile ?? null,
+            gstin: counterparty?.gstin ?? null,
             trustTier: s.trustTier,
             district: s.tehsilId ? (districtOf.get(String(s.tehsilId)) ?? null) : null,
             assignedTo: ownerBySeller.has(key) ? (ownerName.get(ownerBySeller.get(key)) ?? null) : null,
