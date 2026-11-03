@@ -180,7 +180,7 @@ const optionalText = z.preprocess(
   z.string().optional(),
 );
 
-const optionalLicence = z.preprocess(
+export const optionalLicence = z.preprocess(
   (value) => (typeof value === 'string' ? blankToUndefined(value.trim()) : value),
   z
     .string()

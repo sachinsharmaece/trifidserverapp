@@ -11,6 +11,8 @@ import { Seller } from '../src/models/Seller.js';
 import { BookAssignment } from '../src/models/BookAssignment.js';
 import { SellerAssignment } from '../src/models/SellerAssignment.js';
 import { SellerPush } from '../src/models/SellerPush.js';
+import { SellerReference } from '../src/models/SellerReference.js';
+import { BankDetail } from '../src/models/BankDetail.js';
 import { StaffNotice } from '../src/models/StaffNotice.js';
 import { AuditLog } from '../src/models/AuditLog.js';
 import { Manufacturer } from '../src/models/Manufacturer.js';
@@ -248,7 +250,7 @@ describe('Phase 6 — the button and the routing (check 19)', () => {
     expect(routed.body.data.receiver.person).toBe('Quila Purchase');
   });
 
-  it('needs an Idempotency-Key, and a note', async () => {
+  it('needs an Idempotency-Key; the note is optional (3 Nov)', async () => {
     const buyer = await activeBuyer('Keyless Agro', execA.employeeId);
     const noKey = await request(app)
       .post(`/api/v1/staff/buyers/${buyer.buyerId}/push`)
@@ -256,13 +258,33 @@ describe('Phase 6 — the button and the routing (check 19)', () => {
       .send({ note: 'x x x' });
     expect(noKey.status).toBe(400);
     const noNote = await post(`/staff/buyers/${buyer.buyerId}/push`, execA, { note: '' });
-    expect(noNote.status).toBe(400);
-    expect(noNote.body.error.field).toBe('note');
+    expect(noNote.status).toBe(201);
+    const pushId = noNote.body.data.pushId as string;
+    expect((await SellerPush.findById(pushId))!.note).toBe('');
+    // Purchase reads it as an empty note, and the notice to the receiver does not quote one.
+    const row = (
+      (await get('/staff/purchase/pushes', leaderL)).body.data as Array<{
+        pushId: string;
+        note: string;
+      }>
+    ).find((r) => r.pushId === pushId);
+    expect(row?.note).toBe('');
+    const notice = await StaffNotice.findOne({ kind: 'push_received', title: /Keyless Agro/ });
+    expect(notice?.body).toBe('Arun Exec pushed him to Purchase.');
+
+    // Left out altogether is the same as empty; a note that is given is still kept.
+    const other = await activeBuyer('Keyless Agro Two', execA.employeeId);
+    expect((await post(`/staff/buyers/${other.buyerId}/push`, execA, {})).status).toBe(201);
+    const tooLong = await activeBuyer('Keyless Agro Three', execA.employeeId);
+    expect(
+      (await post(`/staff/buyers/${tooLong.buyerId}/push`, execA, { note: 'x'.repeat(1001) }))
+        .status,
+    ).toBe(400);
   });
 });
 
 describe('Phase 6 — Purchase side and the wall (checks 19, 20)', () => {
-  it('Purchase sees identity, "Pushed by" and the note only — no Marg code, orders or rates', async () => {
+  it('Purchase sees identity, "Pushed by", the note and his buyer Marg code — no orders or rates', async () => {
     const buyer = await activeBuyer('Wall Agro', execA.employeeId);
     const pushed = await post(`/staff/buyers/${buyer.buyerId}/push`, execA, {
       note: 'Has stock of X',
@@ -297,8 +319,11 @@ describe('Phase 6 — Purchase side and the wall (checks 19, 20)', () => {
       canDecide: false,
     });
     expect(detail.body.data.location.tehsilId).toBe(home.tehsilId);
+    // 3 Nov — his seller Marg code is his buyer code, so it now travels (BR-363 used to keep it back).
+    const buyerCode = (await Buyer.findById(buyer.buyerId))!.margPartyCode;
+    expect(buyerCode).toMatch(/^BUY/);
+    expect(detail.body.data.buyerMargPartyCode).toBe(buyerCode);
     const text = JSON.stringify(detail.body.data);
-    expect(text).not.toMatch(/margPartyCode"\s*:\s*"BUY/);
     expect(text).not.toMatch(/order|rate|ask|callLog|category/i);
   });
 
@@ -441,6 +466,7 @@ describe('Phase 6 — approval, notices and the link (checks 20, 21)', () => {
     await post(
       `/staff/purchase/pushes/${pushId}/complete`,
       leaderL,
+      // Whatever is sent, the buyer's own code is the seller's (3 Nov).
       completion({ margPartyCode: 'sel-001' }),
     );
     const res = await post(
@@ -453,7 +479,7 @@ describe('Phase 6 — approval, notices and the link (checks 20, 21)', () => {
     expect(String(seller.counterpartyId)).toBe(buyer.counterpartyId);
     expect(String(seller.pushedFromBuyerId)).toBe(buyer.buyerId);
     expect(String(seller.sourcedByEmployeeId)).toBe(execA.employeeId);
-    expect(seller.margPartyCode).toBe('SEL-001'); // his own, not the buyer's Marg code
+    expect(seller.margPartyCode).toBe((await Buyer.findById(buyer.buyerId))!.margPartyCode);
     expect((await Counterparty.findById(buyer.counterpartyId))!.kind).toBe('both');
     expect(
       String((await SellerAssignment.findOne({ sellerId: seller._id }))!.ownerEmployeeId),
@@ -577,5 +603,113 @@ describe('Phase 6 — staff notices', () => {
     expect((await post(`/staff/notices/${first.noticeId}/read`, execB, {})).status).toBe(404);
     await post('/staff/notices/read-all', leaderL, {});
     expect((await get('/staff/notices', leaderL)).body.data.unread).toBe(0);
+  });
+});
+
+describe('3 Nov (My view sheet) — Complete as a seller: the licence, referees, bank account and call note are optional', () => {
+  async function pushed(firm: string, identity: { panOnly?: boolean } = {}) {
+    const buyer = await activeBuyer(firm, execA.employeeId, identity);
+    const pushId = (await post(`/staff/buyers/${buyer.buyerId}/push`, execA, { note: '' })).body
+      .data.pushId as string;
+    return { buyer, pushId };
+  }
+  const complete = (pushId: string, body: object) =>
+    post(`/staff/purchase/pushes/${pushId}/complete`, leaderL, body);
+
+  it('completes with only the address block, and the seller is approved with no referees, bank or licence of his own', async () => {
+    const { buyer, pushId } = await pushed('Bare Minimum Agro');
+    const res = await complete(pushId, { location: home });
+    expect(res.status).toBe(200);
+    expect(res.body.data.draft).toMatchObject({
+      licenceNo: null,
+      references: [],
+      bankDetailGiven: false,
+      callNote: '',
+    });
+
+    const approved = await post(
+      `/staff/purchase/pushes/${pushId}/approve`,
+      admin,
+      approval(leaderL.employeeId),
+    );
+    expect(approved.status).toBe(200);
+    const sellerId = approved.body.data.sellerId as string;
+    expect(await SellerReference.countDocuments({ sellerId })).toBe(0);
+    expect(await BankDetail.countDocuments({ counterpartyId: buyer.counterpartyId })).toBe(0);
+    // The licence he already had as a buyer stays on the firm.
+    expect((await Counterparty.findById(buyer.counterpartyId))!.licenceNo).toBe(
+      'MP/IND/INS/2016/0771',
+    );
+  });
+
+  it('what is given is still checked: licence length, a referee’s phone, and all three bank fields together', async () => {
+    const { pushId } = await pushed('Checked Agro');
+
+    const shortLicence = await complete(pushId, { location: home, licenceNo: 'ab' });
+    expect(shortLicence.status).toBe(400);
+    expect(shortLicence.body.error.field).toBe('licenceNo');
+
+    const badPhone = await complete(pushId, {
+      location: home,
+      references: [{ firm: 'Ref One', phone: '123' }],
+    });
+    expect(badPhone.status).toBe(400);
+
+    const noFirm = await complete(pushId, {
+      location: home,
+      references: [{ firm: '', phone: '9000000001' }],
+    });
+    expect(noFirm.status).toBe(400);
+
+    const partBank = await complete(pushId, {
+      location: home,
+      bankDetail: { accountNumber: '000900012345678', ifsc: 'HDFC0001234', accountName: '' },
+    });
+    expect(partBank.status).toBe(400);
+    const shortIfsc = await complete(pushId, {
+      location: home,
+      bankDetail: { accountNumber: '000900012345678', ifsc: 'HDFC01', accountName: 'Owner' },
+    });
+    expect(shortIfsc.status).toBe(400);
+
+    // A referee with only a firm and a phone is enough; relationship and what he said may be empty.
+    const ok = await complete(pushId, {
+      location: home,
+      references: [{ firm: 'Ref One', phone: '9000000001' }],
+    });
+    expect(ok.status).toBe(200);
+    expect(ok.body.data.draft.references).toEqual([
+      { firm: 'Ref One', phone: '9000000001', relationship: '', whatTheySaid: '' },
+    ]);
+  });
+
+  it('a referee and a bank account that are given are kept and carried to the seller', async () => {
+    const { buyer, pushId } = await pushed('Full Agro');
+    expect((await complete(pushId, completion())).status).toBe(200);
+    const approved = await post(
+      `/staff/purchase/pushes/${pushId}/approve`,
+      admin,
+      approval(leaderL.employeeId),
+    );
+    expect(approved.status).toBe(200);
+    expect(await SellerReference.countDocuments({ sellerId: approved.body.data.sellerId })).toBe(2);
+    expect(await BankDetail.countDocuments({ counterpartyId: buyer.counterpartyId })).toBe(1);
+  });
+
+  it('his seller Marg code is his buyer code whatever is sent; with no buyer code, the one typed stands', async () => {
+    const { buyer, pushId } = await pushed('Marg Agro');
+    const buyerCode = (await Buyer.findById(buyer.buyerId))!.margPartyCode;
+    const res = await complete(pushId, { location: home, margPartyCode: 'something-else' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.draft.margPartyCode).toBe(buyerCode);
+    expect(res.body.data.buyerMargPartyCode).toBe(buyerCode);
+
+    const none = await pushed('No Marg Agro');
+    await Buyer.updateOne({ _id: none.buyer.buyerId }, { $set: { margPartyCode: null } });
+    const detail = await get(`/staff/purchase/pushes/${none.pushId}`, leaderL);
+    expect(detail.body.data.buyerMargPartyCode).toBeNull();
+    const typed = await complete(none.pushId, { location: home, margPartyCode: 'sel-777' });
+    expect(typed.status).toBe(200);
+    expect(typed.body.data.draft.margPartyCode).toBe('SEL-777');
   });
 });
