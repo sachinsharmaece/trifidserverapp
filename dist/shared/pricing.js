@@ -103,6 +103,34 @@ export function computeBuyerInclusiveRatePaise(sellerNetTaxablePaise, marginPct)
     return Math.round((taxable * GROSS_NUMERATOR) / 100);
 }
 /**
+ * A product's own rupee margin (`product_margin_matrix`). Unlike the class matrix, which is a
+ * percentage of the seller's taxable cost, this is a GST-INCLUSIVE rupee amount per base unit
+ * added after the gross-up: `sellerNet × 1.18 + margin`. So ₹9 in the matrix is exactly ₹9
+ * more than the seller's own inclusive rate, whatever the seller's rate is. Never negative.
+ */
+export function computeBuyerInclusiveRatePaiseWithRupeeMargin(sellerNetTaxablePaise, marginPaise) {
+    assertNonNegativeInteger(sellerNetTaxablePaise, 'sellerNetTaxablePaise');
+    assertNonNegativeInteger(marginPaise, 'marginPaise');
+    return Math.round((sellerNetTaxablePaise * GROSS_NUMERATOR) / 100) + marginPaise;
+}
+export function computeBuyerRatePaiseWithMargin(sellerNetTaxablePaise, margin) {
+    return margin.kind === 'rupees'
+        ? computeBuyerInclusiveRatePaiseWithRupeeMargin(sellerNetTaxablePaise, margin.marginPaise)
+        : computeBuyerInclusiveRatePaise(sellerNetTaxablePaise, margin.pct);
+}
+/**
+ * The margin as a fraction of the seller's taxable cost — what `marginPctAtOrder` freezes, so a
+ * rupee margin still reads as a comparable percentage. A rupee margin is inclusive, so it is
+ * grossed down first: ₹9 on ₹100 taxable is 9 / 1.18 / 100 = 7.63%.
+ */
+export function marginPctOf(sellerNetTaxablePaise, margin) {
+    if (margin.kind === 'percent')
+        return margin.pct;
+    if (sellerNetTaxablePaise <= 0)
+        return 0;
+    return Number(((margin.marginPaise * 100) / (GROSS_NUMERATOR * sellerNetTaxablePaise)).toFixed(6));
+}
+/**
  * The buyer's line. The rate is already inclusive, so the total is an exact
  * product of integers and needs no rounding at all — which is the cleanest
  * possible reading of Q3a. The taxable value is then reverse-computed for

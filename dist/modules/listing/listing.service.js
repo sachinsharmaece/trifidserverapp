@@ -23,8 +23,8 @@ import { assertValidObjectId } from '../../shared/objectId.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { assertBuyerApproved, assertCounterpartyActive } from '../../shared/guards.js';
 import { closedMessage, closedStateByLine, closedStateOf, groupFacts, } from './listing.groups.js';
-import { computeBuyerInclusiveRatePaise } from '../../shared/pricing.js';
-import { resolveMarginMatrixCell } from '../pricing/pricing.service.js';
+import { computeBuyerRatePaiseWithMargin } from '../../shared/pricing.js';
+import { resolveBuyerMargin } from '../pricing/pricing.service.js';
 import { resolveSkuClass, toRateTier } from '../chain/chain.service.js';
 import { resolveVisibility } from '../territory/resolver.js';
 const SIX_MONTHS_MS = 183 * 24 * 60 * 60 * 1000;
@@ -41,20 +41,19 @@ const LISTING_LIFE_DAYS = 45; // BR-108.
  * moment an order is actually placed.
  */
 export async function computeBuyerFacingRatePaise(buyer, skuId, sellerNetPaise) {
-    const marginPct = await marginPctForBuyerAndSku(buyer, skuId);
-    return marginPct === null ? null : computeBuyerInclusiveRatePaise(sellerNetPaise, marginPct);
+    const margin = await marginForBuyerAndSku(buyer, skuId);
+    return margin === null ? null : computeBuyerRatePaiseWithMargin(sellerNetPaise, margin);
 }
 /**
- * The margin a buyer's tier carries on this SKU's class, or `null` while the matrix has no
- * cell for it. It depends on the SKU and the buyer's tier only — never on the line's rate —
- * so a feed of 200 lines over 8 SKUs needs 8 of these, not 200 (M9: that N+1 was the
- * feed's whole ~1.3 s at a few hundred listings).
+ * The margin a buyer's tier carries on this SKU — the product's own rupee cell if it has one,
+ * else the class percentage — or `null` while neither exists. It depends on the SKU and the
+ * buyer's tier only — never on the line's rate — so a feed of 200 lines over 8 SKUs needs 8 of
+ * these, not 200 (M9: that N+1 was the feed's whole ~1.3 s at a few hundred listings).
  */
-async function marginPctForBuyerAndSku(buyer, skuId) {
+async function marginForBuyerAndSku(buyer, skuId) {
     try {
-        const { skuClass } = await resolveSkuClass(skuId);
-        const cell = await resolveMarginMatrixCell(skuClass, toRateTier(buyer));
-        return cell.pct;
+        const { skuClass, productId } = await resolveSkuClass(skuId);
+        return await resolveBuyerMargin(productId, skuClass, toRateTier(buyer));
     }
     catch (error) {
         if (error instanceof AppError && error.code === 'MARGIN_CELL_MISSING')
@@ -419,16 +418,16 @@ async function priceForBuyer(buyer, lines) {
     const skuIds = [...new Set(lines.map((v) => String(v.line.skuId)))];
     const marginBySku = new Map();
     await Promise.all(skuIds.map(async (skuId) => {
-        marginBySku.set(skuId, await marginPctForBuyerAndSku(buyer, skuId));
+        marginBySku.set(skuId, await marginForBuyerAndSku(buyer, skuId));
     }));
     const priced = [];
     for (const v of lines) {
-        const marginPct = marginBySku.get(String(v.line.skuId));
-        if (marginPct === null || marginPct === undefined)
+        const margin = marginBySku.get(String(v.line.skuId));
+        if (margin === null || margin === undefined)
             continue; // the cell is still missing
         priced.push({
             ...v,
-            buyerRatePaise: computeBuyerInclusiveRatePaise(v.line.ratePaise, marginPct),
+            buyerRatePaise: computeBuyerRatePaiseWithMargin(v.line.ratePaise, margin),
         });
     }
     return priced;
