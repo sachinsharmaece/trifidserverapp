@@ -33,14 +33,12 @@ import type { Paise } from '../../shared/money.js';
 import {
   computeBuyerInclusiveRatePaise,
   computeBuyerLineMoney,
+  computeBuyerRatePaiseWithMargin,
   computeAbsorptionCapPaise,
+  marginPctOf,
   type PlaceOfSupply,
 } from '../../shared/pricing.js';
-import {
-  resolveMarginMatrixCell,
-  type SkuClass,
-  type RateTier,
-} from '../pricing/pricing.service.js';
+import { resolveBuyerMargin, type SkuClass, type RateTier } from '../pricing/pricing.service.js';
 import { nextChainNo, nextPoNo, nextSoNo } from './chain.numbering.js';
 import { writeChainEvent } from './chain.events.js';
 import { syncEnquiryForAsk } from '../enquiry/enquiry.sync.js';
@@ -87,6 +85,7 @@ export function toRateTier(buyer: {
 
 export async function resolveSkuClass(skuId: Types.ObjectId | string): Promise<{
   skuClass: SkuClass;
+  productId: Types.ObjectId;
   baseUnitsPerBox: number;
   baseUnit: 'LTR' | 'KG' | 'PC';
 }> {
@@ -100,6 +99,7 @@ export async function resolveSkuClass(skuId: Types.ObjectId | string): Promise<{
   }
   return {
     skuClass,
+    productId: sku.productId as Types.ObjectId,
     baseUnitsPerBox: sku.baseUnitsPerBox,
     baseUnit: sku.baseUnit as 'LTR' | 'KG' | 'PC',
   };
@@ -201,16 +201,20 @@ export async function createSoInSession(
     });
   }
 
-  const { skuClass, baseUnitsPerBox, baseUnit } = await resolveSkuClass(input.skuId);
+  const { skuClass, productId, baseUnitsPerBox, baseUnit } = await resolveSkuClass(input.skuId);
   const sku = await Sku.findById(input.skuId).session(session);
   const tier = toRateTier(buyer);
 
-  // BR-040/QR-007 — throws MARGIN_CELL_MISSING rather than guessing.
-  const cell = await resolveMarginMatrixCell(skuClass, tier);
-  const prefillRatePaise = computeBuyerInclusiveRatePaise(input.sellerNetPaise, cell.pct);
+  // BR-040/QR-007 — the product's own rupee margin if it has one for this tier, else the class
+  // percentage. Throws MARGIN_CELL_MISSING rather than guessing.
+  const margin = await resolveBuyerMargin(productId, skuClass, tier);
+  const prefillRatePaise = computeBuyerRatePaiseWithMargin(input.sellerNetPaise, margin);
 
   let ratePaise = prefillRatePaise;
-  let marginPctAtOrder = cell.pct;
+  let marginPctAtOrder = marginPctOf(input.sellerNetPaise, margin);
+  // BR-045 — the rupee figure that priced the line, frozen beside the percentage. Null when the
+  // class matrix priced it, or when a staff override replaced the matrix rate altogether.
+  let marginPaiseAtOrder: number | null = margin.kind === 'rupees' ? margin.marginPaise : null;
   const usingOverride = input.overrideRatePaise !== undefined;
   if (usingOverride) {
     if (!input.overrideReasonCode) {
@@ -229,6 +233,7 @@ export async function createSoInSession(
       });
     }
     marginPctAtOrder = ratePaise / input.sellerNetPaise - 1;
+    marginPaiseAtOrder = null;
   }
 
   const line = computeBuyerLineMoney(input.boxes, baseUnitsPerBox, ratePaise, input.placeOfSupply);
@@ -281,6 +286,7 @@ export async function createSoInSession(
           ratePaise,
           classAtOrder: skuClass,
           marginPctAtOrder,
+          marginPaiseAtOrder,
           sellerNetPaise: input.sellerNetPaise,
           staffPriceId: null,
           baseUnitsPerBoxAtOrder: baseUnitsPerBox,

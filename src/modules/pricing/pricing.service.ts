@@ -1,10 +1,16 @@
 import type { Types } from 'mongoose';
 import { MarginMatrix, type MarginMatrixDocument } from '../../models/MarginMatrix.js';
+import { ProductMarginMatrix } from '../../models/ProductMarginMatrix.js';
+import { Product } from '../../models/Product.js';
 import { AppError } from '../../shared/errors.js';
+import { assertValidObjectId } from '../../shared/objectId.js';
+import type { BuyerMargin } from '../../shared/pricing.js';
 import type { HydratedDocument } from 'mongoose';
 
 export type SkuClass = 'High' | 'Medium' | 'Low';
 export type RateTier = 'Distributor' | 'Dealer' | 'Retailer' | 'Trader';
+
+const RATE_TIERS: RateTier[] = ['Distributor', 'Dealer', 'Retailer', 'Trader'];
 
 /**
  * BR-040/BR-046 — the cell that applies is the one with the latest
@@ -32,6 +38,30 @@ export async function resolveMarginMatrixCell(
     });
   }
   return cell;
+}
+
+/**
+ * BR-040 — the margin that prices a buyer of this tier on this product. A product's own rupee
+ * cell wins; a product with no cell for the tier (or whose latest row is a "back to the class
+ * matrix" null) falls back to the class percentage. Throws MARGIN_CELL_MISSING only when
+ * neither exists.
+ */
+export async function resolveBuyerMargin(
+  productId: Types.ObjectId | string,
+  skuClass: SkuClass,
+  tier: RateTier,
+  asOf: Date = new Date(),
+): Promise<BuyerMargin> {
+  const own = await ProductMarginMatrix.findOne({
+    productId,
+    tier,
+    effectiveFrom: { $lte: asOf },
+  }).sort({ effectiveFrom: -1, createdAt: -1 });
+  if (own && typeof own.marginPaise === 'number') {
+    return { kind: 'rupees', marginPaise: own.marginPaise };
+  }
+  const cell = await resolveMarginMatrixCell(skuClass, tier, asOf);
+  return { kind: 'percent', pct: cell.pct };
 }
 
 export interface MarginMatrixCellDto {
@@ -162,4 +192,114 @@ export async function getMarginMatrixHistory(limit = 200): Promise<MarginMatrixH
     ...toDto(doc as HydratedDocument<MarginMatrixDocument>),
     createdAt: (doc as unknown as { createdAt: Date }).createdAt,
   }));
+}
+
+// ---------------------------------------------------------------------------
+// A product's own rupee margin (`product_margin_matrix`)
+// ---------------------------------------------------------------------------
+
+export interface ProductMarginRowDto {
+  productMarginId: string;
+  productId: string;
+  tier: RateTier;
+  /** GST-inclusive paise per base unit; `null` is a "back to the class matrix" row. */
+  marginPaise: number | null;
+  effectiveFrom: Date;
+  createdAt: Date;
+}
+
+function toProductMarginDto(doc: {
+  id?: string;
+  productId: unknown;
+  tier: string;
+  marginPaise?: number | null;
+  effectiveFrom: Date;
+  createdAt?: Date;
+}): ProductMarginRowDto {
+  return {
+    productMarginId: doc.id as string,
+    productId: String(doc.productId),
+    tier: doc.tier as RateTier,
+    marginPaise: doc.marginPaise ?? null,
+    effectiveFrom: doc.effectiveFrom,
+    createdAt: doc.createdAt as Date,
+  };
+}
+
+async function assertProductExists(productId: string): Promise<void> {
+  assertValidObjectId(productId, 'productId');
+  if (!(await Product.exists({ _id: productId }))) {
+    throw new AppError({ code: 'NOT_FOUND', messageEn: 'Product not found.' });
+  }
+}
+
+/**
+ * The rupee cells in effect now for one product, one per tier that has one. A tier with no row,
+ * or whose latest row is a null, is left out: that tier is on the class matrix.
+ */
+export async function getCurrentProductMargin(
+  productId: string,
+  asOf: Date = new Date(),
+): Promise<ProductMarginRowDto[]> {
+  await assertProductExists(productId);
+  const results: ProductMarginRowDto[] = [];
+  for (const tier of RATE_TIERS) {
+    const row = await ProductMarginMatrix.findOne({
+      productId,
+      tier,
+      effectiveFrom: { $lte: asOf },
+    }).sort({ effectiveFrom: -1, createdAt: -1 });
+    if (row && typeof row.marginPaise === 'number') results.push(toProductMarginDto(row));
+  }
+  return results;
+}
+
+interface SetProductMarginInput {
+  cells: Array<{ tier: RateTier; marginPaise: number | null }>;
+  effectiveFrom: Date;
+}
+
+/**
+ * Saves several tiers for one product under one `effectiveFrom`, in one `insertMany`. Forward
+ * only (BR-046): every cell is a new row, and `marginPaise: null` is how a tier goes back to
+ * the class matrix. Maker-checker does not apply, as for the class matrix (BR-016).
+ */
+export async function setProductMargin(
+  productId: string,
+  input: SetProductMarginInput,
+  actor: { employeeId: string },
+): Promise<ProductMarginRowDto[]> {
+  await assertProductExists(productId);
+  const seen = new Set<string>();
+  for (const cell of input.cells) {
+    if (seen.has(cell.tier)) {
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: `Tier ${cell.tier} appears more than once in this save.`,
+      });
+    }
+    seen.add(cell.tier);
+  }
+  const created = await ProductMarginMatrix.insertMany(
+    input.cells.map((cell) => ({
+      productId,
+      tier: cell.tier,
+      marginPaise: cell.marginPaise,
+      effectiveFrom: input.effectiveFrom,
+      createdBy: actor.employeeId as unknown as Types.ObjectId,
+    })),
+  );
+  return created.map((doc) => toProductMarginDto(doc));
+}
+
+/** Every row ever written for one product, newest `effectiveFrom` first, future-dated ones included. */
+export async function getProductMarginHistory(
+  productId: string,
+  limit = 200,
+): Promise<ProductMarginRowDto[]> {
+  await assertProductExists(productId);
+  const rows = await ProductMarginMatrix.find({ productId })
+    .sort({ effectiveFrom: -1, createdAt: -1 })
+    .limit(limit);
+  return rows.map((doc) => toProductMarginDto(doc));
 }

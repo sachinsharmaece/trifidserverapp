@@ -1,6 +1,10 @@
 import type { Request, Response } from 'express';
 import * as pricingService from './pricing.service.js';
-import { setMarginMatrixBulkSchema, setMarginMatrixCellSchema } from './pricing.validation.js';
+import {
+  setMarginMatrixBulkSchema,
+  setMarginMatrixCellSchema,
+  setProductMarginSchema,
+} from './pricing.validation.js';
 
 function ok(res: Response, req: Request, data: unknown, status = 200): void {
   res.status(status).json({ data, meta: { correlationId: req.correlationId } });
@@ -29,5 +33,23 @@ export async function putMarginMatrixBulk(req: Request, res: Response): Promise<
 
 export async function getMarginMatrixHistory(req: Request, res: Response): Promise<void> {
   const result = await pricingService.getMarginMatrixHistory();
+  ok(res, req, result);
+}
+
+export async function getProductMargin(req: Request, res: Response): Promise<void> {
+  const result = await pricingService.getCurrentProductMargin(String(req.params.productId));
+  ok(res, req, result);
+}
+
+export async function putProductMargin(req: Request, res: Response): Promise<void> {
+  const input = setProductMarginSchema.parse(req.body);
+  const result = await pricingService.setProductMargin(String(req.params.productId), input, {
+    employeeId: req.auth!.employeeId!,
+  });
+  ok(res, req, result, 201);
+}
+
+export async function getProductMarginHistory(req: Request, res: Response): Promise<void> {
+  const result = await pricingService.getProductMarginHistory(String(req.params.productId));
   ok(res, req, result);
 }

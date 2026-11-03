@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
 import { requirePermission } from '../../middleware/requirePermission.js';
+import { requireIdempotencyKey } from '../../middleware/idempotency.js';
 import { PERMISSIONS } from '../../config/permissions.js';
 import * as controller from './pricing.controller.js';
 
@@ -32,4 +33,25 @@ pricingRouter.put(
   authenticate,
   requirePermission(PERMISSIONS.MARGIN_MATRIX_WRITE),
   controller.putMarginMatrix,
+);
+
+// A product's own rupee margin (BR-040 override) — same permissions as the class matrix.
+pricingRouter.get(
+  '/admin/products/:productId/margin-matrix',
+  authenticate,
+  requirePermission(PERMISSIONS.MARGIN_MATRIX_READ),
+  controller.getProductMargin,
+);
+pricingRouter.get(
+  '/admin/products/:productId/margin-matrix/history',
+  authenticate,
+  requirePermission(PERMISSIONS.MARGIN_MATRIX_READ),
+  controller.getProductMarginHistory,
+);
+pricingRouter.put(
+  '/admin/products/:productId/margin-matrix',
+  authenticate,
+  requirePermission(PERMISSIONS.MARGIN_MATRIX_WRITE),
+  requireIdempotencyKey(),
+  controller.putProductMargin,
 );
