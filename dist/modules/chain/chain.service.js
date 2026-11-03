@@ -28,7 +28,7 @@ import { AppError } from '../../shared/errors.js';
 import { assertValidObjectId } from '../../shared/objectId.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { env } from '../../config/env.js';
-import { computeBuyerInclusiveRatePaise, computeBuyerLineMoney, computeBuyerRatePaiseWithMargin, computeAbsorptionCapPaise, marginPctOf, } from '../../shared/pricing.js';
+import { computeBuyerLineMoney, computeBuyerRatePaiseWithMargin, computeAbsorptionCapPaise, marginPctOf, } from '../../shared/pricing.js';
 import { resolveBuyerMargin } from '../pricing/pricing.service.js';
 import { nextChainNo, nextPoNo, nextSoNo } from './chain.numbering.js';
 import { writeChainEvent } from './chain.events.js';
@@ -573,7 +573,12 @@ export async function transitionToInspected(soId, poId) {
  * the session report as a real simplification, not a quoted rule.
  */
 async function findPromotionCandidate(so, soLine, excludeSellerId) {
-    const zeroMarginRate = computeBuyerInclusiveRatePaise(soLine.sellerNetPaise, 0);
+    // "Zero margin" is measured the way the line was priced: a product's rupee margin is added to
+    // the quote as it stands, the class percentage is applied to a taxable rate and grossed up.
+    const zeroMargin = typeof soLine.marginPaiseAtOrder === 'number'
+        ? { kind: 'rupees', marginPaise: 0 }
+        : { kind: 'percent', pct: 0 };
+    const zeroMarginRate = computeBuyerRatePaiseWithMargin(soLine.sellerNetPaise, zeroMargin);
     const zeroMarginTotal = computeBuyerLineMoney(soLine.boxes, soLine.baseUnitsPerBoxAtOrder, zeroMarginRate, so.placeOfSupply).totalPaise;
     const marginOnLinePaise = so.totalPaise - zeroMarginTotal;
     const cap = computeAbsorptionCapPaise(so.totalPaise, marginOnLinePaise);
@@ -593,7 +598,7 @@ async function findPromotionCandidate(so, soLine, excludeSellerId) {
         const sellerCounterparty = await Counterparty.findById(seller.counterpartyId);
         if (sellerCounterparty?.status !== 'active')
             continue; // Never promote a blacklisted or pending seller.
-        const candidateZeroMarginRate = computeBuyerInclusiveRatePaise(line.ratePaise, 0);
+        const candidateZeroMarginRate = computeBuyerRatePaiseWithMargin(line.ratePaise, zeroMargin);
         const candidateZeroMarginTotal = computeBuyerLineMoney(soLine.boxes, soLine.baseUnitsPerBoxAtOrder, candidateZeroMarginRate, so.placeOfSupply).totalPaise;
         const deltaPaise = Math.max(candidateZeroMarginTotal - zeroMarginTotal, 0);
         if (deltaPaise <= cap) {
