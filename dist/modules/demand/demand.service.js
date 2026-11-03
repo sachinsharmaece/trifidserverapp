@@ -91,9 +91,9 @@ export async function raiseAsk(buyerCounterpartyId, input, options = {}) {
             productId: input.productId ?? null,
             'conditionRequirement.expiryBand': input.conditionRequirement.expiryBand,
             'conditionRequirement.deliveryBand': input.conditionRequirement.deliveryBand ?? null,
-        }, { $inc: { qty: input.qty } }, { new: true, sort: { createdAt: 1 } });
+        }, { $inc: { qty: input.qty } }, { new: true, sort: { createdAt: 1 }, session: options.session });
         if (duplicate) {
-            await Enquiry.updateOne({ askId: duplicate._id }, { $inc: { qty: input.qty } });
+            await Enquiry.updateOne({ askId: duplicate._id }, { $inc: { qty: input.qty } }, { session: options.session });
             return {
                 askId: duplicate._id.toString(),
                 enquiryId: duplicate.enquiryId ? duplicate.enquiryId.toString() : null,
@@ -118,7 +118,10 @@ export async function raiseAsk(buyerCounterpartyId, input, options = {}) {
         askId,
     };
     const firstStatus = deriveAskStatus({ state: 'open', visibleToAllAt }, now);
-    const { ask, enquiryId } = await withTransaction(async (session) => {
+    const inTransaction = options.session
+        ? (work) => work(options.session)
+        : withTransaction;
+    const { ask, enquiryId } = await inTransaction(async (session) => {
         const enquiryId = options.enquiryId
             ? await convertPreTradeEnquiryInSession(options.enquiryId, enquiryFields, firstStatus, now, session)
             : await createTradeEnquiryInSession({
@@ -159,7 +162,7 @@ export async function raiseAsk(buyerCounterpartyId, input, options = {}) {
         const sku = await Sku.findById(input.skuId);
         pulseProductId = sku?.productId;
     }
-    if (pulseProductId) {
+    if (pulseProductId && !options.session) {
         await recordPulseEvent({
             buyerId: buyer._id,
             productId: pulseProductId,
@@ -212,6 +215,7 @@ export async function listMyAsks(buyerCounterpartyId) {
         items.push({
             askId: ask._id.toString(),
             qty: ask.qty,
+            filledQty: ask.filledQty ?? 0,
             state: ask.state,
             ttlAt: ask.ttlAt,
             holdExpiresAt: ask.holdExpiresAt ?? null,
@@ -240,12 +244,23 @@ export async function declineAsk(buyerCounterpartyId, askId) {
         await syncEnquiryForAsk(ask._id, session);
     });
 }
-/** API-042. BR-127/BR-128 — a split fill is two trades; each seller's portion is its own chain. */
+/**
+ * API-042. BR-127/BR-128 — a split fill is two trades; each seller's portion is its own chain.
+ *
+ * 2 Nov — a fill that covers fewer boxes than he asked for (a seller quoted 10 of 100) no longer
+ * closes the ask and loses the rest: the ask stays open at what is left (90), `filledQty` keeps the
+ * 10, and the other sellers' live quotes stay live — Purchase finds the next seller for the rest.
+ * An order is capped at what is still wanted, so he is never over-filled. Only a full fill — or
+ * `keepRemainderOpen: false` — closes the ask and ranks the quotes not taken (BR-063).
+ */
 export async function acceptAskFill(buyerCounterpartyId, askId, input, correlationId) {
     const buyer = await requireActiveBuyer(buyerCounterpartyId);
     const ask = await Ask.findOne({ _id: askId, buyerId: buyer._id });
     if (!ask)
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Ask not found.' });
+    if (ask.state !== 'open' && ask.state !== 'quoted') {
+        throw new AppError({ code: 'ENQUIRY_NOT_OPEN', messageEn: 'This ask is no longer open.' });
+    }
     const quotes = await Quote.find({ _id: { $in: input.quoteIds }, askId: ask._id, status: 'live' });
     if (quotes.length !== input.quoteIds.length) {
         throw new AppError({
@@ -253,29 +268,59 @@ export async function acceptAskFill(buyerCounterpartyId, askId, input, correlati
             messageEn: 'One or more quotes are no longer live.',
         });
     }
+    // Cheapest first, so when the quotes taken add up to more than he wants, the dearest is the
+    // one that gets trimmed.
+    quotes.sort((a, b) => a.ratePaiseForIndore - b.ratePaiseForIndore);
     const soIds = [];
     const actor = { employeeId: buyer._id.toString(), correlationId };
+    let remaining = ask.qty;
+    let filled = 0;
+    const taken = [];
     // BR-128 — independent chains: "where one leg fails the other stands" —
     // each seller's portion is its own transaction, not one shared one.
     for (const quote of quotes) {
+        const boxes = Math.min(quote.qtyAvailable, remaining);
+        if (boxes < 1)
+            break; // Already filled: the quotes left are not needed.
         const result = await createSo({
             buyerId: buyer._id.toString(),
             sellerId: quote.sellerId.toString(),
             skuId: ask.skuId?.toString() ?? '',
-            boxes: quote.qtyAvailable,
+            boxes,
             sellerNetPaise: quote.ratePaiseForIndore,
             placeOfSupply: 'intra_state',
             askId: ask._id.toString(),
             ...(ask.enquiryId ? { enquiryId: ask.enquiryId.toString() } : {}),
         }, actor);
         soIds.push(result.soId);
+        remaining -= boxes;
+        filled += boxes;
         quote.status = 'won';
         quote.rank = 1;
         await quote.save();
+        taken.push(quote);
+    }
+    const keepOpen = remaining > 0 && input.keepRemainderOpen !== false;
+    if (keepOpen) {
+        // Short fill: the ask stays open at what is left. The quotes not taken stay live (and parked
+        // ones stay parked) for it — Purchase and Sales work the remainder from where they are.
+        await withTransaction(async (session) => {
+            ask.filledQty = (ask.filledQty ?? 0) + filled;
+            ask.qty = remaining;
+            const stillQuoted = await Quote.exists({ askId: ask._id, status: 'live' }).session(session);
+            ask.state = stillQuoted ? 'quoted' : 'open';
+            // BR-126 — the hold starts at a quote and never restarts; with none left, the next quote
+            // is the first of a new round and starts it (and tells him, `rate_ready`).
+            if (!stillQuoted)
+                ask.holdExpiresAt = null;
+            await ask.save({ session });
+            await syncEnquiryForAsk(ask._id, session);
+        });
+        return { soIds, filledBoxes: filled, remainingBoxes: remaining };
     }
     // BR-063 — every OTHER live quote on this ask closes with a rank only.
     const losers = await Quote.find({ askId: ask._id, status: 'live' });
-    const rankedByPrice = [...quotes, ...losers].sort((a, b) => a.ratePaiseForIndore - b.ratePaiseForIndore);
+    const rankedByPrice = [...taken, ...losers].sort((a, b) => a.ratePaiseForIndore - b.ratePaiseForIndore);
     for (const loser of losers) {
         loser.status = 'lost';
         loser.rank =
@@ -286,12 +331,13 @@ export async function acceptAskFill(buyerCounterpartyId, askId, input, correlati
     // DEC-051 — the ask and its enquiry move together. (Each SO above commits in
     // its own transaction by design, BR-128; this one marks the enquiry ordered.)
     await withTransaction(async (session) => {
+        ask.filledQty = (ask.filledQty ?? 0) + filled;
         ask.state = 'converted';
         await ask.save({ session });
         await closeParkedQuotes(ask._id, session);
         await syncEnquiryForAsk(ask._id, session);
     });
-    return { soIds };
+    return { soIds, filledBoxes: filled, remainingBoxes: remaining };
 }
 /** API-044. BR-064 — no tehsil, no district, ever, on any field of this response. */
 export async function getDemandBoard(sellerCounterpartyId) {
@@ -607,10 +653,12 @@ export async function confirmPile(sellerCounterpartyId, pileId, input, correlati
         : null;
     if (!line || !listing)
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Listing line not found.' });
-    if (!input.expiryExact) {
+    // The expiry he gives now, else the one the listing was entered with. The year is the least needed.
+    const expiryExact = input.expiryExact ?? line.expiryExact ?? undefined;
+    if (!expiryExact) {
         throw new AppError({
             code: 'EXPIRY_REQUIRED',
-            messageEn: 'Exact expiry is required to confirm (BR-102).',
+            messageEn: 'The expiry is required to confirm — at least the year (BR-102).',
         });
     }
     if (line.provenance === 'auth' && !input.batch) {
@@ -627,12 +675,12 @@ export async function confirmPile(sellerCounterpartyId, pileId, input, correlati
         pile.decision = 'confirmed';
         pile.decidedAt = now;
         pile.confirmedQty = Math.min(input.canSendBoxes, totalAsked);
-        pile.expiryExact = input.expiryExact;
+        pile.expiryExact = expiryExact;
         pile.batch = input.batch ?? null;
         pile.sellerLockedUntil = addHours(now, 24); // BR-032.
         await pile.save({ session });
         line.expiryFixed = true; // IC-01/BR-102 — the exact month may now display.
-        line.expiryExact = input.expiryExact;
+        line.expiryExact = expiryExact;
         await line.save({ session });
         await syncEnquiriesForPile(pile._id, session, now);
     });

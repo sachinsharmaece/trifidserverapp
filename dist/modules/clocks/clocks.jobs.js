@@ -2,6 +2,8 @@ import { withTransaction } from '../../db/transaction.js';
 import { So } from '../../models/So.js';
 import { Po } from '../../models/Po.js';
 import { Buyer } from '../../models/Buyer.js';
+import { PileRequest } from '../../models/PileRequest.js';
+import { expirePileOffer } from '../demand/pileOffer.service.js';
 import { Seller } from '../../models/Seller.js';
 import { logger } from '../../shared/logger.js';
 import { writeAuditLog } from '../../shared/audit.js';
@@ -176,4 +178,23 @@ export async function runDeliveryAutoClose(now = new Date()) {
         }
     }
     return { closed };
+}
+// ---------------------------------------------------------------------------
+// 5. The 24-hour hold on a deal given to a buyer when his pile was confirmed — BR-378. Past it
+//    the deal lapses and its boxes go back on the listing: the same release a walk-away makes.
+// ---------------------------------------------------------------------------
+export async function runPileOfferExpiry(now = new Date()) {
+    let released = 0;
+    const due = await PileRequest.find({ offerState: 'offered', holdUntil: { $lt: now } }).select('_id');
+    for (const request of due) {
+        const requestId = request._id.toString();
+        try {
+            if (await expirePileOffer(requestId, now))
+                released += 1;
+        }
+        catch (error) {
+            logger.error({ msg: 'pile-offer expiry failed for one request', requestId, error });
+        }
+    }
+    return { released };
 }

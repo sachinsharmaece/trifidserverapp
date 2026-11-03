@@ -1,3 +1,4 @@
+import { listPileOffersForBuyer } from '../../demand/pileOffer.service.js';
 import { Buyer } from '../../../models/Buyer.js';
 import { Counterparty } from '../../../models/Counterparty.js';
 import { Tehsil } from '../../../models/Tehsil.js';
@@ -15,7 +16,7 @@ import { Pool } from '../../../models/Pool.js';
 import { PoolCommitment } from '../../../models/PoolCommitment.js';
 import { ListingLine } from '../../../models/ListingLine.js';
 import { AppError } from '../../../shared/errors.js';
-import { computeBuyerFacingRatePaise } from '../../listing/listing.service.js';
+import { computeBuyerFacingRatePaise, listPricedLinesVisibleToBuyerDoc, } from '../../listing/listing.service.js';
 import { addDays } from '../../../shared/clock.js';
 import { ASK_LEAK_STALENESS_HOURS, BILLED_SO_STATES, DELIVERED_SO_STATES, DISPATCHED_SO_STATES, FUNNEL_LABELS, PAID_SO_STATES, PAYMENT_PENDING_SO_STATES, } from './sales.funnel.js';
 import { listCallLogsForBuyer } from './sales.calls.js';
@@ -309,6 +310,10 @@ export async function getBuyerFile(buyerId) {
     // "He asked" is an ask still waiting on a rate. The moment any rate is given it moves to
     // "Rate given"; quotes parked on it show on its row for as long as it is waiting.
     const openAsks = liveAsks.filter((a) => a.state === 'open');
+    // What is listed for him — only needed to tell an ask nothing carries yet from one Sales can work.
+    const boardLines = openAsks.length
+        ? await listPricedLinesVisibleToBuyerDoc(String(buyer._id))
+        : [];
     // An ask names a product, or only a pack (SKU) — resolve either to the product so
     // "He asked" can show a name, never a bare id.
     const askSkus = await Sku.find({
@@ -387,6 +392,7 @@ export async function getBuyerFile(buyerId) {
         parkedRowsByAskId.set(row.askId, [...(parkedRowsByAskId.get(row.askId) ?? []), row]);
     }
     const waitingOnSeller = await listWaitingOnSeller(buyer);
+    const pileOffers = await listPileOffersForBuyer(buyer);
     // The same nine joints as the Funnel tab, with the same state lists and wording,
     // counted over this buyer's own records only.
     const staleBefore = addDays(new Date(), -(ASK_LEAK_STALENESS_HOURS / 24));
@@ -422,7 +428,8 @@ export async function getBuyerFile(buyerId) {
         stage('classified', buyer.classified, null),
         stage('viewing', buyer.rateViews > 0, buyer.rateViews),
         stage('asked', openAsks.length > 0, openAsks.length, { leakCount: askLeakCount }),
-        stage('rate_held', liveQuoteCount > 0, liveQuoteCount),
+        // A rate held for him: a quote on an ask, or the deal given when a seller confirmed his pile.
+        stage('rate_held', liveQuoteCount + pileOffers.length > 0, liveQuoteCount + pileOffers.length),
         stage('took_it', pendingCount > 0, pendingCount),
         stage('paid', paidCount > 0, paidCount),
         stage('billed', billedCount > 0, billedCount),
@@ -459,6 +466,12 @@ export async function getBuyerFile(buyerId) {
                 productId,
                 skuId: a.skuId ? a.skuId.toString() : null,
                 qty: a.qty,
+                filledQty: a.filledQty ?? 0,
+                waitingOnPurchase: a.state === 'open' &&
+                    !(parkedRowsByAskId.get(a._id.toString())?.length ?? 0) &&
+                    !boardLines.some((p) => a.skuId && !a.allPacks
+                        ? String(p.line.skuId) === String(a.skuId)
+                        : productId !== null && String(p.listing.productId) === productId),
                 state: a.state,
                 brand: product?.brand ?? '—',
                 technical: product?.technical ?? '—',
@@ -470,6 +483,7 @@ export async function getBuyerFile(buyerId) {
         }),
         waitingOnSeller,
         liveQuotes: liveQuoteRows,
+        pileOffers,
         callLogs,
         orders,
         ordersByStage,

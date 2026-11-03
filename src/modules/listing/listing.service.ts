@@ -29,6 +29,14 @@ import { AppError } from '../../shared/errors.js';
 import { assertValidObjectId } from '../../shared/objectId.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { assertBuyerApproved, assertCounterpartyActive } from '../../shared/guards.js';
+import {
+  closedMessage,
+  closedStateByLine,
+  closedStateOf,
+  groupFacts,
+  type LineClosed,
+} from './listing.groups.js';
+export type { LineClosed };
 import type { Paise } from '../../shared/money.js';
 import { computeBuyerInclusiveRatePaise } from '../../shared/pricing.js';
 import { resolveMarginMatrixCell } from '../pricing/pricing.service.js';
@@ -154,9 +162,10 @@ function assertShelfLifeMeetsFloor(expiryBand: ExpiryBand, expiryExact: string |
   // expectation (BR-102), but when a seller does supply one up front it is
   // still checked against the floor rather than accepted blindly.
   if (!expiryExact) return;
-  const [monthStr, yearStr] = expiryExact.split('/');
-  const month = Number(monthStr);
-  const year = Number(yearStr);
+  // `03/2027` or, with no month known, `2027` — counted to December, the benefit of the doubt.
+  const parts = expiryExact.split('/');
+  const month = parts.length === 2 ? Number(parts[0]) : 12;
+  const year = Number(parts[parts.length - 1]);
   if (!month || !year) return;
   const expiryDate = new Date(year, month - 1, 1);
   if (expiryDate.getTime() - Date.now() < SIX_MONTHS_MS) {
@@ -183,7 +192,15 @@ function assertBatchRequiredForAuth(provenance: Provenance, batch: string | unde
 export async function createListing(
   sellerCounterpartyId: string,
   input: CreateListingInput,
-  options: { origin?: 'seller_initiated' | 'quote_born' } = {},
+  options: {
+    origin?: 'seller_initiated' | 'quote_born';
+    /**
+     * 2 Nov — staff entering a listing from a call may give an expiry under six months away: the
+     * seller has the stock and the board only ever shows a band. The floor stays for the seller's
+     * own listings and quotes (BR-107, DEC-071).
+     */
+    skipShelfLifeFloor?: boolean;
+  } = {},
 ): Promise<{ listingId: string; lineIds: string[] }> {
   const seller = await Seller.findOne({ counterpartyId: sellerCounterpartyId });
   if (!seller) throw new AppError({ code: 'PERMISSION_DENIED', messageEn: 'Sellers only.' });
@@ -240,7 +257,7 @@ export async function createListing(
   }
 
   for (const line of input.lines) {
-    assertShelfLifeMeetsFloor(line.expiryBand, line.expiryExact);
+    if (!options.skipShelfLifeFloor) assertShelfLifeMeetsFloor(line.expiryBand, line.expiryExact);
     assertBatchRequiredForAuth(line.provenance, line.batch);
     const sku = await Sku.findOne({ _id: line.skuId, productId: input.productId });
     if (!sku) {
@@ -740,6 +757,8 @@ export interface BuyerOfferDto {
   ratePaise: Paise;
   conditions: BuyerConditionTagsDto;
   hasPool: boolean;
+  /** 2 Nov — why this line takes no more requests, or null (listing.groups.ts, BR-136). */
+  closed: LineClosed;
 }
 
 /** API-031. Every rate on a product, cheapest first, plus pools on that product. */
@@ -764,9 +783,11 @@ export async function getProductOffers(
 
   const skuIds = [...new Set(priced.map((v) => (v.line.skuId as Types.ObjectId).toString()))];
   const pools = await Pool.find({ skuId: { $in: skuIds }, isActive: true });
+  const closed = await closedStateByLine(priced.map((v) => v.line));
 
   return {
     offers: priced.map((v) => ({
+      closed: closed.get((v.line._id as Types.ObjectId).toString()) ?? null,
       listingLineId: (v.line._id as Types.ObjectId).toString(),
       // 29 Oct — so his ask form can tell a listed pack and send him to Buy instead.
       skuId: (v.line.skuId as Types.ObjectId).toString(),
@@ -797,6 +818,8 @@ export interface BuyScreenDto {
   moqExact: number;
   availableBoxes: number;
   conditions: BuyerConditionTagsDto;
+  /** 2 Nov — the seller has already answered this line, so Buy would be refused. */
+  closed: LineClosed;
 }
 
 /** API-032. The buy screen. Server-side visibility re-checked, never trusted from a link. */
@@ -861,6 +884,7 @@ export async function getListingLineForBuy(
     moqExact: line.moqExact,
     availableBoxes: line.qty,
     conditions: toConditionTags(line),
+    closed: (await closedStateByLine([line])).get(String(line._id)) ?? null,
   };
 }
 
@@ -968,17 +992,27 @@ export async function createPileRequest(
     deliveryLocationId = await defaultDeliveryLocationId(buyer._id as Types.ObjectId);
   }
 
-  let pile = await Pile.findOne({ listingLineId: line._id });
+  // 2 Nov — requests join the line's OPEN group; with none, a new group opens unless the line is
+  // closed (BR-133/BR-136, listing.groups.ts): the last group still in flight, revised, declined,
+  // or no stock left.
+  const groups = await Pile.find({ listingLineId: line._id });
+  let pile = groups.find((g) => !g.decision) ?? null;
   if (!pile) {
-    pile = await Pile.create({
-      listingLineId: line._id,
-      confirmWindowEndsAt: new Date(Date.now() + 12 * 60 * 60 * 1000), // BR-135 default confirm_window_h.
-    });
-  } else if (pile.decision) {
-    throw new AppError({
-      code: 'PILE_ALREADY_DECIDED',
-      messageEn: 'This listing has already been decided.',
-    });
+    const closed = closedStateOf(line, groups.map(groupFacts));
+    if (closed) {
+      throw new AppError({ code: 'PILE_ALREADY_DECIDED', messageEn: closedMessage(closed) });
+    }
+    try {
+      pile = await Pile.create({
+        listingLineId: line._id,
+        confirmWindowEndsAt: new Date(Date.now() + 12 * 60 * 60 * 1000), // BR-135 default confirm_window_h.
+      });
+    } catch (error) {
+      // Two requests raced to open the group; the index let one through. Join the winner's.
+      if ((error as { code?: number }).code !== 11000) throw error;
+      pile = await Pile.findOne({ listingLineId: line._id, decision: null });
+      if (!pile) throw error;
+    }
   }
 
   // DEC-051 — the request and its enquiry are created together.

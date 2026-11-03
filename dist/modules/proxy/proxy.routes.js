@@ -1,5 +1,5 @@
 import { field, requireInScope } from '../../shared/scope.js';
-import { buyerOfAsk, buyerOfOrder, sellerOfPile } from '../../shared/scopeResolvers.js';
+import { buyerOfAsk, buyerOfOrder, buyerOfPileRequest, sellerOfPile, } from '../../shared/scopeResolvers.js';
 import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
 import { requirePermission } from '../../middleware/requirePermission.js';
@@ -7,7 +7,7 @@ import { requireIdempotencyKey } from '../../middleware/idempotency.js';
 import { validateBody, validateQuery } from '../../middleware/validate.js';
 import { PERMISSIONS } from '../../config/permissions.js';
 import * as controller from './proxy.controller.js';
-import { proxyRaiseAskSchema, proxyRaiseAsksSchema, proxyAcceptAskFillSchema, proxyDeclineAskSchema, proxyPromotionDecisionSchema, proxyCreateListingSchema, proxyPostQuoteSchema, proxyConfirmPileSchema, proxyPileDecisionSchema, proxyListBuyerAsksQuerySchema, proxyWantsItSchema, } from './proxy.validation.js';
+import { proxyRaiseAskSchema, proxyRaiseAsksSchema, proxyAcceptAskFillSchema, proxyPileOfferDecisionSchema, proxyDeclineAskSchema, proxyPromotionDecisionSchema, proxyCreateListingSchema, proxyPostQuoteSchema, proxyConfirmPileSchema, proxyPileDecisionSchema, proxyListBuyerAsksQuerySchema, proxyWantsItSchema, proxyPoolChangeSchema, proxyPoolWithdrawSchema, } from './proxy.validation.js';
 /**
  * Staff-assisted enquiries — a phone-call proxy layer over the existing
  * ask/quote/listing flows (WF-04, WF-05, WF-09, WF-11). No new business
@@ -27,10 +27,17 @@ proxyRouter.post('/staff/proxy/buyer/asks', ...buyerCall, requireInScope('sales'
 proxyRouter.post('/staff/proxy/buyer/asks/batch', ...buyerCall, requireInScope('sales', field('body', 'buyerCounterpartyId')), validateBody(proxyRaiseAsksSchema), controller.postBuyerCallAsks);
 // 29 Oct — "He wants it" on a listed offer: a pile request or its pool (Purchase → Confirmations).
 proxyRouter.post('/staff/proxy/buyer/listing-lines/:id/wants-it', ...buyerCall, requireInScope('sales', field('body', 'buyerCounterpartyId')), requireIdempotencyKey(), validateBody(proxyWantsItSchema), controller.postBuyerCallWantsIt);
+// 2 Nov — change or withdraw a buyer's place in a pool (free while not binding, BR-154).
+proxyRouter.post('/staff/proxy/buyer/pools/:id/change', ...buyerCall, requireInScope('sales', field('body', 'buyerCounterpartyId')), requireIdempotencyKey(), validateBody(proxyPoolChangeSchema), controller.postBuyerCallPoolChange);
+proxyRouter.post('/staff/proxy/buyer/pools/:id/withdraw', ...buyerCall, requireInScope('sales', field('body', 'buyerCounterpartyId')), requireIdempotencyKey(), validateBody(proxyPoolWithdrawSchema), controller.postBuyerCallPoolWithdraw);
 // Feeds the ask/quote pickers on "Advance an ask on a call".
 proxyRouter.get('/staff/proxy/buyer/asks', ...buyerCall, requireInScope('sales', field('query', 'buyerCounterpartyId')), validateQuery(proxyListBuyerAsksQuerySchema), controller.getBuyerCallAsks);
 // Maps to API-042.
 proxyRouter.post('/staff/proxy/buyer/asks/:id/accept', ...buyerCall, requireInScope('sales', buyerOfAsk('id')), requireIdempotencyKey(), validateBody(proxyAcceptAskFillSchema), controller.postBuyerCallAcceptFill);
+// BR-378 — the deal given to a buyer when the seller confirmed his pile: Sales takes it, or walks
+// away from it, on his word.
+proxyRouter.post('/staff/proxy/buyer/pile-offers/:id/accept', ...buyerCall, requireInScope('sales', buyerOfPileRequest('id')), requireIdempotencyKey(), validateBody(proxyPileOfferDecisionSchema), controller.postBuyerCallAcceptPileOffer);
+proxyRouter.post('/staff/proxy/buyer/pile-offers/:id/decline', ...buyerCall, requireInScope('sales', buyerOfPileRequest('id')), requireIdempotencyKey(), validateBody(proxyPileOfferDecisionSchema), controller.postBuyerCallDeclinePileOffer);
 // Maps to API-043.
 proxyRouter.post('/staff/proxy/buyer/asks/:id/decline', ...buyerCall, requireInScope('sales', buyerOfAsk('id')), validateBody(proxyDeclineAskSchema), controller.postBuyerCallDecline);
 // Maps to API-071.

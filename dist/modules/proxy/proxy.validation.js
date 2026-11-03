@@ -35,6 +35,14 @@ export const proxyAcceptAskFillSchema = acceptAskFillSchema.extend({
     // 28 Oct — Incoming/Outgoing, from the call page's toggle, for the call history.
     direction: z.enum(['in', 'out']).optional(),
 });
+/** BR-378 — Sales taking, or walking away from, the deal given to a buyer, on his word. */
+export const proxyPileOfferDecisionSchema = z
+    .object({
+    buyerCounterpartyId: z.string().min(1),
+    callNote: callNoteSchema,
+    direction: z.enum(['in', 'out']).optional(),
+})
+    .strict();
 export const proxyDeclineAskSchema = z
     .object({
     buyerCounterpartyId: z.string().min(1),
@@ -77,6 +85,22 @@ export const proxyWantsItSchema = z
     buyerCounterpartyId: z.string().min(1),
     qty: z.number().int().min(1),
     deliveryLocationId: z.string().min(1).optional(),
+    callNote: callNoteSchema,
+    direction: z.enum(['in', 'out']).optional(),
+})
+    .strict();
+// 2 Nov — Sales changes or withdraws a buyer's place in a pool on a call.
+export const proxyPoolChangeSchema = z
+    .object({
+    buyerCounterpartyId: z.string().min(1),
+    qty: z.number().int().min(1),
+    callNote: callNoteSchema,
+    direction: z.enum(['in', 'out']).optional(),
+})
+    .strict();
+export const proxyPoolWithdrawSchema = z
+    .object({
+    buyerCounterpartyId: z.string().min(1),
     callNote: callNoteSchema,
     direction: z.enum(['in', 'out']).optional(),
 })

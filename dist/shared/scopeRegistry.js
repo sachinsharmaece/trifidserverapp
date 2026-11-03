@@ -49,5 +49,6 @@ export const LEAD_SCOPE_EXEMPT = {
     '/staff/sales/pushes': "Pushed to Purchase — filtered in the service by the pusher's team (an executive his own, a leader his team's).",
     '/staff/purchase/pushes': "From Sales — filtered in the service by the receiver's team (the receiver his own, a Purchase Leader his team's).",
     '/staff/purchase/pushes/:pushId': 'One push — the service lets in only the receiver, his Purchase Leader, or Admin; it carries no buyer trade.',
+    '/staff/sales/short-piles': 'Short piles — filtered in the service: a pile shows only to someone who sees every buyer on it.',
     '/staff/notices': "The caller's own in-app notices only.",
 };

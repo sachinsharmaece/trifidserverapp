@@ -3,6 +3,7 @@ import { Ask } from '../models/Ask.js';
 import { Quote } from '../models/Quote.js';
 import { Po } from '../models/Po.js';
 import { Pile } from '../models/Pile.js';
+import { PileRequest } from '../models/PileRequest.js';
 import { ListingLine } from '../models/ListingLine.js';
 import { Listing } from '../models/Listing.js';
 /**
@@ -24,6 +25,12 @@ export const buyerOfAsk = (name = 'askId') => async (req) => {
     const askId = objectIdParam(req, name);
     const ask = askId ? await Ask.findById(askId, { buyerId: 1 }) : null;
     return ask ? { profileId: String(ask.buyerId) } : null;
+};
+/** The buyer a pile request (and the deal given on it) belongs to. */
+export const buyerOfPileRequest = (name = 'id') => async (req) => {
+    const requestId = objectIdParam(req, name);
+    const request = requestId ? await PileRequest.findById(requestId, { buyerId: 1 }) : null;
+    return request ? { profileId: String(request.buyerId) } : null;
 };
 export const buyerOfQuote = (name = 'quoteId') => async (req) => {
     const quoteId = objectIdParam(req, name);

@@ -25,7 +25,10 @@ const askSchema = new Schema(
     productId: { type: Schema.Types.ObjectId, ref: 'Product', default: null },
     allPacks: { type: Boolean, required: true, default: false },
     expectedRatePaise: { type: Number, min: 1, default: null }, // Sales-internal; see above.
+    // The boxes still wanted. 2 Nov — a short fill (10 of 100) leaves the ask open at what is left
+    // (90): every reader of `qty` then sees the remainder, and `filledQty` keeps what was ordered.
     qty: { type: Number, required: true, min: 1 },
+    filledQty: { type: Number, required: true, min: 0, default: 0 },
     conditionRequirement: {
       expiryBand: { type: String, enum: EXPIRY_BANDS, required: true },
       deliveryBand: { type: String, enum: DELIVERY_BANDS, default: null },

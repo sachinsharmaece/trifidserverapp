@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { EXPIRY_EXACT_MESSAGE, EXPIRY_EXACT_PATTERN } from '../../shared/expiry.js';
 import { LISTING_SCOPE_TYPES } from '../../models/Listing.js';
 import { DELIVERY_BANDS, EXPIRY_BANDS, PROVENANCE_VALUES } from '../../models/ListingLine.js';
 const createListingLineSchema = z
@@ -6,10 +7,7 @@ const createListingLineSchema = z
     skuId: z.string().min(1),
     ratePaise: z.number().int().positive(),
     expiryBand: z.enum(EXPIRY_BANDS),
-    expiryExact: z
-        .string()
-        .regex(/^(0[1-9]|1[0-2])\/\d{4}$/)
-        .optional(),
+    expiryExact: z.string().regex(EXPIRY_EXACT_PATTERN, EXPIRY_EXACT_MESSAGE).optional(),
     // BR-150 — the seller sets this directly; `moqBand` is derived from it
     // on the model, never accepted here.
     moqExact: z.number().int().min(1).optional(),

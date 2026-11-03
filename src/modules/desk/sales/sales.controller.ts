@@ -10,6 +10,8 @@ import * as salesOrdersService from './sales.orders.js';
 import * as salesFunnelService from './sales.funnel.js';
 import * as salesFunnelDrillService from './sales.funnelDrill.js';
 import * as salesStageService from './sales.stageActions.js';
+import * as salesShortPilesService from './sales.shortPiles.js';
+import { visibilityFor } from '../../../shared/scope.js';
 import {
   requestMspSchema,
   respondToMspSchema,
@@ -22,6 +24,7 @@ import {
   dispatchOrderSchema,
   markDeliveredSchema,
   skipToBilledSchema,
+  resolveShortPileSchema,
 } from './sales.validation.js';
 import type { RateTier } from '../../pricing/pricing.service.js';
 
@@ -31,6 +34,31 @@ function ok(res: Response, req: Request, data: unknown, status = 200): void {
 
 function stageActor(req: Request): { employeeId: string; correlationId: string } {
   return { employeeId: req.auth!.employeeId!, correlationId: req.correlationId };
+}
+
+// BR-134 — short piles waiting for the desk to say who gets the boxes.
+function callerOf(req: Request) {
+  return { employeeId: req.auth!.employeeId!, permissions: req.auth!.permissions };
+}
+
+export async function getShortPiles(req: Request, res: Response): Promise<void> {
+  const visibility = await visibilityFor('sales', callerOf(req));
+  ok(res, req, await salesShortPilesService.listShortPiles(visibility));
+}
+
+export async function postResolveShortPile(req: Request, res: Response): Promise<void> {
+  const input = resolveShortPileSchema.parse(req.body);
+  const visibility = await visibilityFor('sales', callerOf(req));
+  ok(
+    res,
+    req,
+    await salesShortPilesService.resolveShortPile(
+      req.params.pileId as string,
+      input,
+      stageActor(req),
+      visibility,
+    ),
+  );
 }
 
 // Buyer file stage buttons.

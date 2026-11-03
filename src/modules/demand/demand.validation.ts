@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { EXPIRY_EXACT_MESSAGE, EXPIRY_EXACT_PATTERN } from '../../shared/expiry.js';
 import { DELIVERY_BANDS, EXPIRY_BANDS, PROVENANCE_VALUES } from '../../models/ListingLine.js';
 
 export const raiseAskSchema = z
@@ -23,6 +24,9 @@ export const acceptAskFillSchema = z
   .object({
     option: z.enum(['partial', 'full']),
     quoteIds: z.array(z.string().min(1)).min(1),
+    // 2 Nov — when the quotes taken cover fewer boxes than he asked for, keep the rest open
+    // (default) or close the ask with what was ordered.
+    keepRemainderOpen: z.boolean().optional(),
   })
   .strict();
 
@@ -44,7 +48,8 @@ export const postQuoteSchema = z
 export const confirmPileSchema = z
   .object({
     canSendBoxes: z.number().int().min(0),
-    expiryExact: z.string().regex(/^(0[1-9]|1[0-2])\/\d{4}$/),
+    // 2 Nov — optional when the listing already carries one; a year alone (2027) is enough.
+    expiryExact: z.string().regex(EXPIRY_EXACT_PATTERN, EXPIRY_EXACT_MESSAGE).optional(),
     batch: z.string().min(1).optional(),
   })
   .strict();

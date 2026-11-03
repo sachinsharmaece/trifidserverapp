@@ -1,3 +1,4 @@
+import { acceptOffers } from './pileOfferHelpers.js';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -786,7 +787,7 @@ describe('rate_ready — the FIRST quote landing on an ask, once', () => {
 });
 
 describe('order_confirmed / payment_due / seller_requoted — the WF-05 pile paths', () => {
-  it('confirming a pile queues payment_due THEN order_confirmed per buyer; the cap lets the money deadline win', async () => {
+  it('confirming a pile queues rate_ready; his word queues payment_due THEN order_confirmed, held by the weekly cap', async () => {
     const f = await seedTradeFixture(app);
     const productId = await productIdForSku(f.skuId);
     const sellerToken = await tokenFor(f.seller);
@@ -812,12 +813,23 @@ describe('order_confirmed / payment_due / seller_requoted — the WF-05 pile pat
     );
     await demandService.runConfirmPileFanout(pileId);
 
+    // BR-378 — confirming gives him his deal and says his rate is ready; no order yet.
+    const afterFanout = await NotificationOutbox.find({
+      counterpartyId: f.buyerDealer.counterpartyId,
+      templateKey: { $in: ['rate_ready', 'payment_due', 'order_confirmed'] },
+    }).sort({ _id: 1 });
+    expect(afterFanout.map((r) => r.templateKey)).toEqual(['rate_ready']);
+    expect(afterFanout.map((r) => r.state)).toEqual(['queued']);
+
+    // His word makes the order: payment_due THEN order_confirmed. The week's one message was the
+    // rate_ready above, so the cap holds both back (BR-283) — the deadline is still in his app.
+    await acceptOffers(pileId);
     const rows = await NotificationOutbox.find({
       counterpartyId: f.buyerDealer.counterpartyId,
       templateKey: { $in: ['payment_due', 'order_confirmed'] },
     }).sort({ _id: 1 });
     expect(rows.map((r) => r.templateKey)).toEqual(['payment_due', 'order_confirmed']);
-    expect(rows.map((r) => r.state)).toEqual(['queued', 'suppressed_cap']);
+    expect(rows.map((r) => r.state)).toEqual(['suppressed_cap', 'suppressed_cap']);
   }, 60000);
 
   it('requoting a pile queues seller_requoted for every buyer on it', async () => {

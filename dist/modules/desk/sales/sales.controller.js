@@ -8,12 +8,27 @@ import * as salesOrdersService from './sales.orders.js';
 import * as salesFunnelService from './sales.funnel.js';
 import * as salesFunnelDrillService from './sales.funnelDrill.js';
 import * as salesStageService from './sales.stageActions.js';
-import { requestMspSchema, respondToMspSchema, createCallLogSchema, giveRateSchema, giveParkedQuoteSchema, markPaidSchema, cancelOrderSchema, markBilledSchema, dispatchOrderSchema, markDeliveredSchema, skipToBilledSchema, } from './sales.validation.js';
+import * as salesShortPilesService from './sales.shortPiles.js';
+import { visibilityFor } from '../../../shared/scope.js';
+import { requestMspSchema, respondToMspSchema, createCallLogSchema, giveRateSchema, giveParkedQuoteSchema, markPaidSchema, cancelOrderSchema, markBilledSchema, dispatchOrderSchema, markDeliveredSchema, skipToBilledSchema, resolveShortPileSchema, } from './sales.validation.js';
 function ok(res, req, data, status = 200) {
     res.status(status).json({ data, meta: { correlationId: req.correlationId } });
 }
 function stageActor(req) {
     return { employeeId: req.auth.employeeId, correlationId: req.correlationId };
+}
+// BR-134 — short piles waiting for the desk to say who gets the boxes.
+function callerOf(req) {
+    return { employeeId: req.auth.employeeId, permissions: req.auth.permissions };
+}
+export async function getShortPiles(req, res) {
+    const visibility = await visibilityFor('sales', callerOf(req));
+    ok(res, req, await salesShortPilesService.listShortPiles(visibility));
+}
+export async function postResolveShortPile(req, res) {
+    const input = resolveShortPileSchema.parse(req.body);
+    const visibility = await visibilityFor('sales', callerOf(req));
+    ok(res, req, await salesShortPilesService.resolveShortPile(req.params.pileId, input, stageActor(req), visibility));
 }
 // Buyer file stage buttons.
 export async function postGiveRate(req, res) {

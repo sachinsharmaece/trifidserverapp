@@ -22,6 +22,7 @@ import { AppError } from '../../shared/errors.js';
 import { assertValidObjectId } from '../../shared/objectId.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { assertBuyerApproved, assertCounterpartyActive } from '../../shared/guards.js';
+import { closedMessage, closedStateByLine, closedStateOf, groupFacts, } from './listing.groups.js';
 import { computeBuyerInclusiveRatePaise } from '../../shared/pricing.js';
 import { resolveMarginMatrixCell } from '../pricing/pricing.service.js';
 import { resolveSkuClass, toRateTier } from '../chain/chain.service.js';
@@ -103,9 +104,10 @@ function assertShelfLifeMeetsFloor(expiryBand, expiryExact) {
     // still checked against the floor rather than accepted blindly.
     if (!expiryExact)
         return;
-    const [monthStr, yearStr] = expiryExact.split('/');
-    const month = Number(monthStr);
-    const year = Number(yearStr);
+    // `03/2027` or, with no month known, `2027` — counted to December, the benefit of the doubt.
+    const parts = expiryExact.split('/');
+    const month = parts.length === 2 ? Number(parts[0]) : 12;
+    const year = Number(parts[parts.length - 1]);
     if (!month || !year)
         return;
     const expiryDate = new Date(year, month - 1, 1);
@@ -181,7 +183,8 @@ export async function createListing(sellerCounterpartyId, input, options = {}) {
         });
     }
     for (const line of input.lines) {
-        assertShelfLifeMeetsFloor(line.expiryBand, line.expiryExact);
+        if (!options.skipShelfLifeFloor)
+            assertShelfLifeMeetsFloor(line.expiryBand, line.expiryExact);
         assertBatchRequiredForAuth(line.provenance, line.batch);
         const sku = await Sku.findOne({ _id: line.skuId, productId: input.productId });
         if (!sku) {
@@ -554,8 +557,10 @@ export async function getProductOffers(buyerCounterpartyId, productId) {
     priced.sort((a, b) => a.buyerRatePaise - b.buyerRatePaise);
     const skuIds = [...new Set(priced.map((v) => v.line.skuId.toString()))];
     const pools = await Pool.find({ skuId: { $in: skuIds }, isActive: true });
+    const closed = await closedStateByLine(priced.map((v) => v.line));
     return {
         offers: priced.map((v) => ({
+            closed: closed.get(v.line._id.toString()) ?? null,
             listingLineId: v.line._id.toString(),
             // 29 Oct — so his ask form can tell a listed pack and send him to Buy instead.
             skuId: v.line.skuId.toString(),
@@ -621,6 +626,7 @@ export async function getListingLineForBuy(buyerCounterpartyId, listingLineId) {
         moqExact: line.moqExact,
         availableBoxes: line.qty,
         conditions: toConditionTags(line),
+        closed: (await closedStateByLine([line])).get(String(line._id)) ?? null,
     };
 }
 /**
@@ -702,18 +708,30 @@ options = {}) {
     else {
         deliveryLocationId = await defaultDeliveryLocationId(buyer._id);
     }
-    let pile = await Pile.findOne({ listingLineId: line._id });
+    // 2 Nov — requests join the line's OPEN group; with none, a new group opens unless the line is
+    // closed (BR-133/BR-136, listing.groups.ts): the last group still in flight, revised, declined,
+    // or no stock left.
+    const groups = await Pile.find({ listingLineId: line._id });
+    let pile = groups.find((g) => !g.decision) ?? null;
     if (!pile) {
-        pile = await Pile.create({
-            listingLineId: line._id,
-            confirmWindowEndsAt: new Date(Date.now() + 12 * 60 * 60 * 1000), // BR-135 default confirm_window_h.
-        });
-    }
-    else if (pile.decision) {
-        throw new AppError({
-            code: 'PILE_ALREADY_DECIDED',
-            messageEn: 'This listing has already been decided.',
-        });
+        const closed = closedStateOf(line, groups.map(groupFacts));
+        if (closed) {
+            throw new AppError({ code: 'PILE_ALREADY_DECIDED', messageEn: closedMessage(closed) });
+        }
+        try {
+            pile = await Pile.create({
+                listingLineId: line._id,
+                confirmWindowEndsAt: new Date(Date.now() + 12 * 60 * 60 * 1000), // BR-135 default confirm_window_h.
+            });
+        }
+        catch (error) {
+            // Two requests raced to open the group; the index let one through. Join the winner's.
+            if (error.code !== 11000)
+                throw error;
+            pile = await Pile.findOne({ listingLineId: line._id, decision: null });
+            if (!pile)
+                throw error;
+        }
     }
     // DEC-051 — the request and its enquiry are created together.
     const now = new Date();

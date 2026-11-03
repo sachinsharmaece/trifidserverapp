@@ -17,6 +17,22 @@ export const giveRateSchema = z
   .object({ listingLineId: z.string().min(1), callNote: stageCallNote })
   .strict();
 
+/**
+ * BR-134 — Sales dividing a short pile between its buyers: every buyer on it, once, with his boxes
+ * (0 if none), and why. DEC-014 — the reason is kept, as the rule staff actually apply is to become
+ * the automation after about ten real cases.
+ */
+export const resolveShortPileSchema = z
+  .object({
+    allocations: z
+      .array(
+        z.object({ pileRequestId: z.string().min(1), boxes: z.number().int().min(0) }).strict(),
+      )
+      .min(1),
+    reason: z.string().trim().min(1).max(500),
+  })
+  .strict();
+
 /** Sales giving the asking buyer a quote that has been parked for him. */
 export const giveParkedQuoteSchema = z.object({ callNote: stageCallNote }).strict();
 

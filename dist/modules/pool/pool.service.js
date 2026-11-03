@@ -341,6 +341,43 @@ export async function withdrawFromPool(buyerCounterpartyId, poolId) {
     commitment.withdrawnAt = new Date();
     await commitment.save();
 }
+/**
+ * 2 Nov — Sales changes how many boxes a buyer holds in a pool, on a call. The same rule as
+ * withdrawing: free only while the commitment is not binding (BR-154). Raising it can carry the
+ * pool over its 75% line, so the thresholds are checked again, exactly as a fresh commit does.
+ */
+export async function changePoolCommitment(buyerCounterpartyId, poolId, qty) {
+    if (!Number.isInteger(qty) || qty < 1) {
+        throw new AppError({
+            code: 'VALIDATION_FAILED',
+            messageEn: 'Boxes must be a whole number, at least 1.',
+            field: 'qty',
+        });
+    }
+    const buyer = await requireActiveBuyer(buyerCounterpartyId);
+    const pool = await Pool.findById(poolId);
+    if (!pool || !pool.isActive)
+        throw new AppError({ code: 'POOL_CLOSED', messageEn: 'This pool is not open.' });
+    const commitment = await PoolCommitment.findOne({
+        poolId: pool._id,
+        buyerId: buyer._id,
+        withdrawnAt: null,
+    });
+    if (!commitment) {
+        throw new AppError({ code: 'NOT_FOUND', messageEn: 'He has no place in this pool.' });
+    }
+    if (commitment.isBinding) {
+        throw new AppError({
+            code: 'VALIDATION_FAILED',
+            messageEn: 'His place is binding and can no longer be changed free (BR-154).',
+        });
+    }
+    const previousQty = commitment.qty;
+    commitment.qty = qty;
+    await commitment.save();
+    await checkPoolThresholds(poolId);
+    return { poolId, previousQty, qty };
+}
 /** API-063. BR-159 — the seller closes his own pool short, at the rate he published, unrevisable. */
 export async function triggerPoolEarly(sellerCounterpartyId, poolId) {
     const seller = await Seller.findOne({ counterpartyId: sellerCounterpartyId });

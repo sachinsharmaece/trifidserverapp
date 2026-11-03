@@ -98,6 +98,8 @@ export interface ActiveDemandItem {
   brand: string;
   technical: string;
   manufacturerName: string;
+  /** 2 Nov — boxes already ordered on this ask (a short fill leaves it open at `qty`, the rest). */
+  filledQty: number;
   /** 30 Oct — what the ask is for, so asks on one product can be told apart. */
   packLabel: string | null; // null = all packs
   expiryBand: string;
@@ -259,6 +261,7 @@ async function computeActiveDemand(filters: { noSellerOnly?: boolean }): Promise
       createdAt: (ask as unknown as { createdAt: Date }).createdAt.toISOString(),
       sellerCounts,
       noSeller,
+      filledQty: ask.filledQty ?? 0,
       packLabel: packSku?.packLabel ?? null,
       expiryBand: ask.conditionRequirement?.expiryBand ?? 'over12',
       deliveryBand: ask.conditionRequirement?.deliveryBand ?? null,
@@ -333,6 +336,9 @@ export interface AskSellerStateItem {
   state: 'quoted' | 'listed' | 'carries';
   ratePaise: number | null;
   gapCodes: string[];
+  /** 2 Nov — the boxes he quoted against the boxes still wanted, so "short" can say by how much. */
+  qtyAvailable: number | null;
+  askQty: number;
 }
 
 export async function getAskSellerStates(askId: string): Promise<AskSellerStateItem[]> {
@@ -400,6 +406,8 @@ export async function getAskSellerStates(askId: string): Promise<AskSellerStateI
         state,
         ratePaise: quote ? quote.ratePaiseForIndore : (rateBySellerId.get(sellerId) ?? null),
         gapCodes: quote?.gapCodes ?? [],
+        qtyAvailable: quote ? quote.qtyAvailable : null,
+        askQty: ask.qty,
       };
     })
     .sort((a, b) => order[a.state] - order[b.state]);
@@ -1194,7 +1202,12 @@ export interface PileAwaitingDecisionItem {
   brand: string;
   ratePaise: number;
   boxes: number;
+  /** What he listed on the line: the boxes he can send start here (capped by what was asked). */
   lineQty: number;
+  /** The expiry the line was listed with (a year, or month and year); null when none was given. */
+  listedExpiry: string | null;
+  /** My stock needs a batch to confirm (BR-105); company billing does not. */
+  provenance: 'company' | 'auth';
   buyers: number;
   openedAt: string;
   confirmWindowEndsAt: string;
@@ -1249,6 +1262,8 @@ export async function getPilesAwaitingDecision(): Promise<PileAwaitingDecisionIt
       ratePaise: line?.ratePaise ?? 0,
       boxes,
       lineQty,
+      listedExpiry: line?.expiryExact ?? null,
+      provenance: (line?.provenance ?? 'company') as 'company' | 'auth',
       buyers: new Set(myRequests.map((r) => (r.buyerId as Types.ObjectId).toString())).size,
       openedAt: pile.openedAt.toISOString(),
       confirmWindowEndsAt: pile.confirmWindowEndsAt.toISOString(),

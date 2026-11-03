@@ -8,12 +8,10 @@ import { proxyLogField } from '../shared/proxyLog.js';
  */
 export const PILE_DECISIONS = ['confirmed', 'requoted', 'declined'];
 const pileSchema = new Schema({
-    listingLineId: {
-        type: Schema.Types.ObjectId,
-        ref: 'ListingLine',
-        required: true,
-        unique: true,
-    },
+    // 2 Nov — a line takes one group at a time, not one for life: BR-136 accepts sequential piles
+    // (a split fill on a slower clock), so a new group opens once the last was confirmed and its
+    // orders made. The one-open-group rule is the partial unique index below.
+    listingLineId: { type: Schema.Types.ObjectId, ref: 'ListingLine', required: true },
     openedAt: { type: Date, required: true, default: () => new Date() },
     confirmWindowEndsAt: { type: Date, required: true }, // BR-135 — default 12h, a chase not an expiry.
     decidedAt: { type: Date, default: null },
@@ -26,9 +24,23 @@ const pileSchema = new Schema({
     // scheduled fan-out job has actually run; null between confirm and then
     // means "still cancellable" (worker/agendaProducer.ts).
     executedAt: { type: Date, default: null },
+    // 2 Nov — BR-134: a short pile (`shortfall`) waits for the desk to say who gets the boxes.
+    // Set once, when Sales has divided the boxes the seller can send; until then the line is shut.
+    shortfallResolvedAt: { type: Date, default: null },
+    shortfallResolvedBy: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },
     sellerLockedUntil: { type: Date, default: null }, // BR-032 — 24h from the seller's confirm.
     // Staff-assisted enquiries — present only when Purchase decided this
     // pile (confirm/requote/decline) on a phone call.
     proxyLog: proxyLogField,
 }, { timestamps: true });
+// At most one OPEN group (no decision yet) per line: two requests racing to open one both find
+// none, and the loser of this index reads the winner's. Keyed differently from the old unique
+// `listingLineId_1` index on purpose, so the two never clash while that one is still there.
+pileSchema.index({ listingLineId: 1, decision: 1 }, {
+    unique: true,
+    partialFilterExpression: { decision: { $type: 'null' } },
+    name: 'one_open_pile_per_line',
+});
+// Looking a line's groups up, newest first.
+pileSchema.index({ listingLineId: 1, openedAt: -1 }, { name: 'piles_by_line' });
 export const Pile = model('Pile', pileSchema, 'pile');

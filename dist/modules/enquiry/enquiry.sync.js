@@ -119,7 +119,8 @@ export async function syncEnquiriesForPile(pileId, session, now = new Date()) {
     const next = derivePileRequestStatus({
         decision: (pile.decision ?? null),
         executedAt: pile.executedAt ?? null,
-        shortfall: pile.shortfall,
+        // Once the desk has divided the boxes the pile is no longer waiting on it.
+        shortfall: pile.shortfall && !pile.shortfallResolvedAt,
     });
     for (const enquiry of enquiries)
         await writeStatus(enquiry, next, now, session);

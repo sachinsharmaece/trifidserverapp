@@ -162,6 +162,7 @@ async function computeActiveDemand(filters) {
             createdAt: ask.createdAt.toISOString(),
             sellerCounts,
             noSeller,
+            filledQty: ask.filledQty ?? 0,
             packLabel: packSku?.packLabel ?? null,
             expiryBand: ask.conditionRequirement?.expiryBand ?? 'over12',
             deliveryBand: ask.conditionRequirement?.deliveryBand ?? null,
@@ -256,6 +257,8 @@ export async function getAskSellerStates(askId) {
             state,
             ratePaise: quote ? quote.ratePaiseForIndore : (rateBySellerId.get(sellerId) ?? null),
             gapCodes: quote?.gapCodes ?? [],
+            qtyAvailable: quote ? quote.qtyAvailable : null,
+            askQty: ask.qty,
         };
     })
         .sort((a, b) => order[a.state] - order[b.state]);
@@ -791,6 +794,8 @@ export async function getPilesAwaitingDecision() {
             ratePaise: line?.ratePaise ?? 0,
             boxes,
             lineQty,
+            listedExpiry: line?.expiryExact ?? null,
+            provenance: (line?.provenance ?? 'company'),
             buyers: new Set(myRequests.map((r) => r.buyerId.toString())).size,
             openedAt: pile.openedAt.toISOString(),
             confirmWindowEndsAt: pile.confirmWindowEndsAt.toISOString(),

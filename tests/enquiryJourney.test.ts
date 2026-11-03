@@ -1,3 +1,4 @@
+import { acceptOffers } from './pileOfferHelpers.js';
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
@@ -361,6 +362,7 @@ describe('Enquiry journey — a listed rate taken, confirmed on a Purchase call,
     expect(await storedStatusOf(enquiryId)).toBe('confirming');
 
     await demandService.runConfirmPileFanout(pileId);
+    await acceptOffers(pileId); // BR-378 — his word makes the order.
     expect(await storedStatusOf(enquiryId)).toBe('ordered');
 
     const so = await So.findOne({ enquiryId });
