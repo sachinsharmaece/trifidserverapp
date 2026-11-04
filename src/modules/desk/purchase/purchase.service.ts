@@ -1598,6 +1598,9 @@ export interface SellerFileListingItem {
   listingId: string;
   lineId: string;
   skuId: string;
+  /** 4 Nov — the product the pack belongs to, so the board reads "brand · technical", not just "350 ML". */
+  brand: string;
+  technical: string;
   packLabel: string;
   ratePaise: number;
   scopeType: string;
@@ -1676,17 +1679,26 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
   const lines = await ListingLine.find({ listingId: { $in: listings.map((l) => l._id) } });
   const skus = await Sku.find({ _id: { $in: lines.map((l) => l.skuId) } });
   const skuById = new Map(skus.map((s) => [(s._id as Types.ObjectId).toString(), s]));
+  const listedProducts = await Product.find({ _id: { $in: skus.map((s) => s.productId) } });
+  const listedProductById = new Map(
+    listedProducts.map((p) => [(p._id as Types.ObjectId).toString(), p]),
+  );
   const listingById = new Map(listings.map((l) => [(l._id as Types.ObjectId).toString(), l]));
 
   const now = Date.now();
   const listingDtos: SellerFileListingItem[] = lines.map((line) => {
     const listing = listingById.get((line.listingId as Types.ObjectId).toString());
     const sku = skuById.get((line.skuId as Types.ObjectId).toString());
+    const product = sku
+      ? listedProductById.get((sku.productId as Types.ObjectId).toString())
+      : undefined;
     const lastProxy = line.proxyLog.length ? line.proxyLog[line.proxyLog.length - 1] : null;
     return {
       listingId: listing ? (listing._id as Types.ObjectId).toString() : '',
       lineId: (line._id as Types.ObjectId).toString(),
       skuId: (line.skuId as Types.ObjectId).toString(),
+      brand: product?.brand ?? '—',
+      technical: product?.technical ?? '—',
       packLabel: sku?.packLabel ?? '—',
       ratePaise: line.ratePaise,
       scopeType: listing?.scopeType ?? '',
