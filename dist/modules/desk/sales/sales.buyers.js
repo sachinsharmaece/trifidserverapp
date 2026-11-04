@@ -137,12 +137,6 @@ export async function listBuyersPage(filters, page = {}) {
         ])
         : [];
     const lastCallByBuyer = new Map(callRows.map((r) => [r._id.toString(), r]));
-    // 4 Nov — his newest order: one made in the app or a Marg bill (`lastBilledOn`), whichever is later.
-    const lastOrderOf = (b) => {
-        const inApp = orderStatsByBuyer.get(b._id.toString())?.lastOrderAt ?? null;
-        const billed = b.lastBilledOn ?? null;
-        return inApp && billed ? (inApp > billed ? inApp : billed) : (inApp ?? billed);
-    };
     const tehsilKey = (b) => b.tehsilId ? (tehsilNameById.get(b.tehsilId.toString()) ?? null) : null;
     const districtKey = (b) => b.tehsilId ? (districtByTehsilId.get(b.tehsilId.toString()) ?? null) : null;
     const firmKey = (b) => counterpartyById.get(b.counterpartyId.toString())?.firm?.trim() || null;
@@ -158,7 +152,7 @@ export async function listBuyersPage(filters, page = {}) {
             case 'orders':
                 return stats?.count ?? null;
             case 'lastOrder':
-                return lastOrderOf(b)?.getTime() ?? null;
+                return stats?.lastOrderAt ? stats.lastOrderAt.getTime() : null;
             case 'lastCalled':
                 // Never called counts as longest ago: first when oldest-first, last when newest-first.
                 return lastCallByBuyer.get(b._id.toString())?.at.getTime() ?? 0;
@@ -208,7 +202,7 @@ export async function listBuyersPage(filters, page = {}) {
             tier: categoryOf(b),
             assignedToEmployeeId: ownerEmployeeId ? ownerEmployeeId.toString() : null,
             orderCount: stats?.count ?? 0,
-            lastOrderAt: lastOrderOf(b)?.toISOString() ?? null,
+            lastOrderAt: stats?.lastOrderAt ? stats.lastOrderAt.toISOString() : null,
             lastCalledAt: lastCallByBuyer.get(idStr)?.at.toISOString() ?? null,
             lastCalledBy: lastCallByBuyer.has(idStr)
                 ? (employeeNameById.get(lastCallByBuyer.get(idStr).employeeId.toString()) ?? null)
