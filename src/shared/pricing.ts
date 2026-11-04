@@ -137,6 +137,40 @@ export function computeBuyerInclusiveRatePaise(
 }
 
 /**
+ * A product's own rupee margin (`product_margin_matrix`). The client's rule (3 Nov): the seller's
+ * quoted rate already includes GST, and so does this rupee amount, so the buyer's rate is simply
+ * `quote + margin` — no GST is added on either. A ₹150 quote with a ₹2 margin is ₹152. Unlike the
+ * class matrix, which grosses a taxable rate up by GST after the percentage. Never negative.
+ */
+export function computeBuyerInclusiveRatePaiseWithRupeeMargin(
+  sellerRatePaise: Paise,
+  marginPaise: Paise,
+): Paise {
+  assertNonNegativeInteger(sellerRatePaise, 'sellerRatePaise');
+  assertNonNegativeInteger(marginPaise, 'marginPaise');
+  return sellerRatePaise + marginPaise;
+}
+
+/** The margin a buyer's rate is built from: the class matrix's % or a product's own ₹. */
+export type BuyerMargin = { kind: 'percent'; pct: number } | { kind: 'rupees'; marginPaise: Paise };
+
+export function computeBuyerRatePaiseWithMargin(sellerNetPaise: Paise, margin: BuyerMargin): Paise {
+  return margin.kind === 'rupees'
+    ? computeBuyerInclusiveRatePaiseWithRupeeMargin(sellerNetPaise, margin.marginPaise)
+    : computeBuyerInclusiveRatePaise(sellerNetPaise, margin.pct);
+}
+
+/**
+ * The margin as a fraction of the seller's rate — what `marginPctAtOrder` freezes, so a rupee
+ * margin still reads as a comparable percentage: ₹2 on a ₹150 quote is 1.33%.
+ */
+export function marginPctOf(sellerNetPaise: Paise, margin: BuyerMargin): number {
+  if (margin.kind === 'percent') return margin.pct;
+  if (sellerNetPaise <= 0) return 0;
+  return Number((margin.marginPaise / sellerNetPaise).toFixed(6));
+}
+
+/**
  * The buyer's line. The rate is already inclusive, so the total is an exact
  * product of integers and needs no rounding at all — which is the cleanest
  * possible reading of Q3a. The taxable value is then reverse-computed for
