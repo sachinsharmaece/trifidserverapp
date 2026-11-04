@@ -233,13 +233,6 @@ export async function listBuyersPage(
     : [];
   const lastCallByBuyer = new Map(callRows.map((r) => [r._id.toString(), r]));
 
-  // 4 Nov — his newest order: one made in the app or a Marg bill (`lastBilledOn`), whichever is later.
-  const lastOrderOf = (b: (typeof buyers)[number]): Date | null => {
-    const inApp = orderStatsByBuyer.get((b._id as Types.ObjectId).toString())?.lastOrderAt ?? null;
-    const billed = b.lastBilledOn ?? null;
-    return inApp && billed ? (inApp > billed ? inApp : billed) : (inApp ?? billed);
-  };
-
   const tehsilKey = (b: (typeof buyers)[number]) =>
     b.tehsilId ? (tehsilNameById.get((b.tehsilId as Types.ObjectId).toString()) ?? null) : null;
   const districtKey = (b: (typeof buyers)[number]) =>
@@ -258,7 +251,7 @@ export async function listBuyersPage(
       case 'orders':
         return stats?.count ?? null;
       case 'lastOrder':
-        return lastOrderOf(b)?.getTime() ?? null;
+        return stats?.lastOrderAt ? stats.lastOrderAt.getTime() : null;
       case 'lastCalled':
         // Never called counts as longest ago: first when oldest-first, last when newest-first.
         return lastCallByBuyer.get((b._id as Types.ObjectId).toString())?.at.getTime() ?? 0;
@@ -313,7 +306,7 @@ export async function listBuyersPage(
       tier: categoryOf(b),
       assignedToEmployeeId: ownerEmployeeId ? ownerEmployeeId.toString() : null,
       orderCount: stats?.count ?? 0,
-      lastOrderAt: lastOrderOf(b)?.toISOString() ?? null,
+      lastOrderAt: stats?.lastOrderAt ? stats.lastOrderAt.toISOString() : null,
       lastCalledAt: lastCallByBuyer.get(idStr)?.at.toISOString() ?? null,
       lastCalledBy: lastCallByBuyer.has(idStr)
         ? (employeeNameById.get(lastCallByBuyer.get(idStr)!.employeeId.toString()) ?? null)
