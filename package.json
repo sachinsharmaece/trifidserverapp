@@ -26,6 +26,7 @@
     "check:scopeReadiness": "tsx src/scripts/checkScopeReadiness.ts",
     "approve:pendingBuyers": "tsx src/scripts/approvePendingBuyers.ts",
     "import:buyerLeads": "tsx src/scripts/importBuyerLeads.ts",
+    "import:margLastBills": "tsx src/scripts/importMargLastBills.ts",
     "backfill:callHistory": "tsx src/scripts/backfillCallHistory.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
