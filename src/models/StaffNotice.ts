@@ -11,7 +11,14 @@ const staffNoticeSchema = new Schema(
     employeeId: { type: Schema.Types.ObjectId, ref: 'Employee', required: true },
     kind: {
       type: String,
-      enum: ['push_received', 'push_approved', 'push_rejected'],
+      enum: [
+        'push_received',
+        'push_approved',
+        'push_rejected',
+        'rate_change_requested',
+        'rate_change_approved',
+        'rate_change_rejected',
+      ],
       required: true,
     },
     title: { type: String, required: true },

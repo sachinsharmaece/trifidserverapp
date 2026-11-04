@@ -17,6 +17,7 @@ import {
   proxyRaiseAsksSchema,
   proxyAcceptAskFillSchema,
   proxyPileOfferDecisionSchema,
+  proxyAcceptPileOfferSchema,
   proxyDeclineAskSchema,
   proxyPromotionDecisionSchema,
   proxyCreateListingSchema,
@@ -110,7 +111,7 @@ proxyRouter.post(
   ...buyerCall,
   requireInScope('sales', buyerOfPileRequest('id')),
   requireIdempotencyKey(),
-  validateBody(proxyPileOfferDecisionSchema),
+  validateBody(proxyAcceptPileOfferSchema),
   controller.postBuyerCallAcceptPileOffer,
 );
 proxyRouter.post(

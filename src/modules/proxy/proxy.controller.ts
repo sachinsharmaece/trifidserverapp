@@ -18,12 +18,19 @@ import {
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { changePoolCommitment, withdrawFromPool } from '../pool/pool.service.js';
+import {
+  claimApprovedPileOfferChange,
+  claimApprovedRateChange,
+  markRateChangeUsed,
+  releaseRateChangeClaim,
+} from '../desk/sales/sales.rateChange.js';
 import { Types } from 'mongoose';
 import type {
   proxyRaiseAskSchema,
   proxyRaiseAsksSchema,
   proxyAcceptAskFillSchema,
   proxyPileOfferDecisionSchema,
+  proxyAcceptPileOfferSchema,
   proxyDeclineAskSchema,
   proxyPromotionDecisionSchema,
   proxyCreateListingSchema,
@@ -226,15 +233,29 @@ export async function getBuyerCallAsks(req: Request, res: Response): Promise<voi
 // this codebase has one accept endpoint for both.
 // BR-378 — Sales takes the deal given to a buyer: his order is made now and its payment window starts.
 export async function postBuyerCallAcceptPileOffer(req: Request, res: Response): Promise<void> {
-  const { buyerCounterpartyId, callNote, direction } = req.body as z.infer<
-    typeof proxyPileOfferDecisionSchema
+  const { buyerCounterpartyId, callNote, direction, approvalId } = req.body as z.infer<
+    typeof proxyAcceptPileOfferSchema
   >;
   const staffId = actingStaffId(req);
-  const result = await acceptPileOffer(req.params.id as string, buyerCounterpartyId, {
-    actorId: staffId,
-    actorType: 'staff',
-    correlationId: req.correlationId,
-  });
+  const requestId = req.params.id as string;
+  // 4 Nov — an approved Rate given → Change is spent here, once; the order is at its boxes and rate.
+  const adjustment = approvalId
+    ? await claimApprovedPileOfferChange(approvalId, requestId)
+    : undefined;
+  let result: Awaited<ReturnType<typeof acceptPileOffer>>;
+  try {
+    result = await acceptPileOffer(
+      requestId,
+      buyerCounterpartyId,
+      { actorId: staffId, actorType: 'staff', correlationId: req.correlationId },
+      new Date(),
+      adjustment,
+    );
+  } catch (error) {
+    if (adjustment) await releaseRateChangeClaim(adjustment.requestId);
+    throw error;
+  }
+  if (adjustment) await markRateChangeUsed(adjustment.requestId, result.soId);
   await appendProxyLog(So, result.soId, {
     actingStaffId: staffId,
     callNote,
@@ -272,16 +293,29 @@ export async function postBuyerCallDeclinePileOffer(req: Request, res: Response)
 }
 
 export async function postBuyerCallAcceptFill(req: Request, res: Response): Promise<void> {
-  const { buyerCounterpartyId, callNote, direction, ...input } = req.body as z.infer<
+  const { buyerCounterpartyId, callNote, direction, approvalId, ...input } = req.body as z.infer<
     typeof proxyAcceptAskFillSchema
   >;
   const askId = req.params.id as string;
-  const result = await demandService.acceptAskFill(
-    buyerCounterpartyId,
-    askId,
-    input,
-    req.correlationId,
-  );
+  // 4 Nov — an approved Rate given → Change is spent here, once; the order is raised at its figures.
+  const adjustment = approvalId
+    ? await claimApprovedRateChange(approvalId, { askId, quoteIds: input.quoteIds })
+    : undefined;
+  let result: Awaited<ReturnType<typeof demandService.acceptAskFill>>;
+  try {
+    result = await demandService.acceptAskFill(
+      buyerCounterpartyId,
+      askId,
+      input,
+      req.correlationId,
+      adjustment,
+    );
+  } catch (error) {
+    if (adjustment) await releaseRateChangeClaim(adjustment.requestId);
+    throw error;
+  }
+  if (adjustment && result.soIds[0])
+    await markRateChangeUsed(adjustment.requestId, result.soIds[0]);
   const staffId = actingStaffId(req);
   await appendProxyLog(Ask, askId, { actingStaffId: staffId, callNote, action: 'accept_fill' });
   await Promise.all(

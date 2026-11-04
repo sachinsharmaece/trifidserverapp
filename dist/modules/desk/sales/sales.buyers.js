@@ -20,6 +20,7 @@ import { computeBuyerFacingRatePaise, listPricedLinesVisibleToBuyerDoc, } from '
 import { addDays } from '../../../shared/clock.js';
 import { ASK_LEAK_STALENESS_HOURS, BILLED_SO_STATES, DELIVERED_SO_STATES, DISPATCHED_SO_STATES, FUNNEL_LABELS, PAID_SO_STATES, PAYMENT_PENDING_SO_STATES, } from './sales.funnel.js';
 import { listCallLogsForBuyer } from './sales.calls.js';
+import { rateChangesByTarget } from './sales.rateChange.js';
 import { CallLog } from '../../../models/CallLog.js';
 import { listOrders } from './sales.orders.js';
 // B-52 — `tradePosition` is stored lowercase (the enum); `rateTier` (the
@@ -136,13 +137,13 @@ export async function listBuyersPage(filters, page = {}) {
         ])
         : [];
     const lastCallByBuyer = new Map(callRows.map((r) => [r._id.toString(), r]));
-    const tehsilKey = (b) => b.tehsilId ? (tehsilNameById.get(b.tehsilId.toString()) ?? null) : null;
     // 4 Nov — his newest order: one made in the app or a Marg bill (`lastBilledOn`), whichever is later.
     const lastOrderOf = (b) => {
         const inApp = orderStatsByBuyer.get(b._id.toString())?.lastOrderAt ?? null;
         const billed = b.lastBilledOn ?? null;
         return inApp && billed ? (inApp > billed ? inApp : billed) : (inApp ?? billed);
     };
+    const tehsilKey = (b) => b.tehsilId ? (tehsilNameById.get(b.tehsilId.toString()) ?? null) : null;
     const districtKey = (b) => b.tehsilId ? (districtByTehsilId.get(b.tehsilId.toString()) ?? null) : null;
     const firmKey = (b) => counterpartyById.get(b.counterpartyId.toString())?.firm?.trim() || null;
     const sortKey = (b) => {
@@ -254,7 +255,7 @@ function sortBuyers(buyers, key, firmKey, dir) {
         .map((r) => r.b);
 }
 /** GET /staff/sales/buyers/:buyerId — the buyer-file drill-down. */
-export async function getBuyerFile(buyerId) {
+export async function getBuyerFile(buyerId, caller) {
     const buyer = await Buyer.findById(buyerId);
     if (!buyer)
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Buyer not found.' });
@@ -363,6 +364,7 @@ export async function getBuyerFile(buyerId) {
         const skuId = q.skuId ?? ask?.skuId;
         return skuId ? computeBuyerFacingRatePaise(buyer, skuId, q.ratePaiseForIndore) : null;
     };
+    const rateChanges = await rateChangesByTarget(liveQuotes.map((q) => q._id.toString()), caller);
     const liveQuoteRows = await Promise.all(liveQuotes.map(async (q) => {
         const ask = askById.get(q.askId.toString());
         const productId = ask ? askProductIdOf(ask) : null;
@@ -378,6 +380,7 @@ export async function getBuyerFile(buyerId) {
             daysToIndore: q.daysToIndore,
             givenAt: q.createdAt.toISOString(),
             bindingUntil: q.bindingUntil.toISOString(),
+            rateChange: rateChanges.get(q._id.toString()) ?? null,
         };
     }));
     const parkedRowsByAskId = new Map();
@@ -398,7 +401,12 @@ export async function getBuyerFile(buyerId) {
         parkedRowsByAskId.set(row.askId, [...(parkedRowsByAskId.get(row.askId) ?? []), row]);
     }
     const waitingOnSeller = await listWaitingOnSeller(buyer);
-    const pileOffers = await listPileOffersForBuyer(buyer);
+    const pileOfferDtos = await listPileOffersForBuyer(buyer);
+    const pileRateChanges = await rateChangesByTarget(pileOfferDtos.map((o) => o.requestId), caller);
+    const pileOffers = pileOfferDtos.map((o) => ({
+        ...o,
+        rateChange: pileRateChanges.get(o.requestId) ?? null,
+    }));
     // The same nine joints as the Funnel tab, with the same state lists and wording,
     // counted over this buyer's own records only.
     const staleBefore = addDays(new Date(), -(ASK_LEAK_STALENESS_HOURS / 24));

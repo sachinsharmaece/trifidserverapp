@@ -35,7 +35,11 @@ export const POSITION_ROLE = {
 // Leaders add the location masters (BR-350). Later phases add the leader
 // rights they introduce here (approve, assign within the team).
 export const POSITION_PERMISSIONS = {
-    SALES_LEADER: [PERMISSIONS.LOCATION_MASTER_WRITE, PERMISSIONS.BUYER_APPROVE],
+    SALES_LEADER: [
+        PERMISSIONS.LOCATION_MASTER_WRITE,
+        PERMISSIONS.BUYER_APPROVE,
+        PERMISSIONS.SALES_APPROVE_RATE_CHANGE,
+    ],
     PURCHASE_LEADER: [PERMISSIONS.LOCATION_MASTER_WRITE, PERMISSIONS.SELLER_APPROVE],
     SALES_EXEC: [],
     PURCHASE_EXEC: [],

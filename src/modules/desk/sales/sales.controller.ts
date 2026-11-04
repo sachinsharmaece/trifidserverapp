@@ -10,6 +10,7 @@ import * as salesOrdersService from './sales.orders.js';
 import * as salesFunnelService from './sales.funnel.js';
 import * as salesFunnelDrillService from './sales.funnelDrill.js';
 import * as salesStageService from './sales.stageActions.js';
+import * as salesRateChangeService from './sales.rateChange.js';
 import * as salesShortPilesService from './sales.shortPiles.js';
 import { visibilityFor } from '../../../shared/scope.js';
 import {
@@ -18,6 +19,8 @@ import {
   createCallLogSchema,
   giveRateSchema,
   giveParkedQuoteSchema,
+  requestRateChangeSchema,
+  decideRateChangeSchema,
   markPaidSchema,
   cancelOrderSchema,
   markBilledSchema,
@@ -80,6 +83,56 @@ export async function postGiveParkedQuote(req: Request, res: Response): Promise<
     callNote,
   );
   ok(res, req, result, 201);
+}
+// 4 Nov — Rate given → Change: Sales asks, the Sales Leader (or Admin) decides.
+export async function postRequestRateChange(req: Request, res: Response): Promise<void> {
+  const { callNote, ...input } = requestRateChangeSchema.parse(req.body);
+  ok(
+    res,
+    req,
+    await salesRateChangeService.requestRateChange(
+      req.params.quoteId as string,
+      input,
+      stageActor(req),
+      callNote,
+    ),
+    201,
+  );
+}
+export async function postRequestPileOfferChange(req: Request, res: Response): Promise<void> {
+  const { callNote, ...input } = requestRateChangeSchema.parse(req.body);
+  ok(
+    res,
+    req,
+    await salesRateChangeService.requestPileOfferChange(
+      req.params.requestId as string,
+      input,
+      stageActor(req),
+      callNote,
+    ),
+    201,
+  );
+}
+export async function postWithdrawRateChange(req: Request, res: Response): Promise<void> {
+  ok(
+    res,
+    req,
+    await salesRateChangeService.withdrawRateChange(req.params.requestId as string, {
+      ...callerOf(req),
+      correlationId: req.correlationId,
+    }),
+  );
+}
+export async function postDecideRateChange(req: Request, res: Response): Promise<void> {
+  const input = decideRateChangeSchema.parse(req.body);
+  ok(
+    res,
+    req,
+    await salesRateChangeService.decideRateChange(req.params.requestId as string, input, {
+      ...callerOf(req),
+      correlationId: req.correlationId,
+    }),
+  );
 }
 export async function postMarkPaid(req: Request, res: Response): Promise<void> {
   const { utr, callNote } = markPaidSchema.parse(req.body);
@@ -246,7 +299,7 @@ export async function getBuyerBoard(req: Request, res: Response): Promise<void> 
   ok(res, req, await salesBoardService.getBoardForBuyer(req.params.buyerId as string));
 }
 export async function getBuyerFile(req: Request, res: Response): Promise<void> {
-  ok(res, req, await salesBuyersService.getBuyerFile(req.params.buyerId as string));
+  ok(res, req, await salesBuyersService.getBuyerFile(req.params.buyerId as string, callerOf(req)));
 }
 
 // Sales desk v2 — orders.

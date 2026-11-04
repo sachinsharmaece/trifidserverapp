@@ -253,7 +253,7 @@ export async function declineAsk(buyerCounterpartyId, askId) {
  * An order is capped at what is still wanted, so he is never over-filled. Only a full fill — or
  * `keepRemainderOpen: false` — closes the ask and ranks the quotes not taken (BR-063).
  */
-export async function acceptAskFill(buyerCounterpartyId, askId, input, correlationId) {
+export async function acceptAskFill(buyerCounterpartyId, askId, input, correlationId, adjustment) {
     const buyer = await requireActiveBuyer(buyerCounterpartyId);
     const ask = await Ask.findOne({ _id: askId, buyerId: buyer._id });
     if (!ask)
@@ -272,14 +272,29 @@ export async function acceptAskFill(buyerCounterpartyId, askId, input, correlati
     // one that gets trimmed.
     quotes.sort((a, b) => a.ratePaiseForIndore - b.ratePaiseForIndore);
     const soIds = [];
-    const actor = { employeeId: buyer._id.toString(), correlationId };
+    const buyerActor = { employeeId: buyer._id.toString(), correlationId };
+    // An approved change is the requesting staff member's act, so the override is logged against him.
+    const actor = adjustment ? { employeeId: adjustment.staffId, correlationId } : buyerActor;
     let remaining = ask.qty;
     let filled = 0;
     const taken = [];
+    if (adjustment) {
+        // The boxes were checked when it was asked; the ask or the quote may have moved since.
+        const [only] = quotes;
+        if (quotes.length !== 1 ||
+            !only ||
+            adjustment.boxes > only.qtyAvailable ||
+            adjustment.boxes > remaining) {
+            throw new AppError({
+                code: 'VALIDATION_FAILED',
+                messageEn: 'The approved boxes are more than he still wants or the seller can send.',
+            });
+        }
+    }
     // BR-128 — independent chains: "where one leg fails the other stands" —
     // each seller's portion is its own transaction, not one shared one.
     for (const quote of quotes) {
-        const boxes = Math.min(quote.qtyAvailable, remaining);
+        const boxes = adjustment ? adjustment.boxes : Math.min(quote.qtyAvailable, remaining);
         if (boxes < 1)
             break; // Already filled: the quotes left are not needed.
         const result = await createSo({
@@ -291,6 +306,12 @@ export async function acceptAskFill(buyerCounterpartyId, askId, input, correlati
             placeOfSupply: 'intra_state',
             askId: ask._id.toString(),
             ...(ask.enquiryId ? { enquiryId: ask.enquiryId.toString() } : {}),
+            ...(adjustment?.overrideRatePaise !== undefined
+                ? {
+                    overrideRatePaise: adjustment.overrideRatePaise,
+                    overrideReasonCode: adjustment.overrideReasonCode,
+                }
+                : {}),
         }, actor);
         soIds.push(result.soId);
         remaining -= boxes;
