@@ -61,6 +61,9 @@ purchaseRouter.post('/staff/purchase/stock/:soId/hold', authenticate, requirePer
 purchaseRouter.post('/staff/purchase/stock/:soId/hold/adjust', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), controller.postAdjustStockHold);
 purchaseRouter.post('/staff/purchase/stock/:soId/hold/confirm', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), controller.postConfirmStockHold);
 purchaseRouter.get('/staff/purchase/pos', authenticate, requirePermission(PERMISSIONS.PO_EDIT), scopeList('purchase', bySellerId), controller.getPoQueue);
+// 3 Nov (My view sheet) — a PO's print data, for "Download PDF" on the PO screen. Read-only, and
+// gated like the PO list itself.
+purchaseRouter.get('/staff/purchase/pos/:poId/print', authenticate, requirePermission(PERMISSIONS.PO_EDIT), requireInScope('purchase', sellerOfPo()), controller.getPoPrint);
 purchaseRouter.post('/staff/purchase/pos/:poId/invoice', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), requireInScope('purchase', sellerOfPo()), controller.postSellerInvoice);
 // Leg 1 reported by the seller on a call — idempotent like every stage-moving POST.
 purchaseRouter.post('/staff/purchase/pos/:poId/seller-dispatched', authenticate, requirePermission(PERMISSIONS.PROXY_SELLER_CALL), requireInScope('purchase', sellerOfPo()), requireIdempotencyKey(), controller.postSellerDispatched);

@@ -100,7 +100,8 @@ export const createCallLogSchema = z
     direction: z.enum(['in', 'out']).nullable().optional(),
     kind: z.enum(CALL_LOG_KINDS),
     outcome: z.enum(CALL_OUTCOMES).optional(),
-    note: z.string().min(1),
+    // 3 Nov — optional (My view sheet): a call or update may be logged without a note.
+    note: z.string().trim().default(''),
     producedAskId: z.string().optional(),
     listingLineId: z.string().optional(),
     updateKind: z.enum(CALL_LOG_UPDATE_KINDS).optional(),

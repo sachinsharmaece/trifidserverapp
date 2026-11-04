@@ -148,7 +148,7 @@ export async function createPush(buyerId, input, actor) {
             await notifyStaff([to.employeeId], {
                 kind: 'push_received',
                 title: `From Sales: ${counterparty.firm ?? 'a buyer'}`,
-                body: `${pusher ?? 'Sales'} pushed him to Purchase — "${input.note}"`,
+                body: `${pusher ?? 'Sales'} pushed him to Purchase${input.note ? ` — "${input.note}"` : '.'}`,
                 link: `/purchase/from-sales/${pushIdStr}`,
             }, session);
             await writeAuditLog({
@@ -158,7 +158,7 @@ export async function createPush(buyerId, input, actor) {
                 entityId: push._id,
                 field: 'status',
                 newValue: { status: 'pending', buyerId, receiverEmployeeId: to.employeeId },
-                reason: input.note,
+                reason: input.note || undefined,
                 correlationId: actor.correlationId,
             }, session);
             return pushIdStr;
@@ -265,6 +265,7 @@ export async function getPush(pushId, caller) {
         address: 1,
         pincode: 1,
         gstPpobAddress: 1,
+        margPartyCode: 1,
     });
     const tehsil = buyer?.tehsilId ? await Tehsil.findById(buyer.tehsilId) : null;
     const district = tehsil?.districtId ? await District.findById(tehsil.districtId) : null;
@@ -322,6 +323,7 @@ export async function getPush(pushId, caller) {
             }
             : null,
         buyerCompanies: await buyerCompaniesOf(push.buyerId),
+        buyerMargPartyCode: buyer?.margPartyCode ?? null,
         firmHasBankDetail: Boolean(await BankDetail.exists({ counterpartyId: push.counterpartyId })),
         needsGstin: !counterparty?.gstin && !draft?.gstin,
         canComplete: open &&
@@ -368,15 +370,17 @@ export async function completePush(pushId, input, actor) {
         (await Manufacturer.countDocuments({ _id: { $in: dealershipIds } })) !== dealershipIds.length) {
         throw fail('One of those companies does not exist.', 'dealerships');
     }
-    await assertSellerMargCodeFree(input.margPartyCode);
-    const firmHasBank = Boolean(await BankDetail.exists({ counterpartyId: counterparty._id }));
-    if (!firmHasBank && !input.bankDetail && !push.draft?.bankDetail) {
-        throw fail('Add his bank account — the firm has none on file and a seller is paid.', 'bankDetail.accountNumber');
-    }
+    // 3 Nov (My view sheet) — his seller Marg code is his buyer code: when the buyer has one it is
+    // used whatever was sent; with none, a code typed here stands.
+    const buyer = await Buyer.findById(push.buyerId, { margPartyCode: 1 });
+    const margPartyCode = buyer?.margPartyCode ?? input.margPartyCode;
+    await assertSellerMargCodeFree(margPartyCode);
+    // 3 Nov (My view sheet) — a bank account is no longer asked for here. Without one he cannot be
+    // paid (`BANK_DETAIL_NOT_PAYABLE`) until staff add one through the bank-detail change.
     const before = push.status;
     push.draft = {
         gstin: input.gstin ?? null,
-        licenceNo: input.licenceNo,
+        licenceNo: input.licenceNo ?? null,
         location: {
             address: input.location.address,
             pincode: input.location.pincode ?? null,
@@ -393,7 +397,7 @@ export async function completePush(pushId, input, actor) {
                 accountName: input.bankDetail.accountName,
             }
             : (push.draft?.bankDetail ?? null),
-        margPartyCode: input.margPartyCode ?? null,
+        margPartyCode: margPartyCode ?? null,
         callNote: input.callNote,
     };
     push.status = 'submitted';
@@ -409,7 +413,7 @@ export async function completePush(pushId, input, actor) {
             field: 'status',
             oldValue: before,
             newValue: 'submitted',
-            reason: input.callNote,
+            reason: input.callNote || undefined,
             correlationId: actor.correlationId,
         }, session);
     });
@@ -474,13 +478,16 @@ export async function approvePush(pushId, input, actor) {
             },
         ], { session });
         const sid = seller._id;
-        await SellerReference.create((draft.references ?? []).map((r) => ({
-            sellerId: sid,
-            firm: r.firm,
-            phone: r.phone,
-            relationship: r.relationship,
-            whatTheySaid: r.whatTheySaid,
-        })), { session, ordered: true });
+        // 3 Nov — the referees are optional now, so there may be none to record.
+        if (draft.references?.length) {
+            await SellerReference.create(draft.references.map((r) => ({
+                sellerId: sid,
+                firm: r.firm,
+                phone: r.phone,
+                relationship: r.relationship ?? '',
+                whatTheySaid: r.whatTheySaid ?? '',
+            })), { session, ordered: true });
+        }
         if (draft.dealershipIds?.length) {
             await SellerDealership.create(draft.dealershipIds.map((manufacturerId) => ({
                 sellerId: sid,

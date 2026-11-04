@@ -3,6 +3,7 @@ import * as purchaseService from './purchase.service.js';
 import * as catalogService from '../../catalog/catalog.service.js';
 import { getFunnelReport as getFunnelReportFromService } from './purchase.funnel.js';
 import * as stages from './purchase.stages.js';
+import { getPoPrintData } from './purchase.print.js';
 import { getSellerDealerships as getSellerDealershipsFromService, setSellerDealerships, } from './purchase.catalogue.js';
 import { getSellerStageFunnel } from './purchase.sellerFunnel.js';
 import { draftManufacturerSchema, draftProductSchema, draftSkuSchema, nonOrderReasonSchema, requestStockHoldSchema, adjustStockHoldSchema, sellerCatalogueEntrySchema, sellerDealershipsSchema, sellerDispatchedSchema, sellerInvoiceSchema, stageCallNoteSchema, } from './purchase.validation.js';
@@ -110,6 +111,10 @@ export async function getPoQueue(req, res) {
 }
 export async function getBilledQueue(req, res) {
     ok(res, req, await stages.getBilledQueue());
+}
+// 3 Nov — the data behind a PO's "Download PDF"; the page itself is built in the admin app.
+export async function getPoPrint(req, res) {
+    ok(res, req, await getPoPrintData(req.params.poId));
 }
 export async function postSellerInvoice(req, res) {
     const { callNote, ...input } = sellerInvoiceSchema.parse(req.body);

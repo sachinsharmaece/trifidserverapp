@@ -73,7 +73,7 @@ const DISPATCH_FAILURE_HOURS = 48; // BR-174 — the buyer's promise, and BR-215
  * IST day the PO released. A PO that released after his cut-off is read as due at his
  * cut-off the next day — the same reading BR-173 gives the delivery band. See QR-064.
  */
-function sameDayDeadline(releasedAt: Date, cutoffHHMM: string): Date {
+export function sameDayDeadline(releasedAt: Date, cutoffHHMM: string): Date {
   const sameDay = new Date(`${istDateKey(releasedAt)}T${cutoffHHMM}:00+05:30`);
   if (releasedAt.getTime() < sameDay.getTime()) return sameDay;
   return addHours(sameDay, 24);

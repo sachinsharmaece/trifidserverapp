@@ -636,7 +636,13 @@ export async function listConfirmations(sellerCounterpartyId) {
  * every path that reaches this function, including the queue card's
  * one-tap shortcut; there is no second, looser code path.
  */
-export async function confirmPile(sellerCounterpartyId, pileId, input, correlationId) {
+export async function confirmPile(sellerCounterpartyId, pileId, input, correlationId, 
+/**
+ * 3 Nov (My view sheet) — Purchase confirming on the seller's behalf, on a call, may leave the
+ * expiry and the batch out: the BR-102/BR-105 gates below are skipped for that path only. The
+ * seller's own confirm keeps them.
+ */
+options = {}) {
     const seller = await requireActiveSeller(sellerCounterpartyId);
     const pile = await Pile.findById(pileId);
     if (!pile)
@@ -655,13 +661,13 @@ export async function confirmPile(sellerCounterpartyId, pileId, input, correlati
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Listing line not found.' });
     // The expiry he gives now, else the one the listing was entered with. The year is the least needed.
     const expiryExact = input.expiryExact ?? line.expiryExact ?? undefined;
-    if (!expiryExact) {
+    if (!expiryExact && !options.staffAssisted) {
         throw new AppError({
             code: 'EXPIRY_REQUIRED',
             messageEn: 'The expiry is required to confirm — at least the year (BR-102).',
         });
     }
-    if (line.provenance === 'auth' && !input.batch) {
+    if (line.provenance === 'auth' && !input.batch && !options.staffAssisted) {
         throw new AppError({
             code: 'BATCH_REQUIRED',
             messageEn: 'Batch is required for "My stock" listings (BR-105).',
@@ -675,13 +681,17 @@ export async function confirmPile(sellerCounterpartyId, pileId, input, correlati
         pile.decision = 'confirmed';
         pile.decidedAt = now;
         pile.confirmedQty = Math.min(input.canSendBoxes, totalAsked);
-        pile.expiryExact = expiryExact;
+        pile.expiryExact = expiryExact ?? null;
         pile.batch = input.batch ?? null;
         pile.sellerLockedUntil = addHours(now, 24); // BR-032.
         await pile.save({ session });
-        line.expiryFixed = true; // IC-01/BR-102 — the exact month may now display.
-        line.expiryExact = expiryExact;
-        await line.save({ session });
+        // With no expiry (staff path only) the line is left as it was: nothing is fixed, so nothing
+        // displays (the buyer feed shows an expiry only when `expiryFixed && expiryExact`).
+        if (expiryExact) {
+            line.expiryFixed = true; // IC-01/BR-102 — the exact month may now display.
+            line.expiryExact = expiryExact;
+            await line.save({ session });
+        }
         await syncEnquiriesForPile(pile._id, session, now);
     });
     const agenda = getAgendaProducer();

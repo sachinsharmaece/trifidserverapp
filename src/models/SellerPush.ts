@@ -31,8 +31,9 @@ const draftSchema = new Schema(
         _id: false,
         firm: { type: String, required: true },
         phone: { type: String, required: true },
-        relationship: { type: String, required: true },
-        whatTheySaid: { type: String, required: true },
+        // 3 Nov — optional on the push's Complete form (My view sheet).
+        relationship: { type: String, default: '' },
+        whatTheySaid: { type: String, default: '' },
       },
     ],
     dealershipIds: { type: [Schema.Types.ObjectId], default: [] },
@@ -67,7 +68,8 @@ const sellerPushSchema = new Schema(
       immutable: true,
     },
     pushedAt: { type: Date, required: true },
-    note: { type: String, required: true },
+    // 3 Nov — optional (My view sheet); a push made without one keeps ''.
+    note: { type: String, default: '' },
     // The team's Sales Leader acting as its purchase executive, or whoever Admin chose.
     receiverEmployeeId: { type: Schema.Types.ObjectId, ref: 'Employee', required: true },
     status: {

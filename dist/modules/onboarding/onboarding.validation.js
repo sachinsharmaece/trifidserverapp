@@ -139,7 +139,7 @@ export const locationSchema = z
 })
     .strict();
 const optionalText = z.preprocess((value) => (typeof value === 'string' ? blankToUndefined(value.trim()) : value), z.string().optional());
-const optionalLicence = z.preprocess((value) => (typeof value === 'string' ? blankToUndefined(value.trim()) : value), z
+export const optionalLicence = z.preprocess((value) => (typeof value === 'string' ? blankToUndefined(value.trim()) : value), z
     .string()
     .refine(isValidLicenceNo, 'Enter a valid licence number (at least 4 characters).')
     .optional());

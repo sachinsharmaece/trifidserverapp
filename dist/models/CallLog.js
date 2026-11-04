@@ -36,7 +36,8 @@ const callLogSchema = new Schema({
     at: { type: Date, required: true, default: () => new Date() },
     kind: { type: String, enum: CALL_LOG_KINDS, required: true },
     outcome: { type: String, enum: CALL_OUTCOMES, default: null },
-    note: { type: String, required: true },
+    // 3 Nov — optional on the call page's forms (My view sheet); history shows "—" when empty.
+    note: { type: String, default: '' },
     producedAskId: { type: Schema.Types.ObjectId, ref: 'Ask', default: null },
     listingLineId: { type: Schema.Types.ObjectId, ref: 'ListingLine', default: null },
     updateKind: { type: String, enum: CALL_LOG_UPDATE_KINDS, default: null },

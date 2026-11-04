@@ -10,8 +10,9 @@ const sellerReferenceSchema = new Schema(
     sellerId: { type: Schema.Types.ObjectId, ref: 'Seller', required: true },
     firm: { type: String, required: true },
     phone: { type: String, required: true },
-    relationship: { type: String, required: true },
-    whatTheySaid: { type: String, required: true },
+    // 3 Nov — optional when the referee comes from the push's Complete form (My view sheet).
+    relationship: { type: String, default: '' },
+    whatTheySaid: { type: String, default: '' },
     calledBy: { type: Schema.Types.ObjectId, default: null },
     calledAt: { type: Date, default: null },
     marketReputation: { type: String, default: null },
