@@ -19,6 +19,7 @@ import {
   type Provenance,
 } from '../../models/ListingLine.js';
 import { Listing } from '../../models/Listing.js';
+import type { RateOverrideReasonCode } from '../../models/RateOverride.js';
 import { Pile } from '../../models/Pile.js';
 import { PileRequest } from '../../models/PileRequest.js';
 import { Claim } from '../../models/Claim.js';
@@ -352,6 +353,19 @@ interface AcceptFillInput {
 }
 
 /**
+ * 4 Nov — an approved Sales change (sales.rateChange): the one quote taken is ordered at these boxes
+ * and, when it carries one, this rate. Never reachable from the buyer's own endpoint, which has no
+ * field for it (BR-121).
+ */
+export interface StaffFillAdjustment {
+  boxes: number;
+  /** The staff member who asked for the change — the override is logged against him. */
+  staffId: string;
+  overrideRatePaise?: Paise;
+  overrideReasonCode?: RateOverrideReasonCode;
+}
+
+/**
  * API-042. BR-127/BR-128 — a split fill is two trades; each seller's portion is its own chain.
  *
  * 2 Nov — a fill that covers fewer boxes than he asked for (a seller quoted 10 of 100) no longer
@@ -365,6 +379,7 @@ export async function acceptAskFill(
   askId: string,
   input: AcceptFillInput,
   correlationId: string,
+  adjustment?: StaffFillAdjustment,
 ): Promise<{ soIds: string[]; filledBoxes: number; remainingBoxes: number }> {
   const buyer = await requireActiveBuyer(buyerCounterpartyId);
   const ask = await Ask.findOne({ _id: askId, buyerId: buyer._id });
@@ -385,14 +400,31 @@ export async function acceptAskFill(
   quotes.sort((a, b) => a.ratePaiseForIndore - b.ratePaiseForIndore);
 
   const soIds: string[] = [];
-  const actor = { employeeId: (buyer._id as Types.ObjectId).toString(), correlationId };
+  const buyerActor = { employeeId: (buyer._id as Types.ObjectId).toString(), correlationId };
+  // An approved change is the requesting staff member's act, so the override is logged against him.
+  const actor = adjustment ? { employeeId: adjustment.staffId, correlationId } : buyerActor;
   let remaining = ask.qty;
   let filled = 0;
   const taken: Array<InstanceType<typeof Quote>> = [];
+  if (adjustment) {
+    // The boxes were checked when it was asked; the ask or the quote may have moved since.
+    const [only] = quotes;
+    if (
+      quotes.length !== 1 ||
+      !only ||
+      adjustment.boxes > only.qtyAvailable ||
+      adjustment.boxes > remaining
+    ) {
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: 'The approved boxes are more than he still wants or the seller can send.',
+      });
+    }
+  }
   // BR-128 — independent chains: "where one leg fails the other stands" —
   // each seller's portion is its own transaction, not one shared one.
   for (const quote of quotes) {
-    const boxes = Math.min(quote.qtyAvailable, remaining);
+    const boxes = adjustment ? adjustment.boxes : Math.min(quote.qtyAvailable, remaining);
     if (boxes < 1) break; // Already filled: the quotes left are not needed.
     const result = await createSo(
       {
@@ -404,6 +436,12 @@ export async function acceptAskFill(
         placeOfSupply: 'intra_state',
         askId: (ask._id as Types.ObjectId).toString(),
         ...(ask.enquiryId ? { enquiryId: (ask.enquiryId as Types.ObjectId).toString() } : {}),
+        ...(adjustment?.overrideRatePaise !== undefined
+          ? {
+              overrideRatePaise: adjustment.overrideRatePaise,
+              overrideReasonCode: adjustment.overrideReasonCode,
+            }
+          : {}),
       },
       actor,
     );

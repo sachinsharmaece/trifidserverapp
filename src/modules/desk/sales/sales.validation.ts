@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MSP_REFUSAL_CODES } from '../../../models/MspRequest.js';
+import { RATE_OVERRIDE_REASON_CODES } from '../../../models/RateOverride.js';
 import { CALL_OUTCOMES, CALL_LOG_KINDS, CALL_LOG_UPDATE_KINDS } from '../../../models/CallLog.js';
 
 export const requestMspSchema = z
@@ -32,6 +33,30 @@ export const resolveShortPileSchema = z
     reason: z.string().trim().min(1).max(500),
   })
   .strict();
+
+/**
+ * 4 Nov — Sales asking to confirm a held rate at other boxes and/or another rate. The reason is
+ * needed only when the rate changes (the service checks that against the rate he was shown).
+ */
+export const requestRateChangeSchema = z
+  .object({
+    boxes: z.number().int().min(1),
+    ratePaise: z.number().int().min(1),
+    reasonCode: z.enum(RATE_OVERRIDE_REASON_CODES).optional(),
+    callNote: stageCallNote,
+  })
+  .strict();
+
+export const decideRateChangeSchema = z
+  .object({
+    decision: z.enum(['approved', 'rejected']),
+    note: z.string().trim().max(500).default(''),
+  })
+  .strict()
+  .refine((value) => value.decision === 'approved' || value.note.length > 0, {
+    message: 'Say why it is not approved.',
+    path: ['note'],
+  });
 
 /** Sales giving the asking buyer a quote that has been parked for him. */
 export const giveParkedQuoteSchema = z.object({ callNote: stageCallNote }).strict();

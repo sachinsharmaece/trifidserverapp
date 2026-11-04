@@ -49,6 +49,9 @@ export const proxyAcceptAskFillSchema = acceptAskFillSchema.extend({
   callNote: optionalCallNoteSchema,
   // 28 Oct — Incoming/Outgoing, from the call page's toggle, for the call history.
   direction: z.enum(['in', 'out']).optional(),
+  // 4 Nov — an approved Rate given → Change. Only the id: the boxes and rate are the approved ones,
+  // read from the request, so there is no raw rate or box field here to get around the approval.
+  approvalId: z.string().min(1).optional(),
 });
 
 /** BR-378 — Sales taking, or walking away from, the deal given to a buyer, on his word. */
@@ -59,6 +62,14 @@ export const proxyPileOfferDecisionSchema = z
     direction: z.enum(['in', 'out']).optional(),
   })
   .strict();
+
+/**
+ * 4 Nov — taking a pile deal can carry an approved Rate given → Change (BR-379). Only the id: the
+ * boxes and rate are the approved ones, read from the request. Declining takes no approval.
+ */
+export const proxyAcceptPileOfferSchema = proxyPileOfferDecisionSchema.extend({
+  approvalId: z.string().min(1).optional(),
+});
 
 export const proxyDeclineAskSchema = z
   .object({

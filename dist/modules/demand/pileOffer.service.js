@@ -32,6 +32,9 @@ export async function raiseOrderForRequest(ctx, request, boxes, session) {
         placeOfSupply: 'intra_state', // Refined once M6's tax-jurisdiction lookup exists; see CHANGELOG.
         pileRequestId: request._id.toString(),
         ...(request.enquiryId ? { enquiryId: request.enquiryId.toString() } : {}),
+        ...(ctx.overrideRatePaise !== undefined
+            ? { overrideRatePaise: ctx.overrideRatePaise, overrideReasonCode: ctx.overrideReasonCode }
+            : {}),
     }, ctx.actor, session);
     // CH §21.8 #3 — "Seller confirms supply." Queued AFTER createSoInSession's own `payment_due`
     // for this buyer, so where the weekly cap (BR-283) allows only one message it is the money
@@ -110,7 +113,7 @@ async function releaseOffer(requestId, outcome, actor, session) {
  * now. Refused once it is ordered, walked away from, or past the 24-hour hold (which then releases
  * the boxes). The order, the request's state and the audit entry commit together.
  */
-export async function acceptPileOffer(requestId, buyerCounterpartyId, actor, now = new Date()) {
+export async function acceptPileOffer(requestId, buyerCounterpartyId, actor, now = new Date(), adjustment) {
     const request = await requestOfBuyer(requestId, buyerCounterpartyId);
     if (request.offerState === 'offered' && request.holdUntil && request.holdUntil <= now) {
         await expirePileOffer(requestId, now);
@@ -122,7 +125,15 @@ export async function acceptPileOffer(requestId, buyerCounterpartyId, actor, now
         const claimed = await PileRequest.findOneAndUpdate({ _id: requestId, offerState: 'offered', holdUntil: { $gt: now } }, { $set: { offerState: 'ordered' } }, { session });
         if (!claimed)
             throw closedError('ordered');
-        const boxes = claimed.offerQty ?? claimed.qty;
+        const offered = claimed.offerQty ?? claimed.qty;
+        // 4 Nov — an approved Sales change (BR-379): fewer boxes than the seller confirmed, never more.
+        if (adjustment && adjustment.boxes > offered) {
+            throw new AppError({
+                code: 'VALIDATION_FAILED',
+                messageEn: 'The approved boxes are more than the seller confirmed for him.',
+            });
+        }
+        const boxes = adjustment ? adjustment.boxes : offered;
         const pile = await Pile.findById(claimed.pileId).session(session);
         const line = pile ? await ListingLine.findById(pile.listingLineId).session(session) : null;
         const listing = line ? await Listing.findById(line.listingId).session(session) : null;
@@ -133,8 +144,23 @@ export async function acceptPileOffer(requestId, buyerCounterpartyId, actor, now
             skuId: String(line.skuId),
             sellerId: String(seller._id),
             sellerNetPaise: line.ratePaise,
-            actor: { employeeId: actor.actorId, correlationId: actor.correlationId },
+            // An approved change is the requesting staff member's act, so a rate override is logged
+            // against him — not against whoever presses Confirm.
+            actor: {
+                employeeId: adjustment ? adjustment.staffId : actor.actorId,
+                correlationId: actor.correlationId,
+            },
+            ...(adjustment?.overrideRatePaise !== undefined
+                ? {
+                    overrideRatePaise: adjustment.overrideRatePaise,
+                    overrideReasonCode: adjustment.overrideReasonCode,
+                }
+                : {}),
         }, claimed, boxes, session);
+        // The boxes he does not take were held off the listing for him: they go back on it.
+        if (boxes < offered) {
+            await ListingLine.updateOne({ _id: line._id }, { $inc: { qty: offered - boxes } }, { session });
+        }
         await writeAuditLog({
             actorId: actor.actorId,
             actorType: actor.actorType,

@@ -1,5 +1,10 @@
 import { byBuyerId, field, param, requireInScope, scopeList } from '../../../shared/scope.js';
-import { buyerOfAsk, buyerOfOrder, buyerOfQuote } from '../../../shared/scopeResolvers.js';
+import {
+  buyerOfAsk,
+  buyerOfOrder,
+  buyerOfPileRequest,
+  buyerOfQuote,
+} from '../../../shared/scopeResolvers.js';
 import { Router } from 'express';
 import { authenticate } from '../../../middleware/auth.js';
 import { requirePermission } from '../../../middleware/requirePermission.js';
@@ -186,6 +191,40 @@ salesRouter.post(
   requirePermission(PERMISSIONS.PROXY_BUYER_CALL),
   requireInScope('sales', buyerOfQuote()),
   controller.postGiveParkedQuote,
+);
+// 4 Nov — Rate given → Change. Sales asks to confirm a held rate at other boxes or another rate;
+// the requester's Sales Leader (or Admin) decides; Confirm then spends the approval (the proxy
+// accept route takes its id). Who may withdraw or decide is checked in the service.
+salesRouter.post(
+  '/staff/sales/quotes/:quoteId/rate-change',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_BUYER_CALL),
+  requireInScope('sales', buyerOfQuote()),
+  requireIdempotencyKey(),
+  controller.postRequestRateChange,
+);
+// The same for the deal the seller confirmed for him (BR-378).
+salesRouter.post(
+  '/staff/sales/pile-offers/:requestId/rate-change',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_BUYER_CALL),
+  requireInScope('sales', buyerOfPileRequest('requestId')),
+  requireIdempotencyKey(),
+  controller.postRequestPileOfferChange,
+);
+salesRouter.post(
+  '/staff/sales/rate-changes/:requestId/withdraw',
+  authenticate,
+  requirePermission(PERMISSIONS.PROXY_BUYER_CALL),
+  requireIdempotencyKey(),
+  controller.postWithdrawRateChange,
+);
+salesRouter.post(
+  '/staff/sales/rate-changes/:requestId/decide',
+  authenticate,
+  requirePermission(PERMISSIONS.SALES_APPROVE_RATE_CHANGE),
+  requireIdempotencyKey(),
+  controller.postDecideRateChange,
 );
 // Money-moving: Sales takes the payment itself, so it has its own permission.
 salesRouter.post(

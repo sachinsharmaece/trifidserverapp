@@ -1036,16 +1036,23 @@ export async function getSellerFile(sellerId) {
     const lines = await ListingLine.find({ listingId: { $in: listings.map((l) => l._id) } });
     const skus = await Sku.find({ _id: { $in: lines.map((l) => l.skuId) } });
     const skuById = new Map(skus.map((s) => [s._id.toString(), s]));
+    const listedProducts = await Product.find({ _id: { $in: skus.map((s) => s.productId) } });
+    const listedProductById = new Map(listedProducts.map((p) => [p._id.toString(), p]));
     const listingById = new Map(listings.map((l) => [l._id.toString(), l]));
     const now = Date.now();
     const listingDtos = lines.map((line) => {
         const listing = listingById.get(line.listingId.toString());
         const sku = skuById.get(line.skuId.toString());
+        const product = sku
+            ? listedProductById.get(sku.productId.toString())
+            : undefined;
         const lastProxy = line.proxyLog.length ? line.proxyLog[line.proxyLog.length - 1] : null;
         return {
             listingId: listing ? listing._id.toString() : '',
             lineId: line._id.toString(),
             skuId: line.skuId.toString(),
+            brand: product?.brand ?? '—',
+            technical: product?.technical ?? '—',
             packLabel: sku?.packLabel ?? '—',
             ratePaise: line.ratePaise,
             scopeType: listing?.scopeType ?? '',

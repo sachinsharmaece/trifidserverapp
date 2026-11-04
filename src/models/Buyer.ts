@@ -38,6 +38,10 @@ const buyerSchema = new Schema(
     // Phase 3 — the buyer's party code in Marg, for automated billing later.
     // Unique among buyers; the seller ledger is a separate Marg ledger.
     margPartyCode: { type: String, default: null },
+    // 4 Nov — the date of his newest bill in Marg, loaded from the party-bill sheet
+    // (`npm run import:margLastBills`). The Buyers list shows the later of this and his latest
+    // order made in the app, so a buyer billed before the app held orders is not "never".
+    lastBilledOn: { type: Date, default: null },
     // BR-044 — false until a desk classifies him; until then he sees the
     // Retailer rate marked indicative.
     classified: { type: Boolean, required: true, default: false },
