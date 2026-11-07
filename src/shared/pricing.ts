@@ -2,44 +2,41 @@
  * The pricing engine. BUSINESS_RULES.md §4, §17.
  *
  * ─────────────────────────────────────────────────────────────────────────
- * THE ASYMMETRY. Read this before changing anything in here.
+ * EVERY RATE IS GST-INCLUSIVE. Read this before changing anything in here.
  *
- * The two sides of a trade quote in different bases, and this is correct,
- * not a defect:
+ * The seller's quote, the margin, and the buyer's rate are all on one basis:
  *
- *   SELLER → TriFid    TAXABLE.   He raises a GST tax invoice showing
- *                                 taxable value, GST and total. The rate he
- *                                 quotes is the taxable figure.
+ *   SELLER → TriFid    INCLUSIVE. The rate he quotes already includes GST
+ *                                 (the 3 Nov rule for a product's own margin,
+ *                                 extended to every quote on 6 Nov — DEC-077).
+ *                                 The bill he raises is that figure split
+ *                                 backwards into taxable value and GST.
  *
  *   TriFid → BUYER     INCLUSIVE. Confirmed by the client 13 Sep 2026
  *                                 (DEC-045, QR-002 corrected): "the rate
  *                                 shown is already the final tax-inclusive
  *                                 amount; nothing is added at checkout."
  *
- * Because of that, there is no shared "rate" function in this module. A
- * seller-side call and a buyer-side call are separately named so a
- * misuse is a compile error rather than an 18% money bug.
+ * So GST is never added to a rate anywhere. The margin — a % of the class
+ * matrix or a product's own rupee amount — is added to the quote as it
+ * stands, and GST only ever appears as the portion recovered BACKWARDS from
+ * an inclusive total, for the Marg proforma and the bill.
  *
  * ─────────────────────────────────────────────────────────────────────────
- * HISTORY — why the names changed.
- *
- * Until 13 Sep 2026 this module implemented the opposite reading of Q2
- * (taxable rate, GST added on top of the buyer's number too). The client
- * ruled Option A: the buyer's displayed number IS what he pays. The fix is
- * not "stop multiplying by 1.18" — the buyer rate must be grossed UP by
- * 1.18 at the point margin is applied and the total must then stop being
- * multiplied, or GST eats the whole margin and a 2% Class A line goes
- * negative. Every old function name in this module was deliberately retired
- * so the compiler finds every caller.
+ * HISTORY. Until 13 Sep 2026 the buyer's rate was taxable with GST added on
+ * top. From then until 7 Nov 2026 the seller's rate was taxable and the
+ * buyer's was `taxable × (1 + margin) × 1.18`. DEC-077 (7 Nov) made the
+ * seller's quote inclusive, so the `× 1.18` went from both sides. The
+ * seller-side and buyer-side functions stay separately named, so a misuse is
+ * still a compile error.
  *
  * ─────────────────────────────────────────────────────────────────────────
- * ORDER OF OPERATIONS (CH §8.2 — margin applies to landed cost; CH §10.21 —
- * GST is a pass-through recovered through input credit, so margin is never
- * calculated on a tax we are about to hand to the government):
+ * ORDER OF OPERATIONS (CH §8.2 — margin applies to the seller's FOR-Indore
+ * quote):
  *
- *   sellerRateTaxable      per base unit, FOR Indore        ← what he quotes
- *   buyerRateTaxable     = sellerRateTaxable × (1 + margin)
- *   buyerRateInclusive   = buyerRateTaxable × 1.18          ← what he SEES
+ *   sellerRate             per base unit, FOR Indore, GST included
+ *   buyerRate            = sellerRate × (1 + margin %)   or   sellerRate + ₹ margin
+ *   taxable (bill/proforma) = total × 100 / 118, GST = total − taxable
  *
  * ROUNDING (Q3a — "GST is never rounded; only the final amount is"):
  *   · A rate is itself a monetary value (DATA_MODEL.md §2.3) and is
@@ -105,42 +102,35 @@ function extendedPaise(boxes: number, baseUnitsPerBox: number, ratePaise: Paise)
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   BUYER SIDE — rates are TAX-INCLUSIVE (DEC-045)
+   BUYER SIDE — rates are GST-INCLUSIVE (DEC-045)
    ══════════════════════════════════════════════════════════════════════════ */
 
 /**
  * BR-040/BR-045 — the buyer's rate, ready to display and to freeze onto a
- * sales-order line. Margin is applied to the seller's taxable landed cost,
- * and the result is grossed up by GST once, here, so that every downstream
- * calculation can treat the rate as final.
+ * sales-order line. The class matrix's margin is a percentage of the seller's
+ * quote, which already includes GST, so no GST is added: a ₹150 quote with a
+ * 5% margin is ₹157.50.
  *
  * `marginPct` is a decimal fraction (0.02 for 2%), never negative —
  * BR-021/CH §10.19.4: a negative-margin line is impossible by construction,
- * so this throws rather than producing one.
- *
- * Replaces the pre-13-Sep `computeBuyerRatePaise`, which returned a taxable
- * figure. Note that at zero margin the result is NO LONGER equal to the
- * seller net — it is the seller net plus GST, which is the point.
+ * so this throws rather than producing one. At zero margin the result is the
+ * seller's quote exactly.
  */
-export function computeBuyerInclusiveRatePaise(
-  sellerNetTaxablePaise: Paise,
-  marginPct: number,
-): Paise {
-  assertNonNegativeInteger(sellerNetTaxablePaise, 'sellerNetTaxablePaise');
+export function computeBuyerInclusiveRatePaise(sellerQuotePaise: Paise, marginPct: number): Paise {
+  assertNonNegativeInteger(sellerQuotePaise, 'sellerQuotePaise');
   if (!Number.isFinite(marginPct) || marginPct < 0) {
     throw new TypeError(
       `marginPct must be >= 0, got ${marginPct}. A negative margin is an alarm, not a value (BR-021).`,
     );
   }
-  const taxable = sellerNetTaxablePaise * (1 + marginPct);
-  return Math.round((taxable * GROSS_NUMERATOR) / 100);
+  return Math.round(sellerQuotePaise * (1 + marginPct));
 }
 
 /**
- * A product's own rupee margin (`product_margin_matrix`). The client's rule (3 Nov): the seller's
- * quoted rate already includes GST, and so does this rupee amount, so the buyer's rate is simply
- * `quote + margin` — no GST is added on either. A ₹150 quote with a ₹2 margin is ₹152. Unlike the
- * class matrix, which grosses a taxable rate up by GST after the percentage. Never negative.
+ * A product's own rupee margin (`product_margin_matrix`). The seller's quoted rate already
+ * includes GST, and so does this rupee amount, so the buyer's rate is simply `quote + margin` —
+ * no GST is added on either. A ₹150 quote with a ₹2 margin is ₹152. The class matrix works the
+ * same way with a percentage. Never negative.
  */
 export function computeBuyerInclusiveRatePaiseWithRupeeMargin(
   sellerRatePaise: Paise,
@@ -203,42 +193,30 @@ export function computeBuyerLineMoney(
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   SELLER SIDE — rates are TAXABLE, GST is added on top
+   SELLER SIDE — the quoted rate is GST-INCLUSIVE too (DEC-077)
    ══════════════════════════════════════════════════════════════════════════ */
 
 /**
- * The seller's line, as it appears on the bill he raises to TriFid: taxable
- * value first, GST added on top, total rounded once (Q3a). This is the path
- * the PO and the seller payout use, and it is unchanged in behaviour from
- * the pre-13-Sep `computeLineMoney` — only its name and its scope are now
- * explicit.
+ * The seller's line, as it appears on the bill he raises to TriFid and on the
+ * PO. His quoted rate includes GST, so the total is exactly boxes × units ×
+ * rate — what TriFid pays — and the taxable value and GST are recovered from
+ * it backwards. The same maths as the buyer's line, kept under its own name so
+ * the two directions stay separately callable. Before 7 Nov 2026 the rate was
+ * taxable and GST was added on top.
  */
 export function computeSellerLineMoney(
   boxes: number,
   baseUnitsPerBox: number,
-  taxableRatePaise: Paise,
+  inclusiveRatePaise: Paise,
   placeOfSupply: PlaceOfSupply,
 ): LineMoney {
-  assertNonNegativeInteger(boxes, 'boxes');
-  assertQuantityPerBox(baseUnitsPerBox, 'baseUnitsPerBox');
-  assertNonNegativeInteger(taxableRatePaise, 'taxableRatePaise');
-
-  const taxablePaise = extendedPaise(boxes, baseUnitsPerBox, taxableRatePaise);
-  const totalPaise = Math.round((taxablePaise * GROSS_NUMERATOR) / 100);
-  const taxPortionPaise = totalPaise - taxablePaise;
-
-  return {
-    taxablePaise,
-    totalPaise,
-    taxPortionPaise,
-    taxSplit: splitTax(taxPortionPaise, placeOfSupply),
-  };
+  return computeBuyerLineMoney(boxes, baseUnitsPerBox, inclusiveRatePaise, placeOfSupply);
 }
 
 /**
- * Gross a taxable figure up by GST. Seller side only — a seller's bill
- * total, a debit note against him, a freight recovery. Never call this with
- * a buyer-facing number: a buyer's rate already includes GST (DEC-045).
+ * Gross a taxable figure up by GST. For a figure that is explicitly taxable —
+ * a debit note, a freight recovery. Never call this with a rate or a line
+ * total: both sides' rates already include GST (DEC-045, DEC-077).
  */
 export function computeSellerBillTotalFromTaxable(taxablePaise: Paise): {
   totalPaise: Paise;

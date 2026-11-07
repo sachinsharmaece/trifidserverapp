@@ -58,9 +58,9 @@ describe('Product margin — the rupee rate maths (₹150 quote, ₹2 margin)', 
     expect(computeBuyerInclusiveRatePaiseWithRupeeMargin(SELLER_NET_PAISE, 200)).toBe(15200);
   });
 
-  it('still prices a percentage margin the way it always did', () => {
+  it('prices a percentage margin on the quote as it stands — no GST on top either', () => {
     expect(computeBuyerRatePaiseWithMargin(SELLER_NET_PAISE, { kind: 'percent', pct: 0.08 })).toBe(
-      19116, // 15000 × 1.08 × 1.18
+      16200, // 15000 × 1.08
     );
     expect(
       computeBuyerRatePaiseWithMargin(SELLER_NET_PAISE, { kind: 'rupees', marginPaise: 200 }),
@@ -352,7 +352,7 @@ describe('Product margin — end to end: a placed order and the buyer feed', () 
     expect(own.totalPaise).toBe(2 * 20 * 15200);
 
     const classOnly = await placeSo(classOnlySku);
-    expect(classOnly.ratePaise).toBe(18585); // 15000 × 1.05 × 1.18 — the class path is unchanged
+    expect(classOnly.ratePaise).toBe(15750); // 15000 × 1.05 — the class % is on the quote too
     expect(classOnly.marginPaiseAtOrder).toBeNull();
     expect(classOnly.marginPctAtOrder).toBe(0.05);
 
@@ -371,7 +371,7 @@ describe('Product margin — end to end: a placed order and the buyer feed', () 
       15000 + 500,
     );
     expect(await computeBuyerFacingRatePaise(buyer, classOnlySku, SELLER_NET_PAISE as never)).toBe(
-      18585,
+      15750,
     );
   });
 });
