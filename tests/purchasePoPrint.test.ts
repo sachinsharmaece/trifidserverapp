@@ -92,6 +92,9 @@ describe('GET /staff/purchase/pos/:poId/print', () => {
     const money = computeSellerLineMoney(10, sku.baseUnitsPerBox, 40000, kind);
     expect(res.body.data.taxablePaise).toBe(money.taxablePaise);
     expect(res.body.data.totalPaise).toBe(money.totalPaise);
+    // His rate includes GST (DEC-077): the PO total is the rate × the quantity, nothing added.
+    expect(res.body.data.totalPaise).toBe(Math.round(10 * sku.baseUnitsPerBox * 40000));
+    expect(line.totalPaise).toBe(res.body.data.totalPaise);
     expect(res.body.data.gst).toMatchObject({
       ratePercent: 18,
       kind,

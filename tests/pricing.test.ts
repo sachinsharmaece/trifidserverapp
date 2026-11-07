@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   computeAbsorptionCapPaise,
   computeBuyerInclusiveRatePaise,
+  computeBuyerInclusiveRatePaiseWithRupeeMargin,
   computeBuyerLineMoney,
   computeExtendedValuePaise,
   computeSellerBillTotalFromTaxable,
@@ -14,10 +15,9 @@ import {
 } from '../src/shared/pricing.js';
 
 // Mostly property tests rather than golden numbers, per the M4 brief. The
-// one golden block below is the client's own worked example from
-// DECISIONS_ROUND2_CHANGESET.md §2, now that DEC-045 has settled the
-// direction (buyer rates are TAX-INCLUSIVE) and the formula is no longer an
-// inference.
+// one golden block below is the worked example from DECISIONS_ROUND2_CHANGESET.md
+// §2, restated on the GST-inclusive basis of DEC-045 and DEC-077 (buyer and
+// seller rates both include GST).
 
 function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -25,35 +25,33 @@ function randomInt(min: number, max: number): number {
 
 const TRIALS = 200;
 
-describe('pricing.ts — the buyer/seller basis asymmetry (DEC-045)', () => {
-  // This is the regression guard for the 18% direction bug found on
-  // 13 Sep 2026: the module had been computing the buyer's total by adding
-  // GST on top of a rate the client says already contains it.
-  it('a buyer rate is grossed up by GST; a seller rate is not', () => {
-    const sellerNetPaise = 371_00;
-    const buyerRate = computeBuyerInclusiveRatePaise(sellerNetPaise, 0);
-    expect(buyerRate).toBeGreaterThan(sellerNetPaise);
-    expect(buyerRate).toBe(Math.round((sellerNetPaise * (100 + GST_RATE_PERCENT)) / 100));
+describe('pricing.ts — every rate is GST-inclusive (DEC-045, DEC-077)', () => {
+  // The regression guard for the two GST bugs: the 13 Sep one (GST added on top of a buyer rate
+  // that already contains it) and the 7 Nov one (GST grossed up onto a seller quote that already
+  // contains it, so a class-% margin sold a ₹150 quote at ₹185.85 while the ₹ margin sold it at ₹152).
+  it('a buyer rate at zero margin is the seller quote — no GST is added', () => {
+    const sellerQuotePaise = 371_00;
+    expect(computeBuyerInclusiveRatePaise(sellerQuotePaise, 0)).toBe(sellerQuotePaise);
   });
 
-  it('the buyer total is NOT the seller total for the same rate and quantity', () => {
-    const boxes = 21;
-    const baseUnitsPerBox = 20;
-    const ratePaise = 446_54;
-    const buyer = computeBuyerLineMoney(boxes, baseUnitsPerBox, ratePaise, 'intra_state');
-    const seller = computeSellerLineMoney(boxes, baseUnitsPerBox, ratePaise, 'intra_state');
-    expect(buyer.totalPaise).toBeLessThan(seller.totalPaise);
-    // The buyer's rate already contains the tax; the seller's does not.
-    expect(buyer.taxablePaise).toBeLessThan(seller.taxablePaise);
+  it('a class % and the same amount in rupees price the buyer identically', () => {
+    // ₹150 quote: 5% is ₹7.50.
+    expect(computeBuyerInclusiveRatePaise(150_00, 0.05)).toBe(157_50);
+    expect(computeBuyerInclusiveRatePaiseWithRupeeMargin(150_00, 7_50)).toBe(157_50);
+  });
+
+  it('the buyer and seller lines for the same rate and quantity are the same money', () => {
+    const buyer = computeBuyerLineMoney(21, 20, 446_54, 'intra_state');
+    const seller = computeSellerLineMoney(21, 20, 446_54, 'intra_state');
+    expect(seller).toEqual(buyer);
   });
 });
 
 describe('pricing.ts — computeBuyerInclusiveRatePaise', () => {
-  it('at zero margin returns the seller net grossed up by GST, never the bare net', () => {
+  it('at zero margin returns the seller quote exactly', () => {
     for (let i = 0; i < TRIALS; i += 1) {
-      const sellerNetPaise = randomInt(1, 10_000_00);
-      const rate = computeBuyerInclusiveRatePaise(sellerNetPaise, 0);
-      expect(rate).toBe(Math.round((sellerNetPaise * (100 + GST_RATE_PERCENT)) / 100));
+      const sellerQuotePaise = randomInt(1, 10_000_00);
+      expect(computeBuyerInclusiveRatePaise(sellerQuotePaise, 0)).toBe(sellerQuotePaise);
     }
   });
 
@@ -153,41 +151,49 @@ describe('pricing.ts — computeBuyerLineMoney (CH §22.2)', () => {
     }
   });
 
-  it('the client worked example — DECISIONS_ROUND2_CHANGESET.md §2', () => {
-    // Roundup 1 LTR, 20 litres to a box, 21 boxes.
-    // Seller quotes ₹371.00/LTR taxable. Class A / Dealer margin 2%.
-    const sellerNetPaise = 371_00;
-    const buyerRate = computeBuyerInclusiveRatePaise(sellerNetPaise, 0.02);
-    expect(buyerRate).toBe(446_54); // ₹446.54/LTR, tax-inclusive
+  it('the worked example — Roundup 1 LTR, 20 litres to a box, 21 boxes', () => {
+    // Seller quotes ₹371.00/LTR, GST included. Class A / Dealer margin 2%.
+    const sellerQuotePaise = 371_00;
+    const buyerRate = computeBuyerInclusiveRatePaise(sellerQuotePaise, 0.02);
+    expect(buyerRate).toBe(378_42); // ₹378.42/LTR, tax-inclusive
 
     const line = computeBuyerLineMoney(21, 20, buyerRate, 'intra_state');
-    expect(line.totalPaise).toBe(18_754_680); // ₹1,87,546.80 — exact
+    expect(line.totalPaise).toBe(15_893_640); // ₹1,58,936.40 — exact
     expect(line.taxablePaise + line.taxPortionPaise).toBe(line.totalPaise);
 
-    // Margin survives the gross-up: TriFid's taxable margin is still 2%.
-    const sellerLine = computeSellerLineMoney(21, 20, sellerNetPaise, 'intra_state');
-    const marginPaise = line.taxablePaise - sellerLine.taxablePaise;
-    expect(marginPaise / sellerLine.taxablePaise).toBeCloseTo(0.02, 4);
+    // TriFid pays the seller his quote, GST included, and keeps the 2% on top of it.
+    const sellerLine = computeSellerLineMoney(21, 20, sellerQuotePaise, 'intra_state');
+    expect(sellerLine.totalPaise).toBe(15_582_000); // 21 × 20 × ₹371.00
+    expect((line.totalPaise - sellerLine.totalPaise) / sellerLine.totalPaise).toBeCloseTo(0.02, 4);
   });
 });
 
 describe('pricing.ts — computeSellerLineMoney / computeSellerBillTotalFromTaxable', () => {
-  it('adds GST on top of the taxable value and rounds once', () => {
-    for (let i = 0; i < TRIALS; i += 1) {
-      const taxablePaise = randomInt(0, 1_000_000_00);
-      const { totalPaise, taxPortionPaise } = computeSellerBillTotalFromTaxable(taxablePaise);
-      expect(taxablePaise + taxPortionPaise).toBe(totalPaise);
-      expect(totalPaise).toBe(Math.round((taxablePaise * (100 + GST_RATE_PERCENT)) / 100));
-    }
-  });
-
-  it('the line taxable value is exact — no rounding at the extension step', () => {
+  it('the line total is the quote times the quantity — what TriFid pays the seller', () => {
     for (let i = 0; i < TRIALS; i += 1) {
       const boxes = randomInt(1, 500);
       const baseUnitsPerBox = randomInt(1, 200);
       const ratePaise = randomInt(1, 50_000);
       const line = computeSellerLineMoney(boxes, baseUnitsPerBox, ratePaise, 'intra_state');
-      expect(line.taxablePaise).toBe(boxes * baseUnitsPerBox * ratePaise);
+      expect(line.totalPaise).toBe(boxes * baseUnitsPerBox * ratePaise);
+      expect(line.taxablePaise + line.taxPortionPaise).toBe(line.totalPaise);
+    }
+  });
+
+  it('GST is split out of the total, not added to it', () => {
+    // ₹150 a litre × 100 litres = ₹15,000 payable; taxable ₹12,711.86, GST ₹2,288.14.
+    const line = computeSellerLineMoney(10, 10, 150_00, 'intra_state');
+    expect(line.totalPaise).toBe(15_000_00);
+    expect(line.taxablePaise).toBe(12_711_86);
+    expect(line.taxPortionPaise).toBe(2_288_14);
+  });
+
+  it('adds GST on top of a taxable figure and rounds once', () => {
+    for (let i = 0; i < TRIALS; i += 1) {
+      const taxablePaise = randomInt(0, 1_000_000_00);
+      const { totalPaise, taxPortionPaise } = computeSellerBillTotalFromTaxable(taxablePaise);
+      expect(taxablePaise + taxPortionPaise).toBe(totalPaise);
+      expect(totalPaise).toBe(Math.round((taxablePaise * (100 + GST_RATE_PERCENT)) / 100));
     }
   });
 

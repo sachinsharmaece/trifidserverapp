@@ -809,12 +809,9 @@ async function findPromotionCandidate(
   soLine: InstanceType<typeof SoLine>,
   excludeSellerId: Types.ObjectId,
 ): Promise<PromotionCandidate | null> {
-  // "Zero margin" is measured the way the line was priced: a product's rupee margin is added to
-  // the quote as it stands, the class percentage is applied to a taxable rate and grossed up.
-  const zeroMargin: BuyerMargin =
-    typeof soLine.marginPaiseAtOrder === 'number'
-      ? { kind: 'rupees', marginPaise: 0 }
-      : { kind: 'percent', pct: 0 };
+  // Both margin kinds are added to the quote as it stands (GST included), so zero margin is the
+  // quote itself.
+  const zeroMargin: BuyerMargin = { kind: 'rupees', marginPaise: 0 };
   const zeroMarginRate = computeBuyerRatePaiseWithMargin(soLine.sellerNetPaise, zeroMargin);
   const zeroMarginTotal = computeBuyerLineMoney(
     soLine.boxes,

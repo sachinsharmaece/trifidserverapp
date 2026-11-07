@@ -18,7 +18,7 @@ export interface AccountsLogEntry {
 export interface AccountsDocLine {
   item: string;
   qty: number;
-  /** Per box. A buyer's SO rate includes GST (DEC-045); a PO rate is taxable. */
+  /** Per box, GST included — an SO's rate (DEC-045) and a PO's rate (DEC-077) alike. */
   ratePaise: number;
   /** The server edits a PO's rate per base unit, not per box. */
   baseUnitsPerBox: number;
