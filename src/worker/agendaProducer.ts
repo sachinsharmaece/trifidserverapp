@@ -27,6 +27,8 @@ export function getAgendaProducer(): Agenda {
 }
 
 export const JOB_CONFIRM_PILE_FANOUT = 'confirm-pile-fanout';
+// A confirmed pile whose fan-out never ran is retried here (modules/demand/pileRecovery.job.ts).
+export const JOB_CONFIRMED_PILE_RECOVERY = 'confirmed-pile-recovery'; // 5 min — BR-137, BR-378
 
 // M8 — recurring jobs, registered by worker/index.ts. Only these four are wired;
 // the other jobs listed in WORKFLOWS.md §3 remain manual actions on purpose.

@@ -130,6 +130,10 @@ export async function getPilesAwaitingDecision(req: Request, res: Response): Pro
   ok(res, req, await purchaseService.getPilesAwaitingDecision());
 }
 
+export async function getPilesConfirmedNotCompleted(req: Request, res: Response): Promise<void> {
+  ok(res, req, await purchaseService.getPilesConfirmedNotCompleted());
+}
+
 export async function getSellerStageFunnelRoute(req: Request, res: Response): Promise<void> {
   ok(res, req, await getSellerStageFunnel(req.params.sellerId as string));
 }

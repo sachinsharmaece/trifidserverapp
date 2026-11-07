@@ -32,6 +32,7 @@ import { writeAuditLog } from '../../../shared/audit.js';
 import { addDays } from '../../../shared/clock.js';
 import { FUNNEL_WINDOW_DAYS, getSellerFunnelMetrics, } from './purchase.funnel.js';
 import { getSellerScorecard } from '../../conduct/conduct.service.js';
+import { RECOVERY_MAX_AGE_MS, RECOVERY_MIN_AGE_MS } from '../../demand/pileRecovery.job.js';
 import { getSellerDealerships, resolveCatalogueEntries, } from './purchase.catalogue.js';
 const RETURN_NOTE_WINDOW_DAYS = 30; // BR-189.
 /**
@@ -805,6 +806,50 @@ export async function getPilesAwaitingDecision() {
             confirmWindowEndsAt: pile.confirmWindowEndsAt.toISOString(),
             chaseLeftHours: Math.round(((pile.confirmWindowEndsAt.getTime() - now) / (60 * 60 * 1000)) * 10) / 10,
             gapText,
+        };
+    });
+}
+export async function getPilesConfirmedNotCompleted(now = new Date()) {
+    const piles = await Pile.find({
+        decision: 'confirmed',
+        executedAt: null,
+        decidedAt: { $lte: new Date(now.getTime() - RECOVERY_MIN_AGE_MS) },
+    }).sort({ decidedAt: 1 });
+    if (piles.length === 0)
+        return [];
+    const lines = await ListingLine.find({ _id: { $in: piles.map((p) => p.listingLineId) } });
+    const lineById = new Map(lines.map((l) => [l._id.toString(), l]));
+    const listings = await Listing.find({ _id: { $in: lines.map((l) => l.listingId) } });
+    const listingById = new Map(listings.map((l) => [l._id.toString(), l]));
+    const firmBySellerId = await getFirmBySellerId(listings.map((l) => l.sellerId));
+    const skus = await Sku.find({ _id: { $in: lines.map((l) => l.skuId) } });
+    const skuById = new Map(skus.map((s) => [s._id.toString(), s]));
+    const products = await Product.find({ _id: { $in: skus.map((s) => s.productId) } });
+    const productById = new Map(products.map((p) => [p._id.toString(), p]));
+    const requests = await PileRequest.find({ pileId: { $in: piles.map((p) => p._id) } });
+    return piles.map((pile) => {
+        const line = lineById.get(pile.listingLineId.toString());
+        const listing = line
+            ? listingById.get(line.listingId.toString())
+            : undefined;
+        const sellerId = listing ? listing.sellerId.toString() : '';
+        const sku = line ? skuById.get(line.skuId.toString()) : undefined;
+        const product = sku ? productById.get(sku.productId.toString()) : undefined;
+        const mine = requests.filter((r) => r.pileId.equals(pile._id));
+        const confirmedAt = pile.decidedAt ?? now;
+        const ageMs = now.getTime() - confirmedAt.getTime();
+        return {
+            pileId: pile._id.toString(),
+            sellerId,
+            sellerFirm: firmBySellerId.get(sellerId) ?? '—',
+            packLabel: sku?.packLabel ?? '—',
+            brand: product?.brand ?? '—',
+            boxes: pile.confirmedQty ?? mine.reduce((sum, r) => sum + r.qty, 0),
+            buyers: new Set(mine.map((r) => r.buyerId.toString())).size,
+            confirmedAt: confirmedAt.toISOString(),
+            minutesSinceConfirmed: Math.round(ageMs / 60_000),
+            lastError: pile.fanoutError ?? null,
+            retrying: ageMs <= RECOVERY_MAX_AGE_MS,
         };
     });
 }

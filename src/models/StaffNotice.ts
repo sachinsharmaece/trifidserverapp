@@ -18,6 +18,7 @@ const staffNoticeSchema = new Schema(
         'rate_change_requested',
         'rate_change_approved',
         'rate_change_rejected',
+        'pile_stuck',
       ],
       required: true,
     },
