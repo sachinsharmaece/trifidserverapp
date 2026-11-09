@@ -35,6 +35,7 @@ import { computeBuyerFacingRatePaise, createListing } from '../listing/listing.s
 import { recordPulseEvent } from '../desk/sales/sales.service.js';
 import { getAgendaProducer, JOB_CONFIRM_PILE_FANOUT } from '../../worker/agendaProducer.js';
 import { runConfirmPileFanout } from './pileFanout.job.js';
+import { assertMarketplaceOpen, isPileRequoteEnabled } from '../marketplace/marketplace.guard.js';
 import { withTransaction } from '../../db/transaction.js';
 import {
   enqueueNotification,
@@ -345,6 +346,22 @@ export async function declineAsk(buyerCounterpartyId: string, askId: string): Pr
   });
 }
 
+/**
+ * After a live quote leaves an ask (taken in a short fill, or withdrawn by staff): the ask stays
+ * `quoted` while another live quote remains, else it is `open` again. BR-126 — the hold starts at a
+ * quote and never restarts; with none left, the next quote is the first of a new round and starts
+ * it (and tells him, `rate_ready`). Saves the ask in the caller's transaction.
+ */
+export async function settleAskAfterQuoteLeaves(
+  ask: InstanceType<typeof Ask>,
+  session: ClientSession,
+): Promise<void> {
+  const stillQuoted = await Quote.exists({ askId: ask._id, status: 'live' }).session(session);
+  ask.state = stillQuoted ? 'quoted' : 'open';
+  if (!stillQuoted) ask.holdExpiresAt = null;
+  await ask.save({ session });
+}
+
 interface AcceptFillInput {
   option: 'partial' | 'full';
   quoteIds: string[];
@@ -381,6 +398,7 @@ export async function acceptAskFill(
   correlationId: string,
   adjustment?: StaffFillAdjustment,
 ): Promise<{ soIds: string[]; filledBoxes: number; remainingBoxes: number }> {
+  await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace takes no quote.
   const buyer = await requireActiveBuyer(buyerCounterpartyId);
   const ask = await Ask.findOne({ _id: askId, buyerId: buyer._id });
   if (!ask) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Ask not found.' });
@@ -461,12 +479,7 @@ export async function acceptAskFill(
     await withTransaction(async (session) => {
       ask.filledQty = (ask.filledQty ?? 0) + filled;
       ask.qty = remaining;
-      const stillQuoted = await Quote.exists({ askId: ask._id, status: 'live' }).session(session);
-      ask.state = stillQuoted ? 'quoted' : 'open';
-      // BR-126 — the hold starts at a quote and never restarts; with none left, the next quote
-      // is the first of a new round and starts it (and tells him, `rate_ready`).
-      if (!stillQuoted) ask.holdExpiresAt = null;
-      await ask.save({ session });
+      await settleAskAfterQuoteLeaves(ask, session);
       await syncEnquiryForAsk(ask._id as Types.ObjectId, session);
     });
     return { soIds, filledBoxes: filled, remainingBoxes: remaining };
@@ -692,6 +705,7 @@ export async function postQuote(
   input: PostQuoteInput,
   options: PostQuoteOptions = {},
 ): Promise<{ quoteId: string }> {
+  await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace takes no new quote.
   const seller = await requireActiveSeller(sellerCounterpartyId);
   await assertCounterpartyActive(sellerCounterpartyId); // QR-015 — blacklist blocks new quotes.
   const ask = await Ask.findById(askId);
@@ -770,6 +784,7 @@ export async function postQuote(
  * Sales wants can be given on one ask. A buyer with no margin cell cannot be given a rate.
  */
 export async function releaseQuote(quoteId: string): Promise<{ quoteId: string; askId: string }> {
+  await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace gives no parked quote.
   assertValidObjectId(quoteId, 'quoteId');
   const quote = await Quote.findById(quoteId);
   if (!quote) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Quote not found.' });
@@ -1027,6 +1042,13 @@ export async function undoPileConfirm(sellerCounterpartyId: string, pileId: stri
 
 /** API-050 requote. Every buyer on the line is asked to accept or cancel — no strike, but scored. */
 export async function requotePile(sellerCounterpartyId: string, pileId: string): Promise<void> {
+  // RECTIFY-01 — requote is being rebuilt (it closes the pile and gives the buyers nothing to accept).
+  if (!(await isPileRequoteEnabled())) {
+    throw new AppError({
+      code: 'VALIDATION_FAILED',
+      messageEn: 'Requote is being rebuilt. Decline or confirm instead.',
+    });
+  }
   const seller = await requireActiveSeller(sellerCounterpartyId);
   const pile = await Pile.findById(pileId);
   const line = pile ? await ListingLine.findById(pile.listingLineId) : null;

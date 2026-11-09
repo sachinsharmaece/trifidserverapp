@@ -1,4 +1,5 @@
 import { acceptOffers } from './pileOfferHelpers.js';
+import { withPileRequoteEnabled } from './requoteFlag.js';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -852,7 +853,7 @@ describe('order_confirmed / payment_due / seller_requoted — the WF-05 pile pat
         .send({ qty: 4, deliveryLocationId: location });
       pileId = res.body.data.pileId as string;
     }
-    await demandService.requotePile(f.seller.counterpartyId, pileId);
+    await withPileRequoteEnabled(() => demandService.requotePile(f.seller.counterpartyId, pileId));
     for (const buyer of buyers) {
       const rows = await outboxRows(buyer.counterpartyId, 'seller_requoted');
       expect(rows).toHaveLength(1);

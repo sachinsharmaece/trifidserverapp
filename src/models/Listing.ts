@@ -8,6 +8,20 @@ import { Schema, model, type InferSchemaType } from 'mongoose';
 export const LISTING_SCOPE_TYPES = ['my_area', 'all_india', 'all_except_mine', 'custom'] as const;
 export type ListingScopeType = (typeof LISTING_SCOPE_TYPES)[number];
 
+/**
+ * RECTIFY-01 — why staff stopped a listing or withdrew a quote. A fixed dropdown, as BR-048's reason
+ * codes are: free text destroys every report built on top of it (CH §27.2); the note carries the detail.
+ */
+export const STOP_REASON_CODES = [
+  'maintenance',
+  'stock_gone',
+  'rate_wrong',
+  'seller_request',
+  'compliance',
+  'other',
+] as const;
+export type StopReasonCode = (typeof STOP_REASON_CODES)[number];
+
 const listingSchema = new Schema(
   {
     productId: { type: Schema.Types.ObjectId, ref: 'Product', required: true },
@@ -25,6 +39,15 @@ const listingSchema = new Schema(
     // reminder goes once per listing rather than once per day.
     // (A relist starts a fresh window, so `relistListing` clears it.)
     dropReminderSentAt: { type: Date, default: null },
+    // RECTIFY-01 Phase 0 — a listing TriFid staff stopped. The state is the existing `paused`; these
+    // say who paused it. While `stoppedBy` is `staff` the seller cannot relist it (only the staff
+    // restart lifts it). All default to null, so a reader that does not know them sees nothing new.
+    stoppedBy: { type: String, enum: ['staff'], default: null },
+    stoppedByEmployeeId: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },
+    stopReasonCode: { type: String, enum: STOP_REASON_CODES, default: null },
+    stopNote: { type: String, default: null },
+    // Set by the emergency script so one run can be undone as one batch (restartStopped.ts).
+    stopBatchId: { type: String, default: null },
   },
   { timestamps: true },
 );

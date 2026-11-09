@@ -19,6 +19,9 @@ const staffNoticeSchema = new Schema(
         'rate_change_approved',
         'rate_change_rejected',
         'pile_stuck',
+        // RECTIFY-01 Phase 0 — a listing was stopped (buyers to call), a rate given to a buyer was withdrawn.
+        'listing_stopped',
+        'rate_withdrawn',
       ],
       required: true,
     },

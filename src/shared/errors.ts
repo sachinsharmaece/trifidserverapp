@@ -85,6 +85,9 @@ export type ErrorCode =
   // 29 Oct — a product that something live still points at (a listing, an ask, a pile, a pool,
   // an unfinished order) cannot be deleted; `meta.inUse` says what. A state refusal.
   | 'PRODUCT_IN_USE'
+  // RECTIFY-01 Phase 0 — config.marketplace_paused is on: new listings, quotes, pile requests and
+  // takes are refused while the desk phones everyone. A state refusal; retrying will not help.
+  | 'MARKETPLACE_PAUSED'
   | 'INTERNAL_ERROR';
 
 const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
@@ -135,6 +138,7 @@ const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
   OUT_OF_SCOPE: 403,
   DUPLICATE_LISTING: 409,
   PRODUCT_IN_USE: 409,
+  MARKETPLACE_PAUSED: 409,
   INTERNAL_ERROR: 500,
 };
 

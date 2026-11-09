@@ -1,5 +1,6 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { DELIVERY_BANDS, EXPIRY_BANDS, PROVENANCE_VALUES } from './ListingLine.js';
+import { STOP_REASON_CODES } from './Listing.js';
 import { proxyLogField } from '../shared/proxyLog.js';
 
 /**
@@ -57,6 +58,12 @@ const quoteSchema = new Schema(
     rank: { type: Number, default: null },
     ofCount: { type: Number, default: null },
     gapCodes: [{ type: String, enum: QUOTE_GAP_CODES }],
+    // RECTIFY-01 Phase 0 — a quote TriFid staff withdrew (`status: 'withdrawn'`). A seller cannot
+    // withdraw his own quote: it binds him for 24 hours (LOCK-08.7). Null on every other quote.
+    withdrawnAt: { type: Date, default: null },
+    withdrawnBy: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },
+    withdrawReasonCode: { type: String, enum: STOP_REASON_CODES, default: null },
+    withdrawNote: { type: String, default: null },
     // Staff-assisted enquiries — present only when Purchase raised this quote on a phone call.
     proxyLog: proxyLogField,
   },
