@@ -391,6 +391,7 @@ describe('4. open piles are declined with no strike, no buyer message, and Sales
       counterpartyId: { $in: [a.cp, b.cp, w.sellerCp] },
     });
     const failuresBefore = await FailureEvent.countDocuments({});
+    const noticesBefore = (await StaffNotice.find({}, { _id: 1 })).map((n) => n._id);
 
     const res = await stop(leader.token, w.listingId, CONFIRM);
     expect(res.body.data).toMatchObject({ stopped: true, pilesClosed: 1 });
@@ -426,6 +427,15 @@ describe('4. open piles are declined with no strike, no buyer message, and Sales
     expect(text).toContain(b.firm);
     expect(text).toContain('10 boxes');
     expect(text).not.toContain(w.sellerFirm);
+
+    // And nobody else: every notice this stop raised went to a buyer's Sales owner — not to his
+    // Sales Leader, not to Purchase, not to the Admins, not to any other Sales person.
+    const expected = new Set(owners);
+    const raised = await StaffNotice.find({ _id: { $nin: noticesBefore } });
+    expect(raised.length).toBeGreaterThan(0);
+    for (const notice of raised) expect(expected.has(String(notice.employeeId))).toBe(true);
+    expect(expected.has(leader.employeeId)).toBe(false); // The Purchase Leader who pressed Stop.
+    expect(expected.has(purchaseExec.employeeId)).toBe(false);
   });
 });
 
@@ -1132,17 +1142,25 @@ describe('9. the emergency scripts', () => {
     expect((await listingRow(a.listingId)).state).toBe('live');
     expect(dry.listingIds).toEqual([a.listingId]);
 
+    const startedOne = new Date();
     const result = await applyStop(dry, {
       reasonCode: 'compliance',
       note: 'Licence check.',
       employeeId: admin.employeeId,
     });
-    // The CSV the plan wrote is what the apply then did.
-    expect(result.rows.map((r) => `${r.type}:${r.id}:${r.action}`)).toEqual(
-      dry.rows.map((r) => `${r.type}:${r.id}:${r.action}`),
-    );
     expect(result.listingsStopped).toBe(1);
     expect(result.failures).toBe(0);
+    // What the plan said is what the database now shows — read from the database, not from the
+    // report: exactly the listings the plan said to stop carry this batch, exactly the quotes it said
+    // to withdraw were withdrawn in the run.
+    expect(
+      (await Listing.find({ stopBatchId: result.stopBatchId })).map((l) => String(l._id)).sort(),
+    ).toEqual([...dry.listingIds].sort());
+    expect(
+      (await Quote.find({ status: 'withdrawn', withdrawnAt: { $gte: startedOne } }))
+        .map((q) => String(q._id))
+        .sort(),
+    ).toEqual([...dry.quoteIds].sort());
     const stopped = (await listingRow(a.listingId))!;
     expect(stopped.state).toBe('paused');
     expect(stopped.stopBatchId).toBe(result.stopBatchId);
@@ -1157,11 +1175,12 @@ describe('9. the emergency scripts', () => {
     expect(all.listingIds).not.toContain(a.listingId); // Already stopped, so no longer live.
     expect(all.listingIds).not.toContain(c.listingId);
     expect(all.listingIds).not.toContain(d.listingId);
+    const startedTwo = new Date();
     const second = await applyStop(all, {
       reasonCode: 'maintenance',
       note: 'Everything.',
       employeeId: admin.employeeId,
-      confirmPools: true, // The pool tests above left listings with open pools behind them.
+      confirmPools: true, // The pool tests above left listings with pools someone is committed to.
     });
     expect((await Quote.findById(quoteId))!.status).toBe('withdrawn');
     expect((await listingRow(bornListing)).stopBatchId).toBe(second.stopBatchId);
@@ -1170,6 +1189,26 @@ describe('9. the emergency scripts', () => {
         .filter((r) => r.type === 'quote')
         .every((r) => /^withdrawn/.test(String(r.outcome))),
     ).toBe(true);
+    // Again from the database. Every listing the plan said to stop carries the batch; the only others
+    // that do are lines born for the quotes it withdrew; every one it said to skip is still live.
+    const inBatch = await Listing.find({ stopBatchId: second.stopBatchId });
+    const inBatchIds = new Set(inBatch.map((l) => String(l._id)));
+    for (const listingId of all.listingIds) expect(inBatchIds.has(listingId)).toBe(true);
+    for (const l of inBatch) {
+      if (!all.listingIds.includes(String(l._id))) expect(l.origin).toBe('quote_born');
+    }
+    const skippedRows = all.rows.filter((r) => r.type === 'listing' && r.action === 'skip');
+    expect(skippedRows.length).toBeGreaterThan(0); // The paid-pool listing left by the pool tests.
+    for (const row of skippedRows) {
+      expect(inBatchIds.has(String(row.id))).toBe(false);
+      expect((await listingRow(String(row.id))).state).toBe('live');
+    }
+    expect(second.listingsSkipped).toBe(skippedRows.length);
+    expect(
+      (await Quote.find({ status: 'withdrawn', withdrawnAt: { $gte: startedTwo } }))
+        .map((q) => String(q._id))
+        .sort(),
+    ).toEqual([...all.quoteIds].sort());
 
     // Restart batch one: exactly its listing, no more.
     const toRestart = await planRestart(result.stopBatchId);
