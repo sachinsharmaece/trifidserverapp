@@ -403,6 +403,11 @@ interface MyListingLineItem {
   state: string;
   expiresAt: Date;
   daysRemaining: number;
+  /**
+   * RECTIFY-01 — present (and true) only when TriFid paused the listing: the app hides Relist and says
+   * "Paused by TriFid — call the desk". No reason or note is ever sent to the seller.
+   */
+  stoppedByTriFid?: true;
 }
 
 /** API-034. My stock — listings with days remaining, filterable by origin and state. */
@@ -443,6 +448,7 @@ export async function getMyListings(
         0,
         Math.ceil((listing.expiresAt.getTime() - now) / (24 * 60 * 60 * 1000)),
       ),
+      ...(listing.stoppedBy === 'staff' ? { stoppedByTriFid: true as const } : {}),
     };
   });
 }

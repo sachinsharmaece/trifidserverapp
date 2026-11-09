@@ -36,6 +36,7 @@ import {
   createPileRequest,
   computeBuyerFacingRatePaise,
   getBuyerFeed,
+  getMyListings,
   getProductOffers,
   pauseListing,
   relistListing,
@@ -1636,6 +1637,39 @@ describe('11. the wall', () => {
     for (const notice of purchaseNotices) {
       for (const firm of buyerFirms) expect(`${notice.title} ${notice.body}`).not.toContain(firm);
     }
+  });
+
+  it('tells the seller TriFid stopped a listing, never why; and keeps both notes from everyone but Purchase', async () => {
+    const PRIVATE = 'ZZ-private-note-ZZ';
+    const w = await world(1);
+    const untouched = await getMyListings(w.sellerCp, {});
+    expect(untouched.every((item) => !('stoppedByTriFid' in item))).toBe(true);
+
+    const { quoteId } = await liveQuote(w);
+    await stop(leader.token, w.listingId, { ...CONFIRM, note: PRIVATE });
+    await withdraw(leader.token, quoteId, { ...CONFIRM, note: PRIVATE });
+
+    // The app can hide Relist and say "Paused by TriFid — call the desk".
+    const mine = await getMyListings(w.sellerCp, {});
+    expect(mine.find((item) => item.listingId === w.listingId)).toMatchObject({
+      state: 'paused',
+      stoppedByTriFid: true,
+    });
+    const quotes = await demandService.listMyQuotes(w.sellerCp);
+    expect(quotes.find((q) => q.quoteId === quoteId)!.status).toBe('withdrawn');
+
+    // Neither note is in anything the seller reads, nor in any notice any staff member gets.
+    const notices = (await StaffNotice.find({})).map((n) => `${n.title} ${n.body} ${n.link ?? ''}`);
+    for (const text of [JSON.stringify(mine), JSON.stringify(quotes), ...notices]) {
+      expect(text).not.toContain(PRIVATE);
+    }
+
+    // After the restart the flag is gone again.
+    await restart(leader.token, w.listingId);
+    const after = await getMyListings(w.sellerCp, {});
+    expect(after.find((item) => item.listingId === w.listingId)).not.toHaveProperty(
+      'stoppedByTriFid',
+    );
   });
 });
 
