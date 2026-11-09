@@ -32,6 +32,18 @@ export async function assertMarketplaceOpen(): Promise<void> {
   }
 }
 
+export const STOPPED_BY_TRIFID_MESSAGE = 'TriFid has paused this listing. Call the purchase desk.';
+
+/**
+ * A listing TriFid stopped is lifted only by the staff restart. Whatever else a caller is doing on
+ * it — relisting, confirming a pile — is refused while that holds, whether or not the brake is on.
+ */
+export function assertNotStoppedByStaff(listing: { stoppedBy?: string | null }): void {
+  if (listing.stoppedBy === 'staff') {
+    throw new AppError({ code: 'VALIDATION_FAILED', messageEn: STOPPED_BY_TRIFID_MESSAGE });
+  }
+}
+
 /**
  * RECTIFY-01 Phase 0 — `config.pile_requote_enabled`, ships off. Requote is being rebuilt: with the
  * flag off `requotePile` is refused, because it closes the pile and tells every buyer "accept or

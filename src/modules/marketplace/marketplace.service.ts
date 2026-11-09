@@ -2,10 +2,7 @@ import type { ClientSession, Types } from 'mongoose';
 import { PERMISSIONS } from '../../config/permissions.js';
 import { withTransaction } from '../../db/transaction.js';
 import { Ask } from '../../models/Ask.js';
-import { BookAssignment } from '../../models/BookAssignment.js';
-import { Buyer } from '../../models/Buyer.js';
 import { Counterparty } from '../../models/Counterparty.js';
-import { Employee } from '../../models/Employee.js';
 import { Listing, type StopReasonCode } from '../../models/Listing.js';
 import { ListingLine } from '../../models/ListingLine.js';
 import { Pile } from '../../models/Pile.js';
@@ -15,7 +12,6 @@ import { PoolCommitment } from '../../models/PoolCommitment.js';
 import { Product } from '../../models/Product.js';
 import { OPEN_QUOTE_STATUSES, Quote } from '../../models/Quote.js';
 import { OPEN_RATE_CHANGE_STATUSES, RateChangeRequest } from '../../models/RateChangeRequest.js';
-import { Role } from '../../models/Role.js';
 import { Seller } from '../../models/Seller.js';
 import { Sku } from '../../models/Sku.js';
 import { So } from '../../models/So.js';
@@ -23,12 +19,24 @@ import { writeAuditLog } from '../../shared/audit.js';
 import { addDays } from '../../shared/clock.js';
 import { AppError } from '../../shared/errors.js';
 import { assertValidObjectId } from '../../shared/objectId.js';
-import { leaderOf } from '../../shared/team.js';
 import { settleAskAfterQuoteLeaves } from '../demand/demand.service.js';
-import { syncEnquiriesForPile, syncEnquiryForAsk } from '../enquiry/enquiry.sync.js';
+import { syncEnquiryForAsk } from '../enquiry/enquiry.sync.js';
 import { LISTING_LIFE_DAYS } from '../listing/listing.service.js';
 import { isProductSellable } from '../listing/listing.sellable.js';
 import { notifyStaff } from '../notice/notice.service.js';
+import {
+  activeAdminIds,
+  declineOpenPiles,
+  firmOfBuyer,
+  id,
+  productNameOf,
+  reasonText,
+  salesDeskFor,
+  tellSalesToCall,
+  type StopContext,
+} from './marketplace.closure.js';
+
+export type { StopContext } from './marketplace.closure.js';
 
 /**
  * RECTIFY-01 Phase 0 — staff stop trading at once.
@@ -58,64 +66,8 @@ export interface StopInput {
   confirmPools?: boolean;
 }
 
-/** What one act is done for, and by whom — handed down to every cascaded change. */
-export interface StopContext {
-  employeeId: string;
-  correlationId: string;
-  reasonCode: StopReasonCode;
-  note: string;
-  /** Set by the emergency script so one run can be undone as one batch. */
-  stopBatchId: string | null;
-  now: Date;
-}
-
-const id = (value: unknown): string => String(value);
-const reasonText = (ctx: Pick<StopContext, 'reasonCode' | 'note'>): string =>
-  `${ctx.reasonCode}: ${ctx.note}`;
-
 // Orders that are finished one way or the other; everything else is "open" for the preview.
 const FINISHED_ORDER_STATES = ['closed', 'cancelled', 'supply_failed'];
-
-async function activeAdminIds(): Promise<string[]> {
-  const adminRole = await Role.findOne({ key: 'admin' }, { _id: 1 });
-  if (!adminRole) return [];
-  const admins = await Employee.find({ active: true, roleIds: adminRole._id }, { _id: 1 });
-  return admins.map((admin) => id(admin._id));
-}
-
-/**
- * Who on the Sales desk hears about this buyer: his book owner and that owner's Sales Leader. A buyer
- * in the Queue, or whose owner has left, goes to the active Admins — the same fallback the
- * rate-change notices use.
- */
-async function salesDeskFor(buyerId: unknown, admins: () => Promise<string[]>): Promise<string[]> {
-  const assignment = await BookAssignment.findOne({ buyerId }, { ownerEmployeeId: 1 });
-  const ids: string[] = [];
-  if (assignment) {
-    const owner = id(assignment.ownerEmployeeId);
-    ids.push(owner);
-    const leader = await leaderOf('sales', owner);
-    if (leader) ids.push(leader);
-  }
-  if (ids.length > 0) {
-    const active = await Employee.find({ _id: { $in: ids }, active: true }, { _id: 1 });
-    if (active.length > 0) return active.map((employee) => id(employee._id));
-  }
-  return admins();
-}
-
-async function firmOfBuyer(buyerId: unknown): Promise<string> {
-  const buyer = await Buyer.findById(buyerId, { counterpartyId: 1 });
-  const counterparty = buyer
-    ? await Counterparty.findById(buyer.counterpartyId, { firm: 1 })
-    : null;
-  return counterparty?.firm ?? 'a buyer';
-}
-
-async function productNameOf(productId: unknown): Promise<string> {
-  const product = await Product.findById(productId, { brand: 1 });
-  return product?.brand ?? 'a listed product';
-}
 
 // ---------------------------------------------------------------------------
 // Stopping a listing
@@ -363,95 +315,6 @@ async function pauseAsStopped(
   return true;
 }
 
-/**
- * Open piles on the stopped lines (no decision yet) close as a desk decline: the same write the
- * seller's own decline makes, so the enquiries read `declined` — but no strike, and the buyers are
- * not told (LOCK-24.1 to .3). Returns who was on them, for the Sales call list.
- */
-async function declineOpenPiles(
-  lineIds: Array<Types.ObjectId | string>,
-  ctx: StopContext,
-  session: ClientSession,
-): Promise<{ pilesClosed: number; toCall: Array<{ buyerId: Types.ObjectId; boxes: number }> }> {
-  const piles = await Pile.find({ listingLineId: { $in: lineIds }, decision: null }).session(
-    session,
-  );
-  const toCall: Array<{ buyerId: Types.ObjectId; boxes: number }> = [];
-  let pilesClosed = 0;
-  for (const pile of piles) {
-    // The decision is the lock: a seller deciding the same pile at this instant finds it taken.
-    const claimed = await Pile.findOneAndUpdate(
-      { _id: pile._id, decision: null },
-      { $set: { decision: 'declined', decidedAt: ctx.now, deskDeclined: true } },
-      { session },
-    );
-    if (!claimed) continue;
-    pilesClosed += 1;
-    const requests = await PileRequest.find({ pileId: pile._id }).session(session);
-    for (const request of requests) {
-      toCall.push({ buyerId: request.buyerId as Types.ObjectId, boxes: request.qty });
-    }
-    await writeAuditLog(
-      {
-        actorId: ctx.employeeId,
-        actorType: 'staff',
-        entity: 'pile',
-        entityId: pile._id as Types.ObjectId,
-        field: 'decision',
-        oldValue: null,
-        newValue: 'declined (listing stopped by TriFid)',
-        reason: reasonText(ctx),
-        correlationId: ctx.correlationId,
-      },
-      session,
-    );
-    await syncEnquiriesForPile(pile._id as Types.ObjectId, session, ctx.now);
-  }
-  return { pilesClosed, toCall };
-}
-
-/** Tells each Sales person which of the buyers they own to ring. Buyers' names are Sales's to see; the seller's never. */
-async function tellSalesToCall(
-  buyers: Array<{ buyerId: Types.ObjectId; boxes: number }>,
-  productName: string,
-  ctx: StopContext,
-  session: ClientSession,
-): Promise<void> {
-  if (buyers.length === 0) return;
-  let adminCache: Promise<string[]> | null = null;
-  const admins = () => (adminCache ??= activeAdminIds());
-
-  // One line per buyer (boxes added up across his piles), grouped by who hears of him.
-  const boxesByBuyer = new Map<string, number>();
-  for (const { buyerId, boxes } of buyers) {
-    boxesByBuyer.set(id(buyerId), (boxesByBuyer.get(id(buyerId)) ?? 0) + boxes);
-  }
-  const byRecipient = new Map<string, string[]>();
-  for (const buyerId of boxesByBuyer.keys()) {
-    for (const employeeId of await salesDeskFor(buyerId, admins)) {
-      byRecipient.set(employeeId, [...(byRecipient.get(employeeId) ?? []), buyerId]);
-    }
-  }
-  for (const [employeeId, buyerIds] of byRecipient) {
-    const lines: string[] = [];
-    for (const buyerId of buyerIds) {
-      lines.push(`${await firmOfBuyer(buyerId)} (${boxesByBuyer.get(buyerId)} boxes)`);
-    }
-    await notifyStaff(
-      [employeeId],
-      {
-        kind: 'listing_stopped',
-        title: `Listing stopped: ${productName} — call the buyers`,
-        body:
-          `TriFid stopped a listing of ${productName}. Their requests on it are closed and they ` +
-          `have not been told. Please call: ${lines.join(', ')}.`,
-        link: buyerIds.length === 1 ? `/sales/buyers/${buyerIds[0]}` : null,
-      },
-      session,
-    );
-  }
-}
-
 export interface StopOutcome {
   /** False when the listing was already stopped by staff: nothing was changed. */
   stopped: boolean;
@@ -476,7 +339,7 @@ export async function executeStop(
     if (!changed) return { stopped: false, pilesClosed: 0, quotesWithdrawn: 0 };
 
     const { pilesClosed, toCall } = await declineOpenPiles(lineIds, ctx, session);
-    await tellSalesToCall(toCall, productName, ctx, session);
+    await tellSalesToCall(toCall, productName, session);
 
     // Any parked or live quote on these lines goes with the listing — whether the line was born for
     // the quote or was the seller's own that the quote reused. The listing is already stopped, so
@@ -635,16 +498,26 @@ export interface QuoteImpact {
     rateChangeRequestsLapsed: number;
     /** Its quote-born listing line stops, because no other open quote points at it. */
     linePaused: boolean;
+    /** The buyers' open piles on that line, which close as a desk decline when the line stops. Sales is told to call them. */
+    pilesDeclined: number;
   };
-  /** Piles open on the quote's line. They stay open: stop the listing to close them. */
+  /** Piles open on the quote's line. They close with the line (`willHappen.pilesDeclined`); on a line that stays live they stay open. */
   openPilesOnLine: number;
   ordersUntouched: number;
 }
 
+/**
+ * The listing a withdrawal stops with the quote: the one born for it, when no other open quote points
+ * at it. `lineIds` is every line of that listing, because the whole listing is paused.
+ */
 async function lineStopPlan(
   quote: InstanceType<typeof Quote>,
   session?: ClientSession,
-): Promise<{ listingId: Types.ObjectId; lineId: Types.ObjectId } | null> {
+): Promise<{
+  listingId: Types.ObjectId;
+  productId: Types.ObjectId;
+  lineIds: Types.ObjectId[];
+} | null> {
   if (!quote.listingLineId) return null; // Older quotes were never published as a line.
   const line = await ListingLine.findById(quote.listingLineId).session(session ?? null);
   const listing = line ? await Listing.findById(line.listingId).session(session ?? null) : null;
@@ -656,9 +529,15 @@ async function lineStopPlan(
     _id: { $ne: quote._id },
     status: { $in: [...OPEN_QUOTE_STATUSES] },
   }).session(session ?? null);
-  return others
-    ? null
-    : { listingId: listing._id as Types.ObjectId, lineId: line._id as Types.ObjectId };
+  if (others) return null;
+  const lines = await ListingLine.find({ listingId: listing._id }, { _id: 1 }).session(
+    session ?? null,
+  );
+  return {
+    listingId: listing._id as Types.ObjectId,
+    productId: listing.productId as Types.ObjectId,
+    lineIds: lines.map((each) => each._id as Types.ObjectId),
+  };
 }
 
 export async function getQuoteImpact(quote: InstanceType<typeof Quote>): Promise<QuoteImpact> {
@@ -685,6 +564,9 @@ export async function getQuoteImpact(quote: InstanceType<typeof Quote>): Promise
   const openPilesOnLine = quote.listingLineId
     ? await Pile.countDocuments({ listingLineId: quote.listingLineId, decision: null })
     : 0;
+  const pilesDeclined = plan
+    ? await Pile.countDocuments({ listingLineId: { $in: plan.lineIds }, decision: null })
+    : 0;
   const ordersUntouched = await So.countDocuments({
     askId: quote.askId,
     sellerId: quote.sellerId,
@@ -709,6 +591,7 @@ export async function getQuoteImpact(quote: InstanceType<typeof Quote>): Promise
       askStaysQuoted: wasLive && ask?.state === 'quoted' && Boolean(otherLive),
       rateChangeRequestsLapsed: rateChanges,
       linePaused: plan !== null,
+      pilesDeclined,
     },
     openPilesOnLine,
     ordersUntouched,
@@ -725,7 +608,7 @@ export async function withdrawQuoteInSession(
   ctx: StopContext,
   session: ClientSession,
   options: { listingAlreadyStopped?: boolean } = {},
-): Promise<{ withdrawn: boolean; linePaused: boolean }> {
+): Promise<{ withdrawn: boolean; linePaused: boolean; pilesClosed: number }> {
   const before = await Quote.findOneAndUpdate(
     { _id: quoteId, status: { $in: [...OPEN_QUOTE_STATUSES] } },
     {
@@ -739,7 +622,7 @@ export async function withdrawQuoteInSession(
     },
     { session },
   );
-  if (!before) return { withdrawn: false, linePaused: false };
+  if (!before) return { withdrawn: false, linePaused: false, pilesClosed: 0 };
   const wasLive = before.status === 'live';
 
   await writeAuditLog(
@@ -825,12 +708,24 @@ export async function withdrawQuoteInSession(
     );
   }
 
+  // The line born for this quote stops with it — and, as in a Stop, the buyers' open piles on it close
+  // as a desk decline and Sales is told whom to ring. Left open they could still be confirmed, and the
+  // fan-out would then give the buyers a 24-hour deal at the rate TriFid has just withdrawn. Deals
+  // already offered are left to run, as with a Stop.
   let linePaused = false;
+  let pilesClosed = 0;
   if (!options.listingAlreadyStopped) {
     const plan = await lineStopPlan(before, session);
-    if (plan) linePaused = await pauseAsStopped(plan.listingId, ctx, session);
+    if (plan) {
+      linePaused = await pauseAsStopped(plan.listingId, ctx, session);
+      if (linePaused) {
+        const closed = await declineOpenPiles(plan.lineIds, ctx, session);
+        pilesClosed = closed.pilesClosed;
+        await tellSalesToCall(closed.toCall, await productNameOf(plan.productId), session);
+      }
+    }
   }
-  return { withdrawn: true, linePaused };
+  return { withdrawn: true, linePaused, pilesClosed };
 }
 
 export type WithdrawQuoteResult =
@@ -842,6 +737,8 @@ export type WithdrawQuoteResult =
       /** False when the quote was already withdrawn: nothing was changed. */
       withdrawn: boolean;
       linePaused: boolean;
+      /** Open piles on the paused line, closed as a desk decline. */
+      pilesClosed: number;
     };
 
 /** POST /staff/quotes/:id/withdraw — the impact preview, or (with `confirm: true`) the withdrawal. */
@@ -865,7 +762,14 @@ export async function withdrawQuote(
   const preview = await getQuoteImpact(quote);
   if (input.confirm !== true) return { confirmed: false, preview };
   if (preview.alreadyWithdrawn) {
-    return { confirmed: true, quoteId, preview, withdrawn: false, linePaused: false };
+    return {
+      confirmed: true,
+      quoteId,
+      preview,
+      withdrawn: false,
+      linePaused: false,
+      pilesClosed: 0,
+    };
   }
   const outcome = await withTransaction((session) =>
     withdrawQuoteInSession(

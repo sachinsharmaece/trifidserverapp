@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import { Ask } from '../src/models/Ask.js';
 import { AuditLog } from '../src/models/AuditLog.js';
@@ -582,6 +582,137 @@ describe("7. a quote's own line is paused with it; the seller's own line is left
     expect(res.body.data.linePaused).toBe(false);
     const listingOfLine = (await ListingLine.findById(line))!.listingId;
     expect((await Listing.findById(listingOfLine))!.state).toBe('live');
+  });
+});
+
+describe("7b. withdrawing a quote closes the buyers' open piles on its line, as a stop does", () => {
+  async function bornLine(w: World, buyerIndex = 0) {
+    const { quoteId } = await liveQuote(w, buyerIndex);
+    const quote = (await Quote.findById(quoteId))!;
+    const line = (await ListingLine.findById(quote.listingLineId))!;
+    return { quoteId, lineId: String(line._id), listingId: String(line.listingId) };
+  }
+
+  it('declines the open piles, tells Sales whom to ring, and nobody can then confirm one', async () => {
+    const w = await world(2);
+    const born = await bornLine(w, 0);
+    const pile = await createPileRequest(w.buyers[1]!.cp, born.lineId, { qty: 4 });
+    const noticesBefore = (await StaffNotice.find({}, { _id: 1 })).map((n) => n._id);
+    const failuresBefore = await FailureEvent.countDocuments({});
+
+    // The preview says so before anything is written.
+    const preview = await withdraw(leader.token, born.quoteId, REASON);
+    expect(preview.body.data.preview.willHappen).toMatchObject({
+      linePaused: true,
+      pilesDeclined: 1,
+    });
+    expect((await Pile.findById(pile.pileId))!.decision ?? null).toBeNull();
+
+    const res = await withdraw(leader.token, born.quoteId, CONFIRM);
+    expect(res.body.data).toMatchObject({ withdrawn: true, linePaused: true, pilesClosed: 1 });
+    expect((await listingRow(born.listingId)).state).toBe('paused');
+    expect(await Pile.findById(pile.pileId)).toMatchObject({
+      decision: 'declined',
+      deskDeclined: true,
+    });
+    const requests = await PileRequest.find({ pileId: pile.pileId });
+    const enquiries = await Enquiry.find({ pileRequestId: { $in: requests.map((r) => r._id) } });
+    expect(enquiries).toHaveLength(1);
+    expect(enquiries.every((e) => e.status === 'declined')).toBe(true);
+    expect(await FailureEvent.countDocuments({})).toBe(failuresBefore); // No strike.
+
+    // Sales is told whom to ring: the buyer by name with his boxes, never the seller.
+    const raised = await StaffNotice.find({
+      _id: { $nin: noticesBefore },
+      kind: 'listing_stopped',
+    });
+    const text = raised.map((n) => `${n.title} ${n.body}`).join(' ');
+    expect(text).toContain(w.buyers[1]!.firm);
+    expect(text).toContain('4 boxes');
+    expect(text).not.toContain(w.sellerFirm);
+
+    // The seller cannot confirm it, and the fan-out gives nobody a deal at the withdrawn rate.
+    await expect(
+      demandService.confirmPile(
+        w.sellerCp,
+        pile.pileId,
+        { canSendBoxes: 4, expiryExact: '2029' },
+        randomUUID(),
+      ),
+    ).rejects.toMatchObject({ code: 'PILE_ALREADY_DECIDED' });
+    await runConfirmPileFanout(pile.pileId);
+    expect(await PileRequest.countDocuments({ pileId: pile.pileId, offerState: 'offered' })).toBe(
+      0,
+    );
+  });
+
+  it("leaves the piles open when the line stays live (the seller's own line the quote reused)", async () => {
+    const w = await world(2);
+    await Listing.updateOne({ _id: w.listingId }, { $set: { origin: 'seller_initiated' } });
+    await ListingLine.updateOne(
+      { _id: w.lineId },
+      { $set: { expiryExact: '12/2099', ratePaise: SELLER_NET } },
+    );
+    const { quoteId } = await liveQuote(w, 0);
+    expect(String((await Quote.findById(quoteId))!.listingLineId)).toBe(w.lineId);
+    const pile = await createPileRequest(w.buyers[1]!.cp, w.lineId, { qty: 3 });
+
+    const res = await withdraw(leader.token, quoteId, CONFIRM);
+    expect(res.body.data).toMatchObject({ withdrawn: true, linePaused: false, pilesClosed: 0 });
+    expect((await Pile.findById(pile.pileId))!.decision ?? null).toBeNull();
+  });
+});
+
+describe('7c. a listing TriFid stopped confirms nothing', () => {
+  const confirmInput = { canSendBoxes: 4, expiryExact: '2029' };
+
+  it('refuses the seller and Purchase on a call, with the brake off', async () => {
+    const w = await world(1);
+    const { pileId } = await createPileRequest(w.buyers[0]!.cp, w.lineId, { qty: 4 });
+    // A group left open on a stopped listing: the state a quote withdrawal used to leave behind.
+    await Listing.updateOne(
+      { _id: w.listingId },
+      { $set: { state: 'paused', stoppedBy: 'staff' } },
+    );
+    await expect(
+      demandService.confirmPile(w.sellerCp, pileId, confirmInput, randomUUID()),
+    ).rejects.toMatchObject({
+      messageEn: 'TriFid has paused this listing. Call the purchase desk.',
+    });
+
+    const onTheCall = await request(app)
+      .post(`/api/v1/staff/proxy/seller/confirmations/${pileId}/confirm`)
+      .set(auth(purchaseExec.token))
+      .set('Idempotency-Key', idem())
+      .send({ sellerCounterpartyId: w.sellerCp, canSendBoxes: 4 });
+    expect(onTheCall.status).toBe(400);
+    expect(onTheCall.body.error.message_en).toMatch(/TriFid has paused this listing/);
+    expect((await Pile.findById(pileId))!.decision ?? null).toBeNull();
+  });
+
+  it('does not overwrite a decline that lands while the confirm is running', async () => {
+    const w = await world(1);
+    const { pileId } = await createPileRequest(w.buyers[0]!.cp, w.lineId, { qty: 4 });
+    // The stop's decline arrives between the confirm reading the pile and writing its decision.
+    const original = PileRequest.find.bind(PileRequest) as (...args: unknown[]) => unknown;
+    const spy = vi
+      .spyOn(PileRequest, 'find')
+      .mockImplementationOnce(((...args: unknown[]) =>
+        Pile.updateOne(
+          { _id: pileId },
+          { $set: { decision: 'declined', deskDeclined: true, decidedAt: new Date() } },
+        ).then(() => original(...args))) as never);
+    try {
+      await expect(
+        demandService.confirmPile(w.sellerCp, pileId, confirmInput, randomUUID()),
+      ).rejects.toMatchObject({ code: 'PILE_ALREADY_DECIDED' });
+    } finally {
+      spy.mockRestore();
+    }
+    const pile = (await Pile.findById(pileId))!;
+    expect(pile).toMatchObject({ decision: 'declined', deskDeclined: true });
+    expect(pile.confirmedQty ?? null).toBeNull();
+    expect(pile.sellerLockedUntil ?? null).toBeNull();
   });
 });
 

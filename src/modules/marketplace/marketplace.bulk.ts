@@ -9,13 +9,13 @@ import { Role } from '../../models/Role.js';
 import { Seller } from '../../models/Seller.js';
 import { Sku } from '../../models/Sku.js';
 import { assertValidObjectId } from '../../shared/objectId.js';
+import type { StopContext } from './marketplace.closure.js';
 import {
   executeStop,
   getListingImpact,
   getQuoteImpact,
   restartListing,
   withdrawQuoteInSession,
-  type StopContext,
 } from './marketplace.service.js';
 
 /**

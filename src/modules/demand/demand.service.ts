@@ -35,7 +35,11 @@ import { computeBuyerFacingRatePaise, createListing } from '../listing/listing.s
 import { recordPulseEvent } from '../desk/sales/sales.service.js';
 import { getAgendaProducer, JOB_CONFIRM_PILE_FANOUT } from '../../worker/agendaProducer.js';
 import { runConfirmPileFanout } from './pileFanout.job.js';
-import { assertMarketplaceOpen, isPileRequoteEnabled } from '../marketplace/marketplace.guard.js';
+import {
+  assertMarketplaceOpen,
+  assertNotStoppedByStaff,
+  isPileRequoteEnabled,
+} from '../marketplace/marketplace.guard.js';
 import { withTransaction } from '../../db/transaction.js';
 import {
   enqueueNotification,
@@ -953,6 +957,8 @@ export async function confirmPile(
     : null;
   if (!line || !listing)
     throw new AppError({ code: 'NOT_FOUND', messageEn: 'Listing line not found.' });
+  // RECTIFY-01 — a listing TriFid stopped confirms nothing, from the seller or from Purchase on a call.
+  assertNotStoppedByStaff(listing);
 
   // The expiry he gives now, else the one the listing was entered with. The year is the least needed.
   const expiryExact = input.expiryExact ?? line.expiryExact ?? undefined;
@@ -975,13 +981,28 @@ export async function confirmPile(
   const now = new Date();
   // DEC-051 — the decision, the line and every buyer's enquiry on this pile commit together.
   await withTransaction(async (session) => {
-    pile.decision = 'confirmed';
-    pile.decidedAt = now;
-    pile.confirmedQty = Math.min(input.canSendBoxes, totalAsked);
-    pile.expiryExact = expiryExact ?? null;
-    pile.batch = input.batch ?? null;
-    pile.sellerLockedUntil = addHours(now, 24); // BR-032.
-    await pile.save({ session });
+    // The decision is the lock: written only while it is still empty, so a staff stop that declined
+    // this pile an instant ago is not overwritten by the seller's confirm.
+    const claimed = await Pile.findOneAndUpdate(
+      { _id: pile._id, decision: null },
+      {
+        $set: {
+          decision: 'confirmed',
+          decidedAt: now,
+          confirmedQty: Math.min(input.canSendBoxes, totalAsked),
+          expiryExact: expiryExact ?? null,
+          batch: input.batch ?? null,
+          sellerLockedUntil: addHours(now, 24), // BR-032.
+        },
+      },
+      { session },
+    );
+    if (!claimed) {
+      throw new AppError({
+        code: 'PILE_ALREADY_DECIDED',
+        messageEn: 'This pile has already been decided.',
+      });
+    }
 
     // With no expiry (staff path only) the line is left as it was: nothing is fixed, so nothing
     // displays (the buyer feed shows an expiry only when `expiryFixed && expiryExact`).
