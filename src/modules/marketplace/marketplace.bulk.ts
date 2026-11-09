@@ -11,6 +11,7 @@ import { Sku } from '../../models/Sku.js';
 import { assertValidObjectId } from '../../shared/objectId.js';
 import type { StopContext } from './marketplace.closure.js';
 import {
+  SELLER_REQUOTES,
   executeStop,
   getListingImpact,
   getQuoteImpact,
@@ -364,6 +365,8 @@ export type RestartPlanRow = {
   outcome: string;
 };
 
+export { SELLER_REQUOTES };
+
 /**
  * The listings a batch stopped and that are still staff-stopped. A listing the seller paused himself
  * is never in a batch, so is never touched; one already restarted by hand is no longer staff-stopped
@@ -388,7 +391,8 @@ export async function applyRestart(
         { note: `Restart of stop batch ${stopBatchId}.` },
         { ...caller, permissions: [] },
       );
-      outcome = done.restarted ? 'restarted' : 'unchanged';
+      // A line born for a withdrawn quote has nothing behind it to put back: "seller re-quotes".
+      outcome = done.skipped ?? (done.restarted ? 'restarted' : 'unchanged');
     } catch (error) {
       outcome = `not restarted: ${error instanceof Error ? error.message : String(error)}`;
     }

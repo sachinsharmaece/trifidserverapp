@@ -4,11 +4,15 @@ import mongoose from 'mongoose';
 import { env } from '../config/env.js';
 import { connectToDatabase, disconnectFromDatabase } from '../db/connect.js';
 import {
+  SELLER_REQUOTES,
   applyRestart,
   planRestart,
   resolveActor,
 } from '../modules/marketplace/marketplace.bulk.js';
-import { getListingImpact } from '../modules/marketplace/marketplace.service.js';
+import {
+  getListingImpact,
+  isQuoteBornWithoutOpenQuote,
+} from '../modules/marketplace/marketplace.service.js';
 import {
   argValue,
   assertDatabaseAllowed,
@@ -56,13 +60,20 @@ async function run(): Promise<void> {
         listingId: String(listing._id),
         seller: impact.listing.sellerFirm,
         product: impact.listing.product,
-        outcome: 'to restart',
+        // A line born for a quote that was withdrawn has nothing behind it to put back.
+        outcome: (await isQuoteBornWithoutOpenQuote(listing)) ? SELLER_REQUOTES : 'to restart',
       });
     }
     const planPath = writeReport(join(outDir, `restart-stopped-plan-${at}.csv`), COLUMNS, planned);
+    const requote = planned.filter((row) => row.outcome === SELLER_REQUOTES).length;
     console.log(`Batch ${batch}: ${planned.length} listing(s) still stopped by staff.`);
     console.log(`Plan written to ${planPath}`);
     console.log('Withdrawn quotes do not come back: sellers re-quote and Sales gives them again.');
+    if (requote > 0) {
+      console.log(
+        `  ${requote} of them were made for a withdrawn quote and are NOT restarted ("${SELLER_REQUOTES}").`,
+      );
+    }
     if (!apply) {
       console.log('Dry run: nothing was changed. Re-run with --apply to restart them.');
       return;
@@ -74,9 +85,14 @@ async function run(): Promise<void> {
     });
     const resultPath = writeReport(join(outDir, `restart-stopped-result-${at}.csv`), COLUMNS, rows);
     const restarted = rows.filter((row) => row.outcome === 'restarted').length;
+    const requoting = rows.filter((row) => row.outcome === SELLER_REQUOTES).length;
     console.log(`Restarted ${restarted} of ${rows.length} listing(s).`);
+    if (requoting > 0) {
+      console.log(`${requoting} left stopped: "${SELLER_REQUOTES}" (their quotes were withdrawn).`);
+    }
     console.log(`Result written to ${resultPath}`);
-    if (restarted < rows.length) process.exitCode = 1;
+    // A line that waits for its seller's new quote is expected, not a failure; anything else is.
+    if (restarted + requoting < rows.length) process.exitCode = 1;
   } finally {
     await disconnectFromDatabase();
   }

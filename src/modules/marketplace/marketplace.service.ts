@@ -551,15 +551,37 @@ export async function stopListing(
 }
 
 /**
+ * A line born for a quote exists for that one rate. Once the rate is withdrawn the line has nothing
+ * behind it, so restarting it would put an all-India line at the old rate back on the board for 45
+ * days, with no seller's quote under it. Such a line is restarted only while an open quote still
+ * points at it; otherwise the seller quotes again (and Sales gives the rate again).
+ */
+export async function isQuoteBornWithoutOpenQuote(
+  listing: InstanceType<typeof Listing>,
+): Promise<boolean> {
+  if (listing.origin !== 'quote_born') return false;
+  const lines = await ListingLine.find({ listingId: listing._id }, { _id: 1 });
+  const open = await Quote.exists({
+    listingLineId: { $in: lines.map((line) => line._id) },
+    status: { $in: [...OPEN_QUOTE_STATUSES] },
+  });
+  return !open;
+}
+
+/** What a restart reports for such a line: skipped, because the seller quotes again. */
+export const SELLER_REQUOTES = 'seller re-quotes';
+
+/**
  * POST /staff/listings/:id/restart — only staff lift a staff stop, and the listing gets a fresh
  * 45-day window as a seller's relist does (BR-108). A listing the seller paused himself is his to
- * relist, not staff's to restart; withdrawn quotes do not come back.
+ * relist, not staff's to restart; withdrawn quotes do not come back, and neither does a line that
+ * was born for one (`isQuoteBornWithoutOpenQuote`): that is skipped and reported as `seller re-quotes`.
  */
 export async function restartListing(
   listingId: string,
   input: { note?: string },
   caller: StopCaller,
-): Promise<{ restarted: boolean; alreadyLive: boolean }> {
+): Promise<{ restarted: boolean; alreadyLive: boolean; skipped?: typeof SELLER_REQUOTES }> {
   assertValidObjectId(listingId, 'listingId');
   const listing = await Listing.findById(listingId);
   if (!listing) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Listing not found.' });
@@ -572,6 +594,9 @@ export async function restartListing(
           ? 'This listing has been withdrawn, so it cannot be restarted.'
           : 'TriFid did not stop this listing — the seller paused it, so he relists it himself.',
     });
+  }
+  if (await isQuoteBornWithoutOpenQuote(listing)) {
+    return { restarted: false, alreadyLive: false, skipped: SELLER_REQUOTES };
   }
   // The same rule the seller's relist keeps (BR-370): a product no longer sold stays off the board.
   if (!(await isProductSellable(listing.productId as Types.ObjectId))) {

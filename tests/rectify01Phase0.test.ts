@@ -42,6 +42,7 @@ import {
 } from '../src/modules/listing/listing.service.js';
 import {
   REPORT_COLUMNS,
+  SELLER_REQUOTES,
   applyRestart,
   applyStop,
   parseScope,
@@ -764,6 +765,68 @@ describe('7c. a listing TriFid stopped confirms nothing', () => {
     expect(pile).toMatchObject({ decision: 'declined', deskDeclined: true });
     expect(pile.confirmedQty ?? null).toBeNull();
     expect(pile.sellerLockedUntil ?? null).toBeNull();
+  });
+});
+
+describe('3b. a restart does not revive a line with no quote behind it', () => {
+  async function bornListingOf(quoteId: string): Promise<string> {
+    const quote = (await Quote.findById(quoteId))!;
+    return String((await ListingLine.findById(quote.listingLineId))!.listingId);
+  }
+
+  it('skips a quote-born line whose quote was withdrawn, and reports "seller re-quotes"', async () => {
+    const w = await world(1);
+    const { quoteId } = await liveQuote(w);
+    const bornId = await bornListingOf(quoteId);
+    await withdraw(leader.token, quoteId, CONFIRM);
+    expect((await listingRow(bornId)).state).toBe('paused');
+
+    const res = await restart(leader.token, bornId, { note: 'Try.' });
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({
+      restarted: false,
+      alreadyLive: false,
+      skipped: 'seller re-quotes',
+    });
+    const still = await listingRow(bornId);
+    expect(still.state).toBe('paused');
+    expect(still.stoppedBy).toBe('staff');
+  });
+
+  it('restarts a quote-born line while an open quote still points at it', async () => {
+    const w = await world(1);
+    const { quoteId } = await liveQuote(w);
+    const bornId = await bornListingOf(quoteId);
+    // Paused by staff without touching the quote: the rule is about the quote, not how it got there.
+    await Listing.updateOne({ _id: bornId }, { $set: { state: 'paused', stoppedBy: 'staff' } });
+    const res = await restart(leader.token, bornId);
+    expect(res.status).toBe(200);
+    expect(res.body.data.restarted).toBe(true);
+    expect((await Quote.findById(quoteId))!.status).toBe('live');
+  });
+
+  it('leaves such a line stopped in a batch restart, and says "seller re-quotes"', async () => {
+    const w = await world(1);
+    const { quoteId } = await liveQuote(w);
+    const bornId = await bornListingOf(quoteId);
+    const plan = await planStop(parseScope(`seller=${w.sellerDocId}`));
+    const run = await applyStop(plan, {
+      reasonCode: 'maintenance',
+      note: 'x',
+      employeeId: admin.employeeId,
+    });
+    expect((await Quote.findById(quoteId))!.status).toBe('withdrawn');
+    expect((await listingRow(bornId)).stopBatchId).toBe(run.stopBatchId);
+
+    const rows = await applyRestart(run.stopBatchId, {
+      employeeId: admin.employeeId,
+      correlationId: 'test-restart',
+    });
+    const outcomes = new Map(rows.map((row) => [row.listingId, row.outcome]));
+    expect(outcomes.get(w.listingId)).toBe('restarted');
+    expect(outcomes.get(bornId)).toBe(SELLER_REQUOTES);
+    expect((await listingRow(w.listingId)).state).toBe('live');
+    expect((await listingRow(bornId)).state).toBe('paused');
   });
 });
 
