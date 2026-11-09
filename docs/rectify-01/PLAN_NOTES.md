@@ -3,9 +3,16 @@
 Branch `feature/rectify-01-phase0-stop-withdraw`, from `develop` at a0d4c07 (which carries
 `pile-fanout-recovery` and, with it, `gst-inclusive-rates`; both confirmed merged before starting).
 `LOCK-36` was not in the folder I was given, so nothing here leans on its text; where the brief cites it
-the brief's own words were used. No STOP condition was hit (S1–S4): nothing is renamed or removed, no
-production data was touched, the baseline built, and the one uncovered state (an open pool with paid
-commitments) is refused rather than cascaded over — see "For the founder" below.
+the brief's own words were used. (The reviewer says it is `claude/TriFid_Locked_Decisions_LOCK-36.md` in
+their project and that Rajat will copy it into this folder; nothing in Phase 0 depends on it.) No STOP
+condition was hit (S1–S4): nothing is renamed or removed, no production data was touched, the baseline
+built, and the one uncovered state (an open pool with paid commitments) is held behind an Admin-only
+double confirm rather than cascaded over — see §2.
+
+**Review round 1 (9 Nov).** The client's Claude reviewed commit `2ad2fa2` and found five defects; this
+file describes the branch after they were fixed, one commit per item F1–F6 (hashes in `REPORT.md`). What
+changed, and why, is marked "review 1" where it matters, and §6 records the answers to the six questions I
+asked.
 
 ## 1. Where this departs from the brief, and why
 
@@ -19,10 +26,13 @@ commitments) is refused rather than cascaded over — see "For the founder" belo
    shared Atlas needs the flag. The allow-list is `trifid_test` (the suite's in-memory database), in
    `src/shared/scriptSupport.ts`. A dry run also switches off Mongoose `autoIndex`/`autoCreate`, as
    `purgeDemoProducts` does, so it creates not even an index.
-3. **Two extra flags on the stop script:** `--confirm-pools` (the script's equivalent of the route's
-   `confirmPools`, and it refuses to run without it when any listing has an open pool with commitments),
-   and `--by <email or id>` / `--out <folder>` (who the audit entries name — default the first active
-   Admin — and where the CSVs go — default `trifid data/rectify-01/`, as the purge script's backups do).
+3. **Extra flags on the stop script:** `--confirm-pools` and `--confirm-paid-pools` (the script's
+   equivalents of the route's `confirmPools` and `confirmPaidPools`; it refuses to run without the first when
+   a listing it would stop has a pool its seller supplies with commitments, and without the second when a
+   commitment in that pool is paid), and `--by <email or id>` / `--out <folder>` (who the audit entries
+   name — default the first active Admin — and where the CSVs go — default `trifid data/rectify-01/`, as
+   the purge script's backups do). A listing the run does not stop is a **skip**: it is printed by id, seller
+   and product, marked in the CSV, and the command exits non-zero (review 1).
 4. **`GET /staff/notices` carries the banner flags.** The brief says "read it from the existing config
    endpoint, or add one optional field to it". `GET /admin/config` needs `config:read`, which Sales and
    Purchase do not hold, so instead two optional booleans (`marketplacePaused`, `pileRequoteEnabled`) ride on
@@ -44,29 +54,63 @@ commitments) is refused rather than cascaded over — see "For the founder" belo
 
 - **Who counts as Admin for `confirmPools`:** the holder of `seller:admin` (only Admin has it; TD-007 —
   permissions, never role names). `mayDecideRateChange` uses `buyer:admin` the same way for the Sales side.
-- **"Open pools on a listing":** a pool belongs to a pack and a condition set, not to one seller (BR-151),
-  so the pools on a listing are the active ones its lines' pack + condition-set keys would feed. Only a pool
-  with somebody still committed (not withdrawn) counts as "with commitments"; one with a _paid_ commitment
-  refuses the stop outright, even for Admin. Pools are never changed by a stop.
+- **"Open pools on a listing" (rewritten in review 1):** a pool belongs to a pack and a condition set, not to
+  one seller (BR-151), and its supplier is recomputed from every live listing on that pack (BR-152:
+  `findCurrentSupplier`, now exported from `pool.service.ts`). So the preview **lists** every active pool the
+  listing's pack + condition-set keys would feed (`pools.list`: id, pack, status, MOQ, commitments, paid
+  commitments, boxes committed — counts only, no buyer), but only a pool **this listing's seller supplies right
+  now** counts towards the gate (`suppliedByThisSeller`). A pool somebody else supplies never blocks a stop,
+  and neither does one a `New`-tier seller would "supply" (BR-153: he cannot). In the first build every pool
+  on the pack counted, so a compliance stop on seller A was refused because of an unrelated pool.
+  The gate for a pool the seller supplies that somebody has committed to (and not withdrawn):
+  - a non-Admin (the Purchase Leader) is refused — 403 `PERMISSION_DENIED`;
+  - Admin needs `confirmPools` — 409 `CONFIRMATION_REQUIRED`, `error.field = confirmPools`;
+  - if a commitment in it is **paid**, Admin also needs `confirmPaidPools` — a second tick, not a wall. A stop
+    moves no money and the restart undoes it, so a brake nobody can pull is worse than one with a double
+    confirm. The note is already required on every stop. On success the active Admins get a
+    `pool_needs_settling` notice naming each pool by product and pack, with the boxes committed, the paid
+    count and the pool id — never a buyer — so the desk can settle them.
+    The pool itself, and every commitment, is never changed by a stop. The preview carries a `gate`
+    (`{blocked, needsConfirm}`) so the dialog can disable Confirm for someone who cannot proceed, or show the
+    ticks an Admin must give, before the call is made.
+- **A quote withdrawal that pauses its line runs the full stop's pile closure (review 1).** The line born for
+  the quote is paused as before, and now also: the buyers' open piles on it are declined (same write as a
+  Stop — no strike, no message), and Sales is told whom to ring. Offered deals are left to run, as with a Stop.
+  `willHappen.pilesDeclined` in the preview says how many; the result carries `pilesClosed`. A withdrawal that
+  leaves the line live (the seller's own earlier line, or another open quote still on it) closes no pile.
+- **A pile confirmed but not yet offered when the stop lands (review 1).** The stop leaves it alone;
+  `runConfirmPileFanout` checks the listing first and, if staff stopped it, closes the pile as a desk decline
+  and tells Sales instead of giving the buyers a deal. The recovery job reaches it through the same function.
+  If the listing was restarted before the fan-out ran, the deals are given as usual.
+- **`confirmPile` refuses a staff-stopped listing, whatever the flag says (review 1)** — from the seller and
+  from Purchase on a call — and its decision is now written with `findOneAndUpdate({_id, decision: null})`, so
+  a stop's decline that lands first is not overwritten (a lost race answers `PILE_ALREADY_DECIDED`).
+- **Restart does not revive a line with no quote behind it (review 1).** A quote-born listing is restarted only
+  while an open quote still points at it. Otherwise it is **skipped and reported as `seller re-quotes`**: the
+  route answers 200 `{restarted: false, alreadyLive: false, skipped: "seller re-quotes"}`, and the batch
+  restart lists it with that outcome in its CSV (not counted as a failure).
+  Before this, restarting would have put an all-India line back on the board at the withdrawn rate for 45 days.
 - **Quotes withdrawn with a listing:** every `pending_sales`/`live` quote whose `listingLineId` is one of the
   stopped listing's lines — including a quote that reused the seller's own line, because that stock is now
   off the board. (§1.2 step 3's "leave the seller's own line alone" is about withdrawing _one_ quote.)
   Quotes with no `listingLineId` (older rows) are withdrawn only by the scripts' scope or by hand.
-- **Who hears (Sales):** for each buyer, his book owner and that owner's Sales Leader; a buyer in the Queue
-  or whose owner has left goes to the active Admins (the rate-change notices' fallback). Each person gets one
-  notice listing only their own buyers, with boxes. The seller is never named; Purchase gets no notice.
+- **Who hears (Sales):** for each buyer, his book owner and nobody else (changed in review 1; the first build
+  also told the owner's Sales Leader); a buyer in the Queue or whose owner has left goes to the active Admins
+  (the rate-change notices' fallback). Each person gets one notice listing only their own buyers, with boxes.
+  The seller is never named; Purchase gets no notice. A test asserts no other staff member is notified.
 - **Restart on a listing the seller paused:** refused ("the seller paused it, so he relists it himself").
   Restart on a live listing answers `alreadyLive: true`, changes nothing.
 - **A staff stop on a listing the seller had already paused** is allowed and takes it out of his hands.
 - **HTTP codes:** `MARKETPLACE_PAUSED` is 409 (a state refusal; 503 invites automatic retries, 423 is
-  already the sign-in lockout). The pool refusals reuse `PERMISSION_DENIED`, `CONFIRMATION_REQUIRED`
-  (already used for "confirm and send again") and `VALIDATION_FAILED` rather than adding codes.
-- **A2 (Phase 1) — a seller-paused quote-born line.** Recommended: the expiry job decides on `bindingUntil`
-  alone and never looks at the line's state. The seller is bound for 24 h (LOCK-08.7) and the buyer was
-  _given_ the rate; his own pause of the line must not shorten that, so the quote stays takeable through the
-  ask until the binding runs out, then expires like any other. The job must not un-pause the line.
-  Separately, `releaseQuote` (Sales giving a _parked_ quote) does not look at the listing state today, so
-  Sales could give a buyer a rate whose line the seller has paused; worth a warning on the Give action.
+  already the sign-in lockout). The pool refusals reuse `PERMISSION_DENIED` and `CONFIRMATION_REQUIRED`
+  (already used for "confirm and send again") rather than adding codes.
+- **A2 (Phase 1) — a seller-paused quote-born line.** Agreed with the reviewer: the expiry job decides on
+  `bindingUntil` alone and never looks at the line's state. The seller is bound for 24 h (LOCK-08.7) and the
+  buyer was _given_ the rate; his own pause of the line must not shorten that, so the quote stays takeable
+  through the ask until the binding runs out, then expires like any other. The job must not un-pause the line.
+  The reviewer's matching condition — `releaseQuote` (Sales giving a _parked_ quote) refuses, or warns, when
+  the quote's line is paused, because a buyer could otherwise take a rate through his ask whose line is off
+  the board — is **not built here**: it is not on the F1–F6 list, so it stays a Phase 1 item to be done with A2.
 
 ## 3. The entry points `marketplace_paused` guards
 
@@ -81,31 +125,43 @@ One function, `assertMarketplaceOpen()` in `src/modules/marketplace/marketplace.
 | `createPileRequest` | `modules/listing/listing.service.ts`       | buyer `POST /listings/lines/:id/inquire`; Sales on a call                                         |
 | `acceptAskFill`     | `modules/demand/demand.service.ts`         | buyer `POST /asks/:id/accept`; Sales on a call                                                    |
 | `acceptPileOffer`   | `modules/demand/pileOffer.service.ts`      | buyer `POST /pile-offers/:id/accept`; Sales on a call                                             |
+| `confirmPile`       | `modules/demand/demand.service.ts`         | seller `POST /confirmations/:id/confirm`; Purchase on a call — added in review 1                  |
+| `relistListing`     | `modules/listing/listing.service.ts`       | seller `POST /listings/:id/relist` — added in review 1                                            |
+| `commitToPool`      | `modules/pool/pool.service.ts`             | buyer `POST /pools/:id/commit` — added in review 1                                                |
 
-Not guarded, on purpose (the brief lists the seven above and says orders, payments, dispatch and Marg run on):
-raising an ask (`raiseAsk`), placing into a pool (`pool.service`), a buyer walking away from a deal, a
-seller confirming/declining/undoing a pile, and the fan-out/expiry jobs. If the founder also wants new asks
-and pool commitments refused, each is one line in the same style.
+The first seven are the brief's list; the reviewer found three more doors that start or extend trade during
+a pause — `confirmPile` (its fan-out gives buyers 24-hour deals), `relistListing` and `commitToPool` (a buyer
+could commit and pay) — and asked for them to be shut. Not guarded, on purpose: raising an ask (`raiseAsk` —
+a buyer saying what he wants starts no trade, and the desk calls him), a placement into a pool already
+committed to, a buyer walking away from a deal, a seller declining or undoing a pile, a seller **pausing** his
+own listing, and the expiry jobs. The fan-out is not guarded by the flag either (it finishes a trade the
+seller already confirmed) but it does close a pile whose listing staff stopped (see §2).
 
-## 4. Existing files modified (exact lines in this branch)
+**The clocks keep running during a pause.** The 24-hour deal and quote clocks are not frozen while accepting
+is refused, so a long pause silently kills deals. Keep a pause short. Freezing the clocks is a later founder
+decision, not built here.
 
-| File                                           | Lines                                      | Change                                                                                                                                                                   |
-| ---------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/app.ts`                                   | 38, 96                                     | import and mount `marketplaceRouter`                                                                                                                                     |
-| `src/config/permissions.ts`                    | 141–144                                    | `LISTING_STOP`, `QUOTE_WITHDRAW` (Admin gets them: `Object.values`)                                                                                                      |
-| `src/config/positions.ts`                      | 48–53                                      | both granted to `PURCHASE_LEADER`, the way `SALES_APPROVE_RATE_CHANGE` is to `SALES_LEADER`                                                                              |
-| `src/models/Listing.ts`                        | 11–24, 42–50                               | `STOP_REASON_CODES`; `stoppedBy`, `stoppedByEmployeeId`, `stopReasonCode`, `stopNote`, `stopBatchId`                                                                     |
-| `src/models/Quote.ts`                          | 3, 61–66                                   | `withdrawnAt`, `withdrawnBy`, `withdrawReasonCode`, `withdrawNote`                                                                                                       |
-| `src/models/Pile.ts`                           | 40–43                                      | `deskDeclined`                                                                                                                                                           |
-| `src/models/StaffNotice.ts`                    | 22–24                                      | kinds `listing_stopped`, `rate_withdrawn`                                                                                                                                |
-| `src/shared/errors.ts`                         | 88–90, 141                                 | `MARKETPLACE_PAUSED` (409)                                                                                                                                               |
-| `src/modules/listing/listing.service.ts`       | 45, 48, 205, 465–471, 972                  | guard import; `export` on `LISTING_LIFE_DAYS`; guard in `createListing` and `createPileRequest`; `relistListing` refuses a staff-stopped listing                         |
-| `src/modules/listing/listing.groups.ts`        | 21–22, 36–40, 57, 65, 84                   | `deskDeclined` ignored when reading a line's latest group                                                                                                                |
-| `src/modules/demand/demand.service.ts`         | 38, 349–364, 401, 482, 708, 787, 1045–1051 | guard import; `settleAskAfterQuoteLeaves` (extracted) and its call in `acceptAskFill`; guards in `acceptAskFill`, `postQuote`, `releaseQuote`; `requotePile` kill switch |
-| `src/modules/demand/pileOffer.service.ts`      | 19, 194                                    | guard import and call in `acceptPileOffer`                                                                                                                               |
-| `src/modules/desk/sales/sales.stageActions.ts` | 26, 59                                     | guard import and call in `giveRateOnAsk`                                                                                                                                 |
-| `src/modules/notice/notice.routes.ts`          | 5, 24–32                                   | `GET /staff/notices` also returns the two flags                                                                                                                          |
-| `package.json`                                 | scripts                                    | `stop:marketplace`, `restart:stopped`, `audit:rectify01`                                                                                                                 |
+## 4. Existing files modified (exact lines in this branch, after review 1)
+
+| File                                           | Lines                                                         | Change                                                                                                                                                                                                                                                                        |
+| ---------------------------------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/app.ts`                                   | 38, 96                                                        | import and mount `marketplaceRouter`                                                                                                                                                                                                                                          |
+| `src/config/permissions.ts`                    | 141–144                                                       | `LISTING_STOP`, `QUOTE_WITHDRAW` (Admin gets them: `Object.values`)                                                                                                                                                                                                           |
+| `src/config/positions.ts`                      | 48–53                                                         | both granted to `PURCHASE_LEADER`, the way `SALES_APPROVE_RATE_CHANGE` is to `SALES_LEADER`                                                                                                                                                                                   |
+| `src/models/Listing.ts`                        | 11–24, 42–50                                                  | `STOP_REASON_CODES`; `stoppedBy`, `stoppedByEmployeeId`, `stopReasonCode`, `stopNote`, `stopBatchId`                                                                                                                                                                          |
+| `src/models/Quote.ts`                          | 3, 61–66                                                      | `withdrawnAt`, `withdrawnBy`, `withdrawReasonCode`, `withdrawNote`                                                                                                                                                                                                            |
+| `src/models/Pile.ts`                           | 40–43                                                         | `deskDeclined`                                                                                                                                                                                                                                                                |
+| `src/models/StaffNotice.ts`                    | 22–26                                                         | kinds `listing_stopped`, `rate_withdrawn`, and (review 1) `pool_needs_settling`                                                                                                                                                                                               |
+| `src/shared/errors.ts`                         | 88–90, 141                                                    | `MARKETPLACE_PAUSED` (409)                                                                                                                                                                                                                                                    |
+| `src/modules/listing/listing.service.ts`       | 45–48, 51, 208, 405–410, 451, 471–476, 977                    | guard imports; `export` on `LISTING_LIFE_DAYS`; guard in `createListing` and `createPileRequest`; `relistListing` guarded and refuses a staff-stopped listing; optional `stoppedByTriFid` on `getMyListings` (review 1)                                                       |
+| `src/modules/listing/listing.groups.ts`        | 21–22, 36–40, 57, 65, 84                                      | `deskDeclined` ignored when reading a line's latest group                                                                                                                                                                                                                     |
+| `src/modules/demand/demand.service.ts`         | 38–42, 359, 405, 486, 712, 791, 946, 963, 986–1005, 1068–1073 | guard imports; `settleAskAfterQuoteLeaves` (extracted) and its call in `acceptAskFill`; guards in `acceptAskFill`, `postQuote`, `releaseQuote`, `confirmPile`; `confirmPile` refuses a staff-stopped listing and writes its decision conditionally; `requotePile` kill switch |
+| `src/modules/demand/pileFanout.job.ts`         | 11–14, 48–66                                                  | review 1 — closes a confirmed, not-yet-offered pile as a desk decline when staff stopped its listing                                                                                                                                                                          |
+| `src/modules/demand/pileOffer.service.ts`      | 19, 194                                                       | guard import and call in `acceptPileOffer`                                                                                                                                                                                                                                    |
+| `src/modules/pool/pool.service.ts`             | 28, 138, 179                                                  | review 1 — `export` on `findCurrentSupplier`; guard in `commitToPool`                                                                                                                                                                                                         |
+| `src/modules/desk/sales/sales.stageActions.ts` | 26, 59                                                        | guard import and call in `giveRateOnAsk`                                                                                                                                                                                                                                      |
+| `src/modules/notice/notice.routes.ts`          | 5, 24–32                                                      | `GET /staff/notices` also returns the two flags                                                                                                                                                                                                                               |
+| `package.json`                                 | scripts                                                       | `stop:marketplace`, `restart:stopped`, `audit:rectify01`                                                                                                                                                                                                                      |
 
 Two existing tests changed, because they exercise requote itself and requote is now refused unless
 `pile_requote_enabled` is on: `tests/m8.test.ts` ("requoting a pile queues seller_requoted…", the one call
@@ -113,8 +169,9 @@ at the requote line) and `tests/optionalCallNote.test.ts` ("requotes and decline
 requote call). Each now wraps just that call in `withPileRequoteEnabled(...)` (new `tests/requoteFlag.ts`),
 which turns the flag on for the length of the call and puts it back. Nothing else in either file changed.
 
-New: `src/modules/marketplace/` (`guard`, `service`, `bulk`, `audit`, `controller`, `routes`, `validation`),
-`src/shared/scriptSupport.ts`, `src/scripts/{stopMarketplace,restartStopped,auditRectify01}.ts`,
+New: `src/modules/marketplace/` (`guard`, `service`, `bulk`, `audit`, `controller`, `routes`, `validation`,
+and — review 1 — `closure`: the pile-closing and Sales-notice helpers, split out so the fan-out job can use
+them without importing the service back), `src/shared/scriptSupport.ts`, `src/scripts/{stopMarketplace,restartStopped,auditRectify01}.ts`,
 `tests/rectify01Phase0.test.ts`, `tests/requoteFlag.ts`, `docs/rectify-01/*`.
 
 No new dependency. The Buyer app and its repository were not touched; no database was edited by hand.
@@ -156,19 +213,31 @@ No new dependency. The Buyer app and its repository were not touched; no databas
    Everything downstream (`dock`, `marg`, `chain` PO/bill code) reads `so.placeOfSupply` and is correct once
    the order is. `purchase.print.ts` works from the seller's GSTIN and is left alone, as the plan says.
 
-## 6. For the founder (open questions, none blocking the review)
+## 6. Questions raised in the first build, and how the review answered them
 
-1. **Pool with a paid commitment (S3).** The brief says "STOP S3". A stop is a request a person makes, so the
-   server cannot stop and ask; it _refuses_ (409, plain words, nothing changed, even for Admin) and the desk
-   settles the pool first. Is refusing the right behaviour, or should Admin be able to override it too?
-2. **Open piles on a line that a _quote withdrawal_ pauses.** §1.2 step 3 says "stop the listing as in §1.1
-   step 1" — that is only the pause. Buyers who piled on that quote-born line before are _not_ declined (the
-   cascade of §1.1 step 3 is the Stop button's). Their piles stay open on a paused line, and the seller can
-   still confirm them. The withdraw preview shows `openPilesOnLine` so the person sees it, and Stop on that
-   listing closes them. Should a quote withdrawal that pauses its line run the full stop instead?
-3. **`messageHi` for `MARKETPLACE_PAUSED`** — no Hindi wording was provided, so none is sent.
-4. **Should the seller app be told a listing was stopped by TriFid** (an optional `stoppedBy` on
-   `GET /listings/mine`)? Today it sees `paused` and, on trying to relist, the "Call the purchase desk" message.
+All answered by the client's Claude in review 1; each is built as follows.
+
+1. **Pool with a paid commitment (S3) — refuse outright, or let Admin override?** Admin can, behind a double
+   confirm; and only a pool the stopped listing's seller _supplies_ counts. Built: §2, "Open pools on a
+   listing".
+2. **Should a quote withdrawal that pauses its line run the full stop?** Yes — the buyers' open piles on the
+   line were stranded open and the fan-out could then have given them deals at the withdrawn rate. Built: §2.
+3. **Should the seller app be told a listing was stopped by TriFid?** Yes. `GET /listings/mine` items carry an
+   optional `stoppedByTriFid: true`, omitted otherwise, so the app can hide Relist and say "Paused by TriFid —
+   call the desk". No reason or note is ever sent to the seller. Built: `getMyListings`.
+4. **`LOCK-36`** is in the client's project as `claude/TriFid_Locked_Decisions_LOCK-36.md`; Rajat copies it
+   into this folder. Nothing in Phase 0 depends on it; it matters from Phase 1 (its O1–O5 are not yet ruled).
+5. **A2** — the expiry job decides on `bindingUntil` alone: agreed (§2). The matching `releaseQuote` refusal is
+   left for Phase 1.
+
+Still open, none blocking:
+
+- **`messageHi` for `MARKETPLACE_PAUSED`.** No Hindi wording has been provided, so none is sent. It must be
+  supplied before `marketplace_paused` is ever switched on in front of buyers.
+- **Freezing the 24-hour clocks during a pause** (§3) — a later founder decision.
+- **A pool a quote withdrawal's line feeds.** A quote withdrawal that pauses its quote-born line is not held to
+  the pool gate (only Stop is). If that line's seller supplies a pool with commitments, the pool is not
+  changed either way; say so if the gate should apply there too.
 
 ## 7. Seen and left alone (out of scope)
 
@@ -177,6 +246,10 @@ No new dependency. The Buyer app and its repository were not touched; no databas
   treats it as "no match" and not "any seller" — I did not test it, and did not change it.
 - `closeParkedQuotes` expires parked quotes when an ask ends but leaves their published listing line live; the
   line then runs its own 45 days with no quote behind it (this is A11's world).
+- `undoPileConfirm` does not check that the pile is still `confirmed`: a seller who undoes inside the 5-second
+  window after a staff stop declined it would reopen it (decision back to `null`) on a stopped listing. He
+  still cannot confirm it (`confirmPile` now refuses), but the pile sits open and Sales is not told. Narrow, and
+  left alone; the fix is one condition in `undoPileConfirm`.
 - The idempotency middleware stores the response of an invalid request (a 400 from a missing note) under its
   key, so re-sending the _same body with the same key_ replays the 400. The admin app should make a fresh key
   per submit, which it does for its other forms.
