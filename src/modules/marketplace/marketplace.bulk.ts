@@ -14,8 +14,11 @@ import {
   executeStop,
   getListingImpact,
   getQuoteImpact,
+  paidSuppliedPools,
   restartListing,
   withdrawQuoteInSession,
+  type PoolRow,
+  type SupplierCache,
 } from './marketplace.service.js';
 
 /**
@@ -81,10 +84,25 @@ export interface StopPlan {
   listingIds: string[];
   quoteIds: string[];
   rows: ReportRow[];
-  /** Listings with an open pool someone is committed to: the run needs --confirm-pools for them. */
+  /**
+   * Listings whose seller supplies an open pool someone is committed to: the run needs
+   * --confirm-pools for them. A pool someone else supplies does not put a listing here.
+   */
   poolListingIds: string[];
-  /** Listings with a pool that has a paid commitment: never stopped by a script. */
+  /**
+   * Listings whose seller supplies a pool with a paid commitment. They are in the plan as `stop` only
+   * when the plan was made with `confirmPaidPools`; otherwise they are `skip`, and the run says so.
+   */
   paidPoolListingIds: string[];
+  /** The paid pools behind each of those, so the Admins can be told to settle them. */
+  paidPoolsByListing: Record<string, PoolRow[]>;
+  /** The plan was made with --confirm-paid-pools. */
+  confirmPaidPools: boolean;
+}
+
+export interface PlanOptions {
+  /** Admin's second tick: also stop listings whose supplied pool has a paid commitment. */
+  confirmPaidPools?: boolean;
 }
 
 async function listingsInScope(scope: StopScope) {
@@ -115,23 +133,31 @@ async function openQuotesInScope(scope: StopScope) {
   return inScope;
 }
 
-export async function planStop(scope: StopScope): Promise<StopPlan> {
+export async function planStop(scope: StopScope, options: PlanOptions = {}): Promise<StopPlan> {
   if (scope.kind === 'seller' && !(await Seller.exists({ _id: scope.sellerId }))) {
     throw new Error(`No seller has the id ${scope.sellerId}.`);
   }
   if (scope.kind === 'product' && !(await Product.exists({ _id: scope.productId }))) {
     throw new Error(`No product has the id ${scope.productId}.`);
   }
+  const confirmPaidPools = options.confirmPaidPools === true;
   const rows: ReportRow[] = [];
   const poolListingIds: string[] = [];
   const paidPoolListingIds: string[] = [];
+  const paidPoolsByListing: Record<string, PoolRow[]> = {};
+  // Who supplies a pool is the same for the whole plan, so it is found once per pool.
+  const supplierCache: SupplierCache = new Map();
 
   const listings = await listingsInScope(scope);
   for (const listing of listings) {
-    const impact = await getListingImpact(listing);
-    const blocked = impact.pools.withPaidCommitments > 0;
+    const impact = await getListingImpact(listing, new Date(), supplierCache);
+    const hasPaid = impact.pools.withPaidCommitments > 0;
+    const blocked = hasPaid && !confirmPaidPools;
     if (impact.pools.withCommitments > 0) poolListingIds.push(id(listing._id));
-    if (blocked) paidPoolListingIds.push(id(listing._id));
+    if (hasPaid) {
+      paidPoolListingIds.push(id(listing._id));
+      paidPoolsByListing[id(listing._id)] = paidSuppliedPools(impact);
+    }
     rows.push({
       type: 'listing',
       id: id(listing._id),
@@ -147,7 +173,9 @@ export async function planStop(scope: StopScope): Promise<StopPlan> {
       live_quotes: impact.quotes.live,
       pools_with_commitments: impact.pools.withCommitments,
       pools_with_paid_commitments: impact.pools.withPaidCommitments,
-      blocked: blocked ? 'pool with paid commitments' : '',
+      blocked: blocked
+        ? 'a pool this seller supplies has paid commitments (needs --confirm-paid-pools)'
+        : '',
       outcome: '',
     });
   }
@@ -184,6 +212,8 @@ export async function planStop(scope: StopScope): Promise<StopPlan> {
     rows,
     poolListingIds,
     paidPoolListingIds,
+    paidPoolsByListing,
+    confirmPaidPools,
   };
 }
 
@@ -195,8 +225,10 @@ export interface StopRunOptions {
   reasonCode: StopReasonCode;
   note: string;
   employeeId: string;
-  /** Needed when any listing in the plan has an open pool someone is committed to. */
+  /** Needed when a listing the plan stops has a pool someone is committed to, which its seller supplies. */
   confirmPools?: boolean;
+  /** Needed on top of `confirmPools` when a commitment in such a pool is already paid (and the plan said to stop it). */
+  confirmPaidPools?: boolean;
   stopBatchId?: string;
 }
 
@@ -211,10 +243,20 @@ export interface StopRunResult {
 
 /** A listing is stopped if the plan said so; the quote withdrawals follow, each in its own transaction. */
 export async function applyStop(plan: StopPlan, options: StopRunOptions): Promise<StopRunResult> {
-  if (plan.poolListingIds.length > 0 && !options.confirmPools) {
+  const toStop = new Set(plan.listingIds);
+  const needPools = plan.poolListingIds.filter((listingId) => toStop.has(listingId));
+  if (needPools.length > 0 && !options.confirmPools) {
     throw new Error(
-      `${plan.poolListingIds.length} listing(s) have an open pool someone is committed to. ` +
+      `${needPools.length} listing(s) are supplying a pool someone is committed to. ` +
         'Stopping them does not change the pool. Re-run with --confirm-pools to stop them anyway.',
+    );
+  }
+  const needPaid = plan.paidPoolListingIds.filter((listingId) => toStop.has(listingId));
+  if (needPaid.length > 0 && !options.confirmPaidPools) {
+    throw new Error(
+      `${needPaid.length} listing(s) are supplying a pool with a paid commitment. ` +
+        'Stopping them does not refund or change the pool; the Admins are told to settle it. ' +
+        'Re-run with --confirm-paid-pools as well to stop them anyway.',
     );
   }
   const stopBatchId = options.stopBatchId ?? randomUUID();
@@ -246,7 +288,11 @@ export async function applyStop(plan: StopPlan, options: StopRunOptions): Promis
     try {
       const listing = await Listing.findById(row.id);
       if (!listing) throw new Error('listing no longer exists');
-      const outcome = await executeStop(listing, { ...base, now: new Date() });
+      const outcome = await executeStop(
+        listing,
+        { ...base, now: new Date() },
+        plan.paidPoolsByListing[row.id as string] ?? [],
+      );
       row.outcome = outcome.stopped ? 'stopped' : 'already stopped';
       if (outcome.stopped) result.listingsStopped += 1;
     } catch (error) {

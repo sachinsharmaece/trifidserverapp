@@ -29,7 +29,9 @@ import {
  *   ... --apply                   stops them, then writes the result CSV beside the plan
  *   ... --scope seller=<id>       one seller (the id in his Purchase file URL)
  *   ... --scope product=<id>      one product
- *   ... --confirm-pools           also stop listings an open pool with commitments depends on
+ *   ... --confirm-pools           also stop listings whose seller supplies a pool someone is committed to
+ *   ... --confirm-paid-pools      on top of that, also stop the ones where a commitment is already paid
+ *                                 (the Admins get a notice naming the pools to settle with their buyers)
  *   ... --by <email or id>        who the audit entries name (default: the first active Admin)
  *   ... --out <folder>            where the CSVs go (default: "trifid data/rectify-01/")
  *   ... --i-know-this-is-prod     needed unless MONGODB_URI names an allow-listed test database
@@ -37,6 +39,10 @@ import {
  * Withdrawn quotes do NOT come back with the restart: sellers re-quote and Sales gives them again.
  * Orders, payments, dispatch and Marg are untouched. Deals already offered to buyers run to the end
  * of their 24 hours.
+ *
+ * A listing the run does not stop is SKIPPED, never silently: it is printed by id, seller and product,
+ * marked in the CSV, and the command exits non-zero. A run that leaves a listing live has not done
+ * what was asked.
  */
 const DEFAULT_REPORT_DIR = fileURLToPath(
   new URL('../../../trifid data/rectify-01/', import.meta.url),
@@ -60,7 +66,8 @@ async function run(): Promise<void> {
   }
   await connectToDatabase(env.mongodbUri);
   try {
-    const plan = await planStop(scope);
+    const confirmPaidPools = hasFlag(argv, '--confirm-paid-pools');
+    const plan = await planStop(scope, { confirmPaidPools });
     const at = stamp();
     // The report goes first: if anything below goes wrong, what was meant is already on disk.
     const planPath = writeReport(
@@ -69,19 +76,29 @@ async function run(): Promise<void> {
       plan.rows,
     );
     const stops = plan.rows.filter((row) => row.type === 'listing' && row.action === 'stop').length;
-    const skips = plan.rows.filter((row) => row.type === 'listing' && row.action === 'skip').length;
+    const skipped = plan.rows.filter((row) => row.type === 'listing' && row.action === 'skip');
     console.log(
-      `Scope ${JSON.stringify(scope)}: ${stops} listing(s) to stop, ${skips} skipped, ${plan.quoteIds.length} quote(s) to withdraw.`,
+      `Scope ${JSON.stringify(scope)}: ${stops} listing(s) to stop, ${skipped.length} skipped, ${plan.quoteIds.length} quote(s) to withdraw.`,
     );
     console.log(`Plan written to ${planPath}`);
-    if (skips > 0) {
-      console.log(
-        '  Skipped: a pool that depends on the listing has a paid commitment. Settle the pool first.',
+    if (skipped.length > 0) {
+      console.error(
+        `\nSKIPPED — ${skipped.length} listing(s) will stay LIVE. A pool each seller supplies has a paid commitment:`,
       );
+      for (const row of skipped) {
+        console.error(`  ${row.id}  ${row.seller} — ${row.product}`);
+      }
+      console.error(
+        'Settle those pools with their buyers, or re-run with --confirm-pools --confirm-paid-pools (Admin).\n',
+      );
+      process.exitCode = 1;
     }
-    if (plan.poolListingIds.length > 0) {
+    const needPools = plan.poolListingIds.filter((listingId) =>
+      plan.listingIds.includes(listingId),
+    );
+    if (needPools.length > 0) {
       console.log(
-        `  ${plan.poolListingIds.length} listing(s) have an open pool with commitments (needs --confirm-pools).`,
+        `  ${needPools.length} listing(s) are supplying a pool with commitments (needs --confirm-pools).`,
       );
     }
     if (!apply) {
@@ -96,6 +113,7 @@ async function run(): Promise<void> {
       note,
       employeeId: actor.employeeId,
       confirmPools: hasFlag(argv, '--confirm-pools'),
+      confirmPaidPools,
     });
     const resultPath = writeReport(
       join(outDir, `stop-marketplace-result-${at}.csv`),
@@ -111,7 +129,15 @@ async function run(): Promise<void> {
     console.log(
       'Note: withdrawn quotes do not come back. Sellers re-quote and Sales gives them again.',
     );
-    if (result.failures > 0) process.exitCode = 1;
+    if (result.listingsSkipped > 0) {
+      console.error(`${result.listingsSkipped} listing(s) were SKIPPED and are still live:`);
+      for (const row of result.rows.filter(
+        (r) => r.type === 'listing' && r.outcome === 'skipped',
+      )) {
+        console.error(`  ${row.id}  ${row.seller} — ${row.product}`);
+      }
+    }
+    if (result.failures > 0 || result.listingsSkipped > 0) process.exitCode = 1;
   } finally {
     await disconnectFromDatabase();
   }

@@ -134,7 +134,7 @@ export async function getPool(
  * `New` tier sellers. No incumbent right, no last look — recomputed fresh
  * every time this is called, including at trigger.
  */
-async function findCurrentSupplier(
+export async function findCurrentSupplier(
   pool: InstanceType<typeof Pool>,
 ): Promise<{ sellerId: Types.ObjectId; sellerNetPaise: number } | null> {
   const liveListings = await Listing.find({ state: 'live' });

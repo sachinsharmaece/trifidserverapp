@@ -11,7 +11,8 @@ const stopReason = z.enum(STOP_REASON_CODES, { error: 'Pick a reason.' });
 
 /**
  * POST /staff/listings/:id/stop. With `confirm` false or absent nothing is written and the call
- * answers with the impact preview. `confirmPools` is Admin's, for a listing an open pool depends on.
+ * answers with the impact preview. `confirmPools` is Admin's, for a listing whose seller supplies a
+ * pool someone is committed to; `confirmPaidPools` is Admin's second tick when a commitment in it is paid.
  */
 export const stopListingSchema = z
   .object({
@@ -19,6 +20,7 @@ export const stopListingSchema = z
     note: stopNote,
     confirm: z.boolean().optional(),
     confirmPools: z.boolean().optional(),
+    confirmPaidPools: z.boolean().optional(),
   })
   .strict();
 

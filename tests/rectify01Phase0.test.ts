@@ -19,6 +19,9 @@ import { ListingLine } from '../src/models/ListingLine.js';
 import { NotificationOutbox } from '../src/models/NotificationOutbox.js';
 import { Pile } from '../src/models/Pile.js';
 import { PileRequest } from '../src/models/PileRequest.js';
+import { Pool } from '../src/models/Pool.js';
+import { PoolCommitment } from '../src/models/PoolCommitment.js';
+import { Product } from '../src/models/Product.js';
 import { Quote } from '../src/models/Quote.js';
 import { RateChangeRequest } from '../src/models/RateChangeRequest.js';
 import { Seller } from '../src/models/Seller.js';
@@ -187,6 +190,54 @@ const quoteInput = (overrides: Record<string, unknown> = {}) => ({
   daysToIndore: 2,
   ...overrides,
 });
+
+type TrustTier = 'New' | 'Verified' | 'Trusted' | 'Committed';
+
+/**
+ * Sellers who list the same pack on the same terms at a 50-box MOQ share one pool (BR-151). The lowest
+ * rate among sellers above tier `New` supplies it (BR-152/BR-153), so `rates` says who that is.
+ */
+async function poolWorld(rates: number[] = [SELLER_NET], tier: TrustTier = 'Trusted') {
+  const tehsil = await createTehsil();
+  const skuId = await createTestSku('Medium');
+  const productId = String((await Sku.findById(skuId))!.productId);
+  const sellers: Array<{ sellerDocId: string; sellerCp: string; listingId: string }> = [];
+  for (const ratePaise of rates) {
+    const sellerDocId = await createApprovedSellerAtTehsils(app, purchaseExec.token, [tehsil]);
+    await Seller.updateOne({ _id: sellerDocId }, { $set: { trustTier: tier } });
+    const sellerCp = String((await Seller.findById(sellerDocId))!.counterpartyId);
+    const created = await createListing(sellerCp, {
+      productId,
+      scopeType: 'my_area',
+      lines: [
+        {
+          skuId,
+          ratePaise,
+          expiryBand: 'over12',
+          moqExact: 50, // Any MOQ above 1 opens a pool.
+          deliveryBand: '48h',
+          provenance: 'company',
+          qty: 100,
+        },
+      ],
+    } as never);
+    sellers.push({ sellerDocId, sellerCp, listingId: created.listingId });
+  }
+  const buyerDocId = await createApprovedBuyerAtTehsil(app, sales.token, tehsil, 'dealer');
+  const buyerCp = String((await Buyer.findById(buyerDocId))!.counterpartyId);
+  const pool = (await Pool.findOne({ skuId, isActive: true }))!;
+  return { skuId, productId, sellers, buyerDocId, buyerCp, poolId: String(pool._id) };
+}
+
+/** One buyer committed to the pool, paid or not. */
+async function commitToPoolDirect(w: { poolId: string; buyerDocId: string }, paid: boolean) {
+  await PoolCommitment.create({
+    poolId: w.poolId,
+    buyerId: w.buyerDocId,
+    qty: 20,
+    ...(paid ? { paidAt: new Date(), isBinding: true } : {}),
+  });
+}
 
 /** A live rate on a fresh ask for 10 boxes: the seller quoted it parked, Sales gave it. */
 async function liveQuote(w: World, buyerIndex = 0, sellerCp = w.sellerCp, overrides = {}) {
@@ -778,72 +829,146 @@ describe('8. a second call changes nothing; the permission is required', () => {
   });
 });
 
-describe('open pools are not cascaded over (S3)', () => {
-  async function poolWorld(paid: boolean) {
-    const tehsil = await createTehsil();
-    const skuId = await createTestSku('Medium');
-    const productId = String((await Sku.findById(skuId))!.productId);
-    const sellerDocId = await createApprovedSellerAtTehsils(app, purchaseExec.token, [tehsil]);
-    const sellerCp = String((await Seller.findById(sellerDocId))!.counterpartyId);
-    const buyerDocId = await createApprovedBuyerAtTehsil(app, sales.token, tehsil, 'dealer');
-    const created = await createListing(sellerCp, {
-      productId,
-      scopeType: 'my_area',
-      lines: [
-        {
-          skuId,
-          ratePaise: SELLER_NET,
-          expiryBand: 'over12',
-          moqExact: 50, // Any MOQ above 1 opens a pool.
-          deliveryBand: '48h',
-          provenance: 'company',
-          qty: 100,
-        },
-      ],
-    } as never);
-    const { Pool } = await import('../src/models/Pool.js');
-    const { PoolCommitment } = await import('../src/models/PoolCommitment.js');
-    const pool = (await Pool.findOne({ skuId, isActive: true }))!;
-    await PoolCommitment.create({
-      poolId: pool._id,
-      buyerId: buyerDocId,
-      qty: 20,
-      ...(paid ? { paidAt: new Date(), isBinding: true } : {}),
-    });
-    return { listingId: created.listingId };
-  }
+describe("open pools are not cascaded over (S3), and only the pool's supplier is held to it", () => {
+  it('counts the pool its seller supplies, refuses a Purchase Leader, and asks Admin to confirm', async () => {
+    const w = await poolWorld();
+    await commitToPoolDirect(w, false);
+    const listingId = w.sellers[0]!.listingId;
+    const settlingBefore = await StaffNotice.countDocuments({ kind: 'pool_needs_settling' });
 
-  it('counts the pool, refuses a Purchase Leader, and asks Admin to confirm', async () => {
-    const w = await poolWorld(false);
-    const preview = await stop(leader.token, w.listingId, REASON);
-    expect(preview.body.data.preview.pools).toEqual({
+    const asLeader = await stop(leader.token, listingId, REASON);
+    expect(asLeader.body.data.preview.pools).toMatchObject({
       open: 1,
+      suppliedByThisSeller: 1,
       withCommitments: 1,
       withPaidCommitments: 0,
     });
+    expect(asLeader.body.data.preview.pools.list[0]).toMatchObject({
+      poolId: w.poolId,
+      commitments: 1,
+      paidCommitments: 0,
+      boxesCommitted: 20,
+      suppliedByThisSeller: true,
+    });
+    // The dialog is told before Confirm: the Leader's is blocked, Admin's needs one tick.
+    expect(asLeader.body.data.preview.gate).toMatchObject({
+      blocked: { code: 'admin_only' },
+      needsConfirm: [],
+    });
+    const asAdmin = await stop(admin.token, listingId, REASON);
+    expect(asAdmin.body.data.preview.gate).toEqual({
+      blocked: null,
+      needsConfirm: ['confirmPools'],
+    });
 
-    const refused = await stop(leader.token, w.listingId, CONFIRM);
+    const refused = await stop(leader.token, listingId, CONFIRM);
     expect(refused.status).toBe(403);
-    expect((await listingRow(w.listingId)).state).toBe('live');
+    expect((await listingRow(listingId)).state).toBe('live');
 
-    const needsConfirm = await stop(admin.token, w.listingId, CONFIRM);
+    const needsConfirm = await stop(admin.token, listingId, CONFIRM);
     expect(needsConfirm.status).toBe(409);
     expect(needsConfirm.body.error.code).toBe('CONFIRMATION_REQUIRED');
-    expect((await listingRow(w.listingId)).state).toBe('live');
+    expect(needsConfirm.body.error.field).toBe('confirmPools');
+    expect((await listingRow(listingId)).state).toBe('live');
 
-    const done = await stop(admin.token, w.listingId, { ...CONFIRM, confirmPools: true });
+    const done = await stop(admin.token, listingId, { ...CONFIRM, confirmPools: true });
     expect(done.body.data.stopped).toBe(true);
-    // The pool itself is not touched.
-    const { Pool } = await import('../src/models/Pool.js');
-    expect(await Pool.countDocuments({ isActive: true, status: 'open' })).toBeGreaterThan(0);
+    // The pool itself is not touched, and nobody is told to settle it: nothing was paid.
+    expect(await Pool.findById(w.poolId)).toMatchObject({ isActive: true, status: 'open' });
+    expect(await StaffNotice.countDocuments({ kind: 'pool_needs_settling' })).toBe(settlingBefore);
   });
 
-  it('refuses outright, even for Admin, when a commitment in the pool is paid', async () => {
-    const w = await poolWorld(true);
-    const res = await stop(admin.token, w.listingId, { ...CONFIRM, confirmPools: true });
-    expect(res.status).toBe(409);
-    expect(res.body.error.message_en).toMatch(/paid commitments/);
-    expect((await listingRow(w.listingId)).state).toBe('live');
+  it('a paid commitment needs Admin and a second tick, and the Admins are told which pool to settle', async () => {
+    const w = await poolWorld();
+    await commitToPoolDirect(w, true);
+    const listingId = w.sellers[0]!.listingId;
+
+    const preview = await stop(admin.token, listingId, REASON);
+    expect(preview.body.data.preview.pools).toMatchObject({
+      suppliedByThisSeller: 1,
+      withCommitments: 1,
+      withPaidCommitments: 1,
+    });
+    expect(preview.body.data.preview.gate).toEqual({
+      blocked: null,
+      needsConfirm: ['confirmPools', 'confirmPaidPools'],
+    });
+
+    // A Purchase Leader is refused whatever he ticks.
+    const asLeader = await stop(leader.token, listingId, {
+      ...CONFIRM,
+      confirmPools: true,
+      confirmPaidPools: true,
+    });
+    expect(asLeader.status).toBe(403);
+    // Admin with the first tick only is asked for the second.
+    const oneTick = await stop(admin.token, listingId, { ...CONFIRM, confirmPools: true });
+    expect(oneTick.status).toBe(409);
+    expect(oneTick.body.error.code).toBe('CONFIRMATION_REQUIRED');
+    expect(oneTick.body.error.field).toBe('confirmPaidPools');
+    expect((await listingRow(listingId)).state).toBe('live');
+
+    const both = await stop(admin.token, listingId, {
+      ...CONFIRM,
+      confirmPools: true,
+      confirmPaidPools: true,
+    });
+    expect(both.status).toBe(200);
+    expect(both.body.data.stopped).toBe(true);
+    expect((await listingRow(listingId)).state).toBe('paused');
+    // The pool and the payment are exactly as they were.
+    expect(await Pool.findById(w.poolId)).toMatchObject({ isActive: true, status: 'open' });
+    expect((await PoolCommitment.findOne({ poolId: w.poolId }))!.paidAt).toBeTruthy();
+
+    // The Admins are told which pool needs settling — by id, pack and boxes, naming no buyer.
+    const notices = await StaffNotice.find({
+      kind: 'pool_needs_settling',
+      body: new RegExp(w.poolId),
+    });
+    expect(notices.map((n) => String(n.employeeId))).toContain(admin.employeeId);
+    const text = notices.map((n) => `${n.title} ${n.body}`).join(' ');
+    // By product and pack, with the boxes — never a buyer.
+    const product = (await Product.findById(w.productId))!;
+    const sku = (await Sku.findById(w.skuId))!;
+    expect(text).toContain(`${product.brand} ${sku.packLabel}`);
+    expect(text).toContain('20 boxes committed');
+    expect(text).not.toContain(await firmOf(w.buyerCp));
+  });
+
+  it('does not hold up a seller who is not the supplier: the pool is listed, nothing more', async () => {
+    const w = await poolWorld([SELLER_NET, SELLER_NET + 1000]); // The first supplies it.
+    await commitToPoolDirect(w, true);
+    const [supplier, other] = w.sellers as [(typeof w.sellers)[number], (typeof w.sellers)[number]];
+
+    const preview = await stop(leader.token, other.listingId, REASON);
+    expect(preview.body.data.preview.pools).toMatchObject({
+      open: 1,
+      suppliedByThisSeller: 0,
+      withCommitments: 0,
+      withPaidCommitments: 0,
+    });
+    expect(preview.body.data.preview.pools.list[0]).toMatchObject({
+      poolId: w.poolId,
+      paidCommitments: 1,
+      suppliedByThisSeller: false,
+    });
+    expect(preview.body.data.preview.gate).toEqual({ blocked: null, needsConfirm: [] });
+    const done = await stop(leader.token, other.listingId, CONFIRM);
+    expect(done.status).toBe(200);
+    expect(done.body.data.stopped).toBe(true);
+
+    // The one who does supply it is still held to the rule.
+    const refused = await stop(leader.token, supplier.listingId, CONFIRM);
+    expect(refused.status).toBe(403);
+    expect((await listingRow(supplier.listingId)).state).toBe('live');
+  });
+
+  it('a New-tier seller supplies no pool (BR-153), so no pool holds him up either', async () => {
+    const w = await poolWorld([SELLER_NET], 'New');
+    await commitToPoolDirect(w, true);
+    const done = await stop(leader.token, w.sellers[0]!.listingId, CONFIRM);
+    expect(done.status).toBe(200);
+    expect(done.body.data.stopped).toBe(true);
   });
 });
 
@@ -929,41 +1054,121 @@ describe('9. the emergency scripts', () => {
     expect(await planRestart(result.stopBatchId)).toHaveLength(0);
   });
 
-  it('asks for --confirm-pools before stopping a listing an open pool depends on', async () => {
-    const tehsil = await createTehsil();
-    const skuId = await createTestSku('Medium');
-    const productId = String((await Sku.findById(skuId))!.productId);
-    const sellerDocId = await createApprovedSellerAtTehsils(app, purchaseExec.token, [tehsil]);
-    const sellerCp = String((await Seller.findById(sellerDocId))!.counterpartyId);
-    const buyerDocId = await createApprovedBuyerAtTehsil(app, sales.token, tehsil, 'dealer');
-    const created = await createListing(sellerCp, {
-      productId,
-      scopeType: 'my_area',
-      lines: [
-        {
-          skuId,
-          ratePaise: SELLER_NET,
-          expiryBand: 'over12',
-          moqExact: 50,
-          deliveryBand: '48h',
-          provenance: 'company',
-          qty: 100,
-        },
-      ],
-    } as never);
-    const { Pool } = await import('../src/models/Pool.js');
-    const { PoolCommitment } = await import('../src/models/PoolCommitment.js');
-    const pool = (await Pool.findOne({ skuId, isActive: true }))!;
-    await PoolCommitment.create({ poolId: pool._id, buyerId: buyerDocId, qty: 20 });
+  it('asks for --confirm-pools before stopping a listing whose seller supplies a pool with commitments', async () => {
+    const w = await poolWorld();
+    await commitToPoolDirect(w, false);
+    const [seller] = w.sellers as [(typeof w.sellers)[number]];
 
-    const plan = await planStop(parseScope(`seller=${sellerDocId}`));
-    expect(plan.poolListingIds).toEqual([created.listingId]);
+    const plan = await planStop(parseScope(`seller=${seller.sellerDocId}`));
+    expect(plan.poolListingIds).toEqual([seller.listingId]);
     const base = { reasonCode: 'maintenance' as const, note: 'x', employeeId: admin.employeeId };
     await expect(applyStop(plan, base)).rejects.toThrow(/--confirm-pools/);
-    expect((await listingRow(created.listingId)).state).toBe('live');
+    expect((await listingRow(seller.listingId)).state).toBe('live');
     await applyStop(plan, { ...base, confirmPools: true });
-    expect((await listingRow(created.listingId)).state).toBe('paused');
+    expect((await listingRow(seller.listingId)).state).toBe('paused');
   });
+
+  it('does not count a pool somebody else supplies against a seller it stops', async () => {
+    const w = await poolWorld([SELLER_NET, SELLER_NET + 1000]);
+    await commitToPoolDirect(w, true);
+    const [, other] = w.sellers as [(typeof w.sellers)[number], (typeof w.sellers)[number]];
+    const plan = await planStop(parseScope(`seller=${other.sellerDocId}`));
+    expect(plan.poolListingIds).toEqual([]);
+    expect(plan.listingIds).toEqual([other.listingId]);
+    const result = await applyStop(plan, {
+      reasonCode: 'maintenance',
+      note: 'x',
+      employeeId: admin.employeeId,
+    });
+    expect(result.listingsStopped).toBe(1);
+    expect(result.listingsSkipped).toBe(0);
+  });
+
+  it('skips a paid-pool supplier loudly unless --confirm-paid-pools, and then tells the Admins', async () => {
+    const w = await poolWorld();
+    await commitToPoolDirect(w, true);
+    const [seller] = w.sellers as [(typeof w.sellers)[number]];
+    const scope = parseScope(`seller=${seller.sellerDocId}`);
+    const base = { reasonCode: 'maintenance' as const, note: 'x', employeeId: admin.employeeId };
+
+    // Without the flag the listing is a skip: marked in the plan, counted, left live.
+    const plain = await planStop(scope);
+    expect(plain.listingIds).toEqual([]);
+    const skipRow = plain.rows.find((r) => r.type === 'listing')!;
+    expect(skipRow).toMatchObject({ action: 'skip', id: seller.listingId });
+    expect(String(skipRow.blocked)).toMatch(/--confirm-paid-pools/);
+    const skipped = await applyStop(plain, base);
+    expect(skipped.listingsSkipped).toBe(1);
+    expect(skipped.rows.find((r) => r.id === seller.listingId)!.outcome).toBe('skipped');
+    expect((await listingRow(seller.listingId)).state).toBe('live');
+
+    // With the flag on the plan it still wants both flags on the run.
+    const confirmed = await planStop(scope, { confirmPaidPools: true });
+    expect(confirmed.listingIds).toEqual([seller.listingId]);
+    await expect(applyStop(confirmed, { ...base, confirmPools: true })).rejects.toThrow(
+      /--confirm-paid-pools/,
+    );
+    expect((await listingRow(seller.listingId)).state).toBe('live');
+    const done = await applyStop(confirmed, {
+      ...base,
+      confirmPools: true,
+      confirmPaidPools: true,
+    });
+    expect(done.listingsStopped).toBe(1);
+    expect((await listingRow(seller.listingId)).state).toBe('paused');
+    const notices = await StaffNotice.find({
+      kind: 'pool_needs_settling',
+      body: new RegExp(w.poolId),
+    });
+    expect(notices.map((n) => String(n.employeeId))).toContain(admin.employeeId);
+  });
+
+  it('prints the skipped listings and exits non-zero from the command line', async () => {
+    const w = await poolWorld();
+    await commitToPoolDirect(w, true);
+    const [seller] = w.sellers as [(typeof w.sellers)[number]];
+    const out = mkdtempSync(join(tmpdir(), 'rectify01-skip-'));
+    const tsx = join(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs');
+    const args = [
+      join('src', 'scripts', 'stopMarketplace.ts'),
+      '--scope',
+      `seller=${seller.sellerDocId}`,
+      '--reason',
+      'maintenance',
+      '--note',
+      'CLI skip test',
+      '--out',
+      out,
+    ];
+    const attempt = (extra: string[]) => {
+      try {
+        const stdout = execFileSync(process.execPath, [tsx, ...args, ...extra], {
+          env: process.env,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        return { code: 0, text: stdout };
+      } catch (error) {
+        const failed = error as { status: number; stdout: string; stderr: string };
+        return { code: failed.status, text: `${failed.stdout}\n${failed.stderr}` };
+      }
+    };
+
+    // A dry run already says so, and already fails.
+    const dry = attempt([]);
+    expect(dry.code).toBe(1);
+    expect(dry.text).toMatch(/SKIPPED/);
+    expect(dry.text).toContain(seller.listingId);
+    // So does an apply, and the listing is still live.
+    const applied = attempt(['--apply']);
+    expect(applied.code).toBe(1);
+    expect(applied.text).toContain(seller.listingId);
+    expect((await listingRow(seller.listingId)).state).toBe('live');
+    // With both flags it stops it, and succeeds.
+    const forced = attempt(['--apply', '--confirm-pools', '--confirm-paid-pools']);
+    expect(forced.code).toBe(0);
+    expect((await listingRow(seller.listingId)).state).toBe('paused');
+  }, 240000);
 
   it('refuses a database that is not in the test allow-list unless told it is prod', () => {
     expect(() =>

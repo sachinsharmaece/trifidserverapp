@@ -24,6 +24,7 @@ import { syncEnquiryForAsk } from '../enquiry/enquiry.sync.js';
 import { LISTING_LIFE_DAYS } from '../listing/listing.service.js';
 import { isProductSellable } from '../listing/listing.sellable.js';
 import { notifyStaff } from '../notice/notice.service.js';
+import { findCurrentSupplier } from '../pool/pool.service.js';
 import {
   activeAdminIds,
   declineOpenPiles,
@@ -62,8 +63,10 @@ export interface StopInput {
   note: string;
   /** With this false or absent nothing is written: the call answers with the impact preview. */
   confirm?: boolean;
-  /** Admin only: stop a listing whose open pool has commitments. The pool itself is not changed. */
+  /** Admin only: stop a listing whose supplied pool has commitments. The pool itself is not changed. */
   confirmPools?: boolean;
+  /** Admin only, on top of `confirmPools`: a commitment in that pool is already paid. */
+  confirmPaidPools?: boolean;
 }
 
 // Orders that are finished one way or the other; everything else is "open" for the preview.
@@ -72,6 +75,25 @@ const FINISHED_ORDER_STATES = ['closed', 'cancelled', 'supply_failed'];
 // ---------------------------------------------------------------------------
 // Stopping a listing
 // ---------------------------------------------------------------------------
+
+/**
+ * One open pool on the packs and conditions of a listing. Counts and boxes only: Purchase never
+ * sees which buyer committed.
+ */
+export interface PoolRow {
+  poolId: string;
+  packLabel: string;
+  status: string;
+  moq: number;
+  commitments: number;
+  paidCommitments: number;
+  boxesCommitted: number;
+  /** This listing's seller is who supplies the pool right now (BR-152). Only such a pool can block a stop. */
+  suppliedByThisSeller: boolean;
+}
+
+/** Who supplies a pool, found once per pool for a whole bulk plan. */
+export type SupplierCache = Map<string, Promise<{ sellerId: Types.ObjectId } | null>>;
 
 export interface ListingImpact {
   /** Already stopped by staff: a second stop changes nothing. */
@@ -94,7 +116,17 @@ export interface ListingImpact {
   /** Deals already offered to buyers (BR-378): left alone, they run to the end of their 24 hours. */
   offeredDealsRunning: { count: number; boxes: number };
   quotes: { parked: number; live: number };
-  pools: { open: number; withCommitments: number; withPaidCommitments: number };
+  pools: {
+    /** Every open pool on these packs and conditions, whoever supplies it. */
+    open: number;
+    /** Of those, the ones this listing's seller supplies. The rest depend on somebody else. */
+    suppliedByThisSeller: number;
+    /** Of the ones he supplies: those somebody has committed to. */
+    withCommitments: number;
+    /** Of the ones he supplies: those with a commitment already paid. */
+    withPaidCommitments: number;
+    list: PoolRow[];
+  };
   /** Orders already raised from this listing's lines or quotes. They are not touched. */
   openOrdersUntouched: number;
 }
@@ -102,6 +134,7 @@ export interface ListingImpact {
 export async function getListingImpact(
   listing: InstanceType<typeof Listing>,
   now: Date = new Date(),
+  supplierCache: SupplierCache = new Map(),
 ): Promise<ListingImpact> {
   const lines = await ListingLine.find({ listingId: listing._id });
   const lineIds = lines.map((line) => line._id);
@@ -141,7 +174,7 @@ export async function getListingImpact(
     (OPEN_QUOTE_STATUSES as readonly string[]).includes(quote.status),
   );
 
-  const pools = await countPools(lines);
+  const pools = await countPools(lines, listing.sellerId as Types.ObjectId, supplierCache);
 
   const openOrdersUntouched =
     allRequestIds.length === 0 && quotes.length === 0
@@ -197,15 +230,26 @@ export async function getListingImpact(
 }
 
 /**
- * Pools belong to a condition set on a pack, not to one seller's listing (BR-151), so the ones
- * "on" a listing are those its lines' packs and condition sets would feed. Only the ones with
- * somebody committed matter to the stop (see `assertPoolsAllowStop`).
+ * Pools belong to a condition set on a pack, not to one seller's listing (BR-151), and the supplier
+ * is recomputed from every live listing on that pack (BR-152). So the pools "on" a listing are the
+ * open ones its lines' packs and condition sets would feed — all listed — but only the ones this
+ * listing's seller supplies right now can be hurt by stopping it, and only those count towards the
+ * gate (see `stopGateFor`). A pool someone else supplies is listed and never blocks.
  */
 async function countPools(
   lines: Array<InstanceType<typeof ListingLine>>,
+  sellerId: Types.ObjectId,
+  supplierCache: SupplierCache,
 ): Promise<ListingImpact['pools']> {
+  const none = {
+    open: 0,
+    suppliedByThisSeller: 0,
+    withCommitments: 0,
+    withPaidCommitments: 0,
+    list: [],
+  };
   const keys = new Set(lines.map((line) => `${id(line.skuId)}|${buildConditionSetKey(line)}`));
-  if (keys.size === 0) return { open: 0, withCommitments: 0, withPaidCommitments: 0 };
+  if (keys.size === 0) return none;
   const candidates = await Pool.find({
     skuId: { $in: lines.map((line) => line.skuId) },
     isActive: true,
@@ -213,63 +257,155 @@ async function countPools(
   const matching = candidates.filter((pool) =>
     keys.has(`${id(pool.skuId)}|${pool.conditionSetKey}`),
   );
-  let withCommitments = 0;
-  let withPaidCommitments = 0;
+  if (matching.length === 0) return none;
+  const skus = await Sku.find(
+    { _id: { $in: matching.map((pool) => pool.skuId) } },
+    { packLabel: 1 },
+  );
+  const packById = new Map(skus.map((sku) => [id(sku._id), sku.packLabel]));
+
+  const list: PoolRow[] = [];
   for (const pool of matching) {
     const commitments = await PoolCommitment.find({ poolId: pool._id, withdrawnAt: null });
-    if (commitments.length > 0) withCommitments += 1;
-    if (commitments.some((commitment) => commitment.paidAt)) withPaidCommitments += 1;
+    const key = id(pool._id);
+    if (!supplierCache.has(key)) supplierCache.set(key, findCurrentSupplier(pool));
+    const supplier = await supplierCache.get(key)!;
+    list.push({
+      poolId: key,
+      packLabel: packById.get(id(pool.skuId)) ?? '',
+      status: pool.status,
+      moq: pool.moq,
+      commitments: commitments.length,
+      paidCommitments: commitments.filter((commitment) => commitment.paidAt).length,
+      boxesCommitted: commitments.reduce(
+        (sum, commitment) => sum + (Number.isFinite(commitment.qty) ? commitment.qty : 0),
+        0,
+      ),
+      suppliedByThisSeller: supplier !== null && id(supplier.sellerId) === id(sellerId),
+    });
   }
-  return { open: matching.length, withCommitments, withPaidCommitments };
+  const supplied = list.filter((row) => row.suppliedByThisSeller);
+  return {
+    open: list.length,
+    suppliedByThisSeller: supplied.length,
+    withCommitments: supplied.filter((row) => row.commitments > 0).length,
+    withPaidCommitments: supplied.filter((row) => row.paidCommitments > 0).length,
+    list,
+  };
 }
 
+/** The pools a stop leaves with a paid commitment in them: the desk has to settle these. */
+export function paidSuppliedPools(impact: ListingImpact): PoolRow[] {
+  return impact.pools.list.filter((row) => row.suppliedByThisSeller && row.paidCommitments > 0);
+}
+
+export type PoolConfirmation = 'confirmPools' | 'confirmPaidPools';
+
+/** What the person at the screen must do before this stop can go through — shown in the preview. */
+export interface StopGate {
+  /** Set when this person cannot stop the listing at all: the dialog disables Confirm and says why. */
+  blocked: { code: 'admin_only'; message: string } | null;
+  /** Flags the confirming call must carry, in order. An Admin ticks each in the dialog. */
+  needsConfirm: PoolConfirmation[];
+}
+
+const POOL_UNPAID_ADMIN_ONLY =
+  'An open pool with commitments depends on this listing. Only Admin can stop it; ask Admin.';
+const POOL_PAID_ADMIN_ONLY =
+  'A pool this seller supplies has paid commitments. Only Admin can stop this listing, and the pool then has to be settled with its buyers; ask Admin.';
+const POOL_CONFIRM_MESSAGE: Record<PoolConfirmation, string> = {
+  confirmPools:
+    'An open pool with commitments depends on this listing. Stopping the listing does not change the pool. Confirm to stop it anyway.',
+  confirmPaidPools:
+    'A pool this seller supplies has paid commitments. Stopping the listing does not refund or change the pool, so the desk must settle it with its buyers. Confirm to stop it anyway.',
+};
+
 /**
- * An open pool with commitments is not cascaded over (S3). A non-Admin cannot stop such a listing; an
- * Admin needs `confirmPools`. A pool with a paid commitment is a state this build does not cover —
- * money is already in — so the stop is refused outright and the desk settles the pool first.
+ * An open pool this seller supplies, with somebody committed, is not cascaded over (S3). A
+ * non-Admin cannot stop such a listing. An Admin needs `confirmPools`; if a commitment is already
+ * paid, also `confirmPaidPools` — a double confirm, not a wall: a stop moves no money and the
+ * restart undoes it, and a brake that nobody can pull is worse than one with two ticks.
  */
+export function stopGateFor(impact: ListingImpact, caller: { permissions: string[] }): StopGate {
+  const { withCommitments, withPaidCommitments } = impact.pools;
+  if (withCommitments === 0) return { blocked: null, needsConfirm: [] };
+  const paid = withPaidCommitments > 0;
+  if (!caller.permissions.includes(PERMISSIONS.SELLER_ADMIN)) {
+    return {
+      blocked: {
+        code: 'admin_only',
+        message: paid ? POOL_PAID_ADMIN_ONLY : POOL_UNPAID_ADMIN_ONLY,
+      },
+      needsConfirm: [],
+    };
+  }
+  return {
+    blocked: null,
+    needsConfirm: paid ? ['confirmPools', 'confirmPaidPools'] : ['confirmPools'],
+  };
+}
+
 export function assertPoolsAllowStop(
   impact: ListingImpact,
   caller: { permissions: string[] },
-  confirmPools: boolean,
+  confirmed: Partial<Record<PoolConfirmation, boolean>>,
 ): void {
-  const { withCommitments, withPaidCommitments } = impact.pools;
-  if (withPaidCommitments > 0) {
-    throw new AppError({
-      code: 'VALIDATION_FAILED',
-      status: 409,
-      messageEn:
-        'A pool that depends on this listing has paid commitments, so it cannot be stopped from here. Settle the pool with its buyers first.',
-      meta: { pools: impact.pools },
-    });
-  }
-  if (withCommitments === 0) return;
-  if (!caller.permissions.includes(PERMISSIONS.SELLER_ADMIN)) {
+  const gate = stopGateFor(impact, caller);
+  if (gate.blocked) {
     throw new AppError({
       code: 'PERMISSION_DENIED',
-      messageEn:
-        'An open pool with commitments depends on this listing. Only Admin can stop it; ask Admin.',
+      messageEn: gate.blocked.message,
       meta: { pools: impact.pools },
     });
   }
-  if (!confirmPools) {
+  const missing = gate.needsConfirm.filter((flag) => confirmed[flag] !== true);
+  if (missing.length > 0) {
     throw new AppError({
       code: 'CONFIRMATION_REQUIRED',
-      messageEn:
-        'An open pool with commitments depends on this listing. Stopping the listing does not change the pool. Confirm to stop it anyway.',
-      field: 'confirmPools',
+      messageEn: POOL_CONFIRM_MESSAGE[missing[0]!],
+      field: missing[0]!,
       meta: {
-        warnings: [
-          {
-            key: 'openPool',
-            field: 'confirmPools',
-            message: `${withCommitments} open pool(s) with commitments depend on this listing.`,
-          },
-        ],
+        warnings: missing.map((flag) => ({
+          key: flag === 'confirmPools' ? 'openPool' : 'paidPool',
+          field: flag,
+          message: POOL_CONFIRM_MESSAGE[flag],
+        })),
         pools: impact.pools,
       },
     });
   }
+}
+
+/**
+ * Tells the Admins which pools now need settling with their buyers, after a stop that went through on
+ * `confirmPaidPools`. Pools by id, pack and boxes only — the notice names no buyer.
+ */
+async function tellDeskPoolsNeedSettling(
+  pools: PoolRow[],
+  productName: string,
+  ctx: StopContext,
+  session: ClientSession,
+): Promise<void> {
+  if (pools.length === 0) return;
+  const recipients = [...new Set([ctx.employeeId, ...(await activeAdminIds())])];
+  const described = pools
+    .map(
+      (pool) =>
+        `${productName} ${pool.packLabel} (pool ${pool.poolId}): ${pool.boxesCommitted} boxes committed, ${pool.paidCommitments} paid`,
+    )
+    .join('; ');
+  await notifyStaff(
+    recipients,
+    {
+      kind: 'pool_needs_settling',
+      title: `Pool needs settling: ${productName}`,
+      body:
+        `TriFid stopped a listing of ${productName} while a pool it supplies has paid commitments. ` +
+        `The pool itself is unchanged and nobody has been told. Settle it with its buyers: ${described}.`,
+      link: null,
+    },
+    session,
+  );
 }
 
 /**
@@ -330,6 +466,8 @@ export interface StopOutcome {
 export async function executeStop(
   listing: InstanceType<typeof Listing>,
   ctx: StopContext,
+  /** Pools this seller supplies with a paid commitment, confirmed by an Admin: the Admins are told to settle them. */
+  paidPools: PoolRow[] = [],
 ): Promise<StopOutcome> {
   const lines = await ListingLine.find({ listingId: listing._id }, { _id: 1 });
   const lineIds = lines.map((line) => line._id as Types.ObjectId);
@@ -340,6 +478,7 @@ export async function executeStop(
 
     const { pilesClosed, toCall } = await declineOpenPiles(lineIds, ctx, session);
     await tellSalesToCall(toCall, productName, session);
+    await tellDeskPoolsNeedSettling(paidPools, productName, ctx, session);
 
     // Any parked or live quote on these lines goes with the listing — whether the line was born for
     // the quote or was the seller's own that the quote reused. The listing is already stopped, so
@@ -359,9 +498,12 @@ export async function executeStop(
   });
 }
 
+/** The impact, and what this caller must do before the stop can go through (`gate`). */
+export type StopPreview = ListingImpact & { gate: StopGate };
+
 export type StopListingResult =
-  | { confirmed: false; preview: ListingImpact }
-  | ({ confirmed: true; listingId: string; preview: ListingImpact } & StopOutcome);
+  | { confirmed: false; preview: StopPreview }
+  | ({ confirmed: true; listingId: string; preview: StopPreview } & StopOutcome);
 
 /** POST /staff/listings/:id/stop — the impact preview, or (with `confirm: true`) the stop. */
 export async function stopListing(
@@ -379,7 +521,8 @@ export async function stopListing(
     });
   }
   const now = new Date();
-  const preview = await getListingImpact(listing, now);
+  const impact = await getListingImpact(listing, now);
+  const preview: StopPreview = { ...impact, gate: stopGateFor(impact, caller) };
   if (input.confirm !== true) return { confirmed: false, preview };
   if (preview.alreadyStopped) {
     return {
@@ -391,15 +534,19 @@ export async function stopListing(
       quotesWithdrawn: 0,
     };
   }
-  assertPoolsAllowStop(preview, caller, input.confirmPools === true);
-  const outcome = await executeStop(listing, {
-    employeeId: caller.employeeId,
-    correlationId: caller.correlationId,
-    reasonCode: input.reasonCode,
-    note: input.note,
-    stopBatchId: null,
-    now,
-  });
+  assertPoolsAllowStop(preview, caller, input);
+  const outcome = await executeStop(
+    listing,
+    {
+      employeeId: caller.employeeId,
+      correlationId: caller.correlationId,
+      reasonCode: input.reasonCode,
+      note: input.note,
+      stopBatchId: null,
+      now,
+    },
+    paidSuppliedPools(preview),
+  );
   return { confirmed: true, listingId, preview, ...outcome };
 }
 
