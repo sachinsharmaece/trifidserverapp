@@ -4,6 +4,8 @@ import { Schema, model } from 'mongoose';
  * once in the admin master, driving every pre-filled rate. `pct` is a
  * decimal fraction of margin over landed cost (0.0572 for 5.72%), never
  * negative (BR-021 — a negative-margin line is impossible by construction).
+ * Landed cost is the seller's quote, GST included, with no GST added on top
+ * of the margin (DEC-077).
  *
  * BR-046 — effective-dating is forward only: a change never edits a cell in
  * place, it inserts a new row with a later `effectiveFrom`. The cell that

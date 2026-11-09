@@ -18,10 +18,10 @@ import { sameDayDeadline } from '../../clocks/clocks.jobs.js';
  * 3 Nov (My view sheet) — what a printed purchase order shows. This only supplies the data: the
  * admin app builds the page and saves the PDF in the browser, so nothing is stored here.
  *
- * It is the seller's document. The rate is his own net rate (ex-GST, per base unit) frozen on the
- * order, and the amounts are the seller-side money (`computeSellerLineMoney`, GST added on top —
- * DEC-045). No buyer, no buyer rate and no margin appears, so the desk's wall holds (BR-067,
- * BR-069).
+ * It is the seller's document. The rate is his own quoted rate (GST included, per base unit)
+ * frozen on the order, a line's amount is boxes × units × that rate, and the taxable value and GST
+ * are split out of the total (`computeSellerLineMoney`, DEC-077). No buyer, no buyer rate and no
+ * margin appears, so the desk's wall holds (BR-067, BR-069).
  */
 export interface PoPrintLine {
   brand: string;
@@ -30,7 +30,8 @@ export interface PoPrintLine {
   baseUnit: 'LTR' | 'KG' | 'PC';
   baseUnitsPerBox: number;
   ratePaise: number;
-  taxablePaise: number;
+  /** The line's amount, GST included. */
+  totalPaise: number;
 }
 
 export interface PoPrintDto {
@@ -110,7 +111,7 @@ export async function getPoPrintData(poId: string): Promise<PoPrintDto> {
       baseUnit,
       baseUnitsPerBox,
       ratePaise: line.sellerNetPaise,
-      taxablePaise: money.taxablePaise,
+      totalPaise: money.totalPaise,
     };
   });
   const split = splitTax(totalPaise - taxablePaise, placeOfSupply);
