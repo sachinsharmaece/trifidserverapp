@@ -40,6 +40,7 @@ import {
   pauseListing,
   relistListing,
 } from '../src/modules/listing/listing.service.js';
+import { commitToPool } from '../src/modules/pool/pool.service.js';
 import {
   REPORT_COLUMNS,
   SELLER_REQUOTES,
@@ -768,6 +769,80 @@ describe('7c. a listing TriFid stopped confirms nothing', () => {
   });
 });
 
+describe('7d. a pile confirmed but not yet offered when the listing is stopped', () => {
+  it('is closed by the fan-out as a desk decline, and nobody is given a deal', async () => {
+    const w = await world(2);
+    const [a, b] = w.buyers as [World['buyers'][number], World['buyers'][number]];
+    const { pileId } = await createPileRequest(a.cp, w.lineId, { qty: 5 });
+    await createPileRequest(b.cp, w.lineId, { qty: 3 });
+    await demandService.confirmPile(
+      w.sellerCp,
+      pileId,
+      { canSendBoxes: 8, expiryExact: '2029' },
+      randomUUID(),
+    );
+    const preview = await stop(leader.token, w.listingId, REASON);
+    expect(preview.body.data.preview.pilesConfirmingNotOffered).toBe(1);
+
+    const res = await stop(leader.token, w.listingId, CONFIRM);
+    expect(res.body.data.stopped).toBe(true);
+    // The stop leaves the confirmed pile to the fan-out, which is what would have given the deals.
+    expect((await Pile.findById(pileId))!.decision).toBe('confirmed');
+
+    const failuresBefore = await FailureEvent.countDocuments({});
+    const outboxBefore = await NotificationOutbox.countDocuments({
+      counterpartyId: { $in: [a.cp, b.cp, w.sellerCp] },
+    });
+    const noticesBefore = (await StaffNotice.find({}, { _id: 1 })).map((n) => n._id);
+    await runConfirmPileFanout(pileId);
+
+    const pile = (await Pile.findById(pileId))!;
+    expect(pile).toMatchObject({ decision: 'declined', deskDeclined: true });
+    expect(pile.executedAt ?? null).toBeNull();
+    expect(await PileRequest.countDocuments({ pileId, offerState: 'offered' })).toBe(0);
+    expect((await ListingLine.findById(w.lineId))!.qty).toBe(30); // No boxes were held back.
+    const requests = await PileRequest.find({ pileId });
+    const enquiries = await Enquiry.find({ pileRequestId: { $in: requests.map((r) => r._id) } });
+    expect(enquiries).toHaveLength(2);
+    expect(enquiries.every((e) => e.status === 'declined')).toBe(true);
+    expect(await FailureEvent.countDocuments({})).toBe(failuresBefore);
+    expect(
+      await NotificationOutbox.countDocuments({
+        counterpartyId: { $in: [a.cp, b.cp, w.sellerCp] },
+      }),
+    ).toBe(outboxBefore);
+    const raised = await StaffNotice.find({
+      _id: { $nin: noticesBefore },
+      kind: 'listing_stopped',
+    });
+    const text = raised.map((n) => `${n.title} ${n.body}`).join(' ');
+    expect(text).toContain(a.firm);
+    expect(text).toContain(b.firm);
+    expect(text).not.toContain(w.sellerFirm);
+
+    // A second run finds nothing to do.
+    const settled = await StaffNotice.countDocuments({});
+    await runConfirmPileFanout(pileId);
+    expect(await StaffNotice.countDocuments({})).toBe(settled);
+  });
+
+  it('still gives the deals if the listing was restarted before the fan-out ran', async () => {
+    const w = await world(1);
+    const { pileId } = await createPileRequest(w.buyers[0]!.cp, w.lineId, { qty: 5 });
+    await demandService.confirmPile(
+      w.sellerCp,
+      pileId,
+      { canSendBoxes: 5, expiryExact: '2029' },
+      randomUUID(),
+    );
+    await stop(leader.token, w.listingId, CONFIRM);
+    await restart(leader.token, w.listingId);
+    await runConfirmPileFanout(pileId);
+    expect(await PileRequest.countDocuments({ pileId, offerState: 'offered' })).toBe(1);
+    expect((await Pile.findById(pileId))!.decision).toBe('confirmed');
+  });
+});
+
 describe('3b. a restart does not revive a line with no quote behind it', () => {
   async function bornListingOf(quoteId: string): Promise<string> {
     const quote = (await Quote.findById(quoteId))!;
@@ -1310,12 +1385,14 @@ describe('10. marketplace_paused', () => {
   }
 
   it('refuses each entry point with MARKETPLACE_PAUSED, and nothing changes when it is off', async () => {
-    const w = await world(3);
-    const [buyerA, buyerB, buyerC] = w.buyers as [
+    const w = await world(4);
+    const [buyerA, buyerB, buyerC, buyerD] = w.buyers as [
+      World['buyers'][number],
       World['buyers'][number],
       World['buyers'][number],
       World['buyers'][number],
     ];
+    const pools = await poolWorld(); // A pool to commit to.
 
     // State to act on, made while trading is open.
     const live = await liveQuote(w, 0); // A live quote to take.
@@ -1346,6 +1423,8 @@ describe('10. marketplace_paused', () => {
     );
     await runConfirmPileFanout(pileId);
     const deal = (await PileRequest.findOne({ pileId, offerState: 'offered' }))!;
+    // A group the seller has yet to decide: confirming it is what would give buyer D a deal.
+    const undecided = await createPileRequest(buyerD.cp, w.lineId, { qty: 3 });
 
     const calls: Record<string, () => Promise<unknown>> = {
       'new listing': () =>
@@ -1387,6 +1466,16 @@ describe('10. marketplace_paused', () => {
           'test',
         ),
       'take a deal': () => acceptOffer(String(deal._id), deal.buyerId),
+      // Added after the first review: three more doors a pause has to shut.
+      'confirm a pile': () =>
+        demandService.confirmPile(
+          w.sellerCp,
+          undecided.pileId,
+          { canSendBoxes: 3, expiryExact: '2029' },
+          randomUUID(),
+        ),
+      relist: () => relistListing(w.sellerCp, w.listingId),
+      'commit to a pool': () => commitToPool(pools.buyerCp, pools.poolId, { qty: 10 }),
     };
 
     await setFlag('marketplace_paused', true);
@@ -1426,6 +1515,8 @@ describe('10. marketplace_paused', () => {
       expect((await Quote.findById(parked.quoteId))!.status).toBe('pending_sales');
       expect((await Quote.findById(live.quoteId))!.status).toBe('live');
       expect((await PileRequest.findById(deal._id))!.offerState).toBe('offered');
+      expect((await Pile.findById(undecided.pileId))!.decision ?? null).toBeNull();
+      expect(await PoolCommitment.countDocuments({ poolId: pools.poolId })).toBe(0);
       // The desk sees the banner flag on the bell's call.
       const bell = await request(app).get('/api/v1/staff/notices').set(auth(sales.token));
       expect(bell.body.data.marketplacePaused).toBe(true);
@@ -1439,8 +1530,28 @@ describe('10. marketplace_paused', () => {
     await expect(calls['take a deal']!()).resolves.toBeTruthy();
     await expect(calls['take a quote']!()).resolves.toBeTruthy();
     await expect(calls['new pile request']!()).resolves.toBeTruthy();
+    await expect(calls['confirm a pile']!()).resolves.toBeTruthy();
+    await expect(calls['relist']!()).resolves.toBeUndefined();
+    await expect(calls['commit to a pool']!()).resolves.toBeTruthy();
     const bell = await request(app).get('/api/v1/staff/notices').set(auth(sales.token));
     expect(bell.body.data.marketplacePaused).toBe(false);
+  });
+
+  it('leaves a new ask unguarded: a buyer can still say what he wants, and the desk calls him', async () => {
+    const w = await world(1);
+    await setFlag('marketplace_paused', true);
+    try {
+      await expect(
+        demandService.raiseAsk(w.buyers[0]!.cp, {
+          skuId: w.skuId,
+          allPacks: false,
+          qty: 5,
+          conditionRequirement: { expiryBand: 'over12' },
+        }),
+      ).resolves.toBeTruthy();
+    } finally {
+      await setFlag('marketplace_paused', false);
+    }
   });
 
   it('does not pause what is already traded: a raised order can still be cancelled by Sales', async () => {

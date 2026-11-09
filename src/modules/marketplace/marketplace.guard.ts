@@ -3,9 +3,11 @@ import { AppError } from '../../shared/errors.js';
 
 /**
  * RECTIFY-01 Phase 0 — the emergency brake. `config.marketplace_paused` ships off. While it is on the
- * server refuses what starts new trade: a new listing, a new quote, giving a parked quote, a new
- * pile request, and taking a quote or a deal. Orders already raised, payments, dispatch and Marg are
- * not paused — those are trades already made.
+ * server refuses what starts new trade: a new listing, a relist, a new quote, giving a parked quote,
+ * a new pile request, a seller's pile confirm (which is what gives buyers a deal), a new pool
+ * commitment, and taking a quote or a deal. Orders already raised, payments, dispatch, Marg, a new
+ * ask, and a placement into a pool already committed to are not paused — those are trades already
+ * made, or a buyer saying what he wants.
  *
  * Read the way `claim_board` is: a `Config` row whose value is the boolean `true`. A missing row
  * is off, so the flag costs nothing until someone turns it on.

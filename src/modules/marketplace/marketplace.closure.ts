@@ -186,3 +186,21 @@ export async function tellSalesToCall(
     );
   }
 }
+
+/**
+ * A pile the seller confirmed whose buyers had not yet been given their deal when staff stopped the
+ * listing. The fan-out calls this instead of offering: the pile closes as a desk decline, and Sales
+ * is told whom to ring. Returns false when the pile was no longer there to close (another runner
+ * got it first, or it was already offered).
+ */
+export async function declineConfirmedPileOfStoppedListing(
+  pileId: Types.ObjectId,
+  productId: unknown,
+  ctx: StopContext,
+  session: ClientSession,
+): Promise<boolean> {
+  const buyers = await declinePile(pileId, 'confirmed', ctx, session);
+  if (!buyers) return false;
+  await tellSalesToCall(buyers, await productNameOf(productId), session);
+  return true;
+}

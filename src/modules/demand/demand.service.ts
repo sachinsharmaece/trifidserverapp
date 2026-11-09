@@ -942,6 +942,8 @@ export async function confirmPile(
    */
   options: { staffAssisted?: boolean } = {},
 ): Promise<{ pileId: string; undoWindowMs: number }> {
+  // RECTIFY-01 — confirming is what gives the buyers a 24-hour deal, so a paused marketplace takes none.
+  await assertMarketplaceOpen();
   const seller = await requireActiveSeller(sellerCounterpartyId);
   const pile = await Pile.findById(pileId);
   if (!pile) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Pile not found.' });
