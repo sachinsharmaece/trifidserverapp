@@ -23,6 +23,7 @@ import { PoLine } from '../../../models/PoLine.js';
 import { Inspection } from '../../../models/Inspection.js';
 import { postQuote, releaseQuote } from '../../demand/demand.service.js';
 import { listPricedLinesVisibleToBuyerDoc } from '../../listing/listing.service.js';
+import { assertMarketplaceOpen } from '../../marketplace/marketplace.guard.js';
 import { syncEnquiryForAsk } from '../../enquiry/enquiry.sync.js';
 import {
   allocateUpcomingReceipt,
@@ -55,6 +56,7 @@ export async function giveRateOnAsk(
   actor: StaffActor,
   callNote: string,
 ): Promise<{ quoteId: string }> {
+  await assertMarketplaceOpen(); // RECTIFY-01 — before this function pins the ask to a pack.
   assertValidObjectId(askId, 'askId');
   assertValidObjectId(input.listingLineId, 'listingLineId');
   const ask = await Ask.findById(askId);

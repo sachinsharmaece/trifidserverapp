@@ -25,6 +25,7 @@ import {
   computeBuyerFacingRatePaise,
   defaultDeliveryLocationId,
 } from '../listing/listing.service.js';
+import { assertMarketplaceOpen } from '../marketplace/marketplace.guard.js';
 
 const PAY_WINDOW_HOURS = 16; // BR-156.
 const RECONFIRM_THRESHOLD = 0.75; // BR-154.
@@ -134,7 +135,7 @@ export async function getPool(
  * `New` tier sellers. No incumbent right, no last look — recomputed fresh
  * every time this is called, including at trigger.
  */
-async function findCurrentSupplier(
+export async function findCurrentSupplier(
   pool: InstanceType<typeof Pool>,
 ): Promise<{ sellerId: Types.ObjectId; sellerNetPaise: number } | null> {
   const liveListings = await Listing.find({ state: 'live' });
@@ -175,6 +176,7 @@ export async function commitToPool(
   poolId: string,
   input: CommitInput,
 ): Promise<{ poolId: string; isBinding: boolean }> {
+  await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace takes no new pool commitment.
   const buyer = await requireActiveBuyer(buyerCounterpartyId);
   const counterparty = await Counterparty.findById(buyer.counterpartyId);
   if (counterparty?.status === 'blacklisted') {

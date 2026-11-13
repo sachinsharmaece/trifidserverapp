@@ -37,6 +37,10 @@ const pileSchema = new Schema(
     shortfallResolvedAt: { type: Date, default: null },
     shortfallResolvedBy: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },
     sellerLockedUntil: { type: Date, default: null }, // BR-032 — 24h from the seller's confirm.
+    // RECTIFY-01 Phase 0 — true when staff stopped the listing and the desk closed this group as a
+    // decline (no strike, buyers not told). Such a group must not keep the line shut once staff
+    // restart the listing (listing.groups.ts), as a seller's own decline does.
+    deskDeclined: { type: Boolean, default: false },
     // Staff-assisted enquiries — present only when Purchase decided this
     // pile (confirm/requote/decline) on a phone call.
     proxyLog: proxyLogField,
