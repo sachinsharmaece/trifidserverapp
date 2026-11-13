@@ -22,6 +22,7 @@ import { PoLine } from '../../../models/PoLine.js';
 import { Inspection } from '../../../models/Inspection.js';
 import { postQuote, releaseQuote } from '../../demand/demand.service.js';
 import { listPricedLinesVisibleToBuyerDoc } from '../../listing/listing.service.js';
+import { assertMarketplaceOpen } from '../../marketplace/marketplace.guard.js';
 import { syncEnquiryForAsk } from '../../enquiry/enquiry.sync.js';
 import { allocateUpcomingReceipt, createUpcomingReceipt, getPostedReceiptsPaiseForSo, postBankCredit, } from '../../payment/payment.service.js';
 /**
@@ -40,6 +41,7 @@ const DAYS_TO_INDORE_BY_BAND = { '48h': 2, '2-5d': 5 };
  * seller's quote. Sales never sees or types a seller: the line id names the supply.
  */
 export async function giveRateOnAsk(askId, input, actor, callNote) {
+    await assertMarketplaceOpen(); // RECTIFY-01 — before this function pins the ask to a pack.
     assertValidObjectId(askId, 'askId');
     assertValidObjectId(input.listingLineId, 'listingLineId');
     const ask = await Ask.findById(askId);

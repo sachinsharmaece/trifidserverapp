@@ -42,9 +42,13 @@ import { computeBuyerRatePaiseWithMargin, type BuyerMargin } from '../../shared/
 import { resolveBuyerMargin } from '../pricing/pricing.service.js';
 import { resolveSkuClass, toRateTier } from '../chain/chain.service.js';
 import { resolveVisibility, type SellerBlockLookup } from '../territory/resolver.js';
+import {
+  assertMarketplaceOpen,
+  assertNotStoppedByStaff,
+} from '../marketplace/marketplace.guard.js';
 
 const SIX_MONTHS_MS = 183 * 24 * 60 * 60 * 1000;
-const LISTING_LIFE_DAYS = 45; // BR-108.
+export const LISTING_LIFE_DAYS = 45; // BR-108.
 
 /**
  * BR-060/BR-006 — a buyer is never shown a seller's net rate. Every
@@ -201,6 +205,7 @@ export async function createListing(
     skipShelfLifeFloor?: boolean;
   } = {},
 ): Promise<{ listingId: string; lineIds: string[] }> {
+  await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace takes no new listing.
   const seller = await Seller.findOne({ counterpartyId: sellerCounterpartyId });
   if (!seller) throw new AppError({ code: 'PERMISSION_DENIED', messageEn: 'Sellers only.' });
   await assertCounterpartyActive(sellerCounterpartyId); // QR-015 — blacklist blocks new listings.
@@ -398,6 +403,11 @@ interface MyListingLineItem {
   state: string;
   expiresAt: Date;
   daysRemaining: number;
+  /**
+   * RECTIFY-01 — present (and true) only when TriFid paused the listing: the app hides Relist and says
+   * "Paused by TriFid — call the desk". No reason or note is ever sent to the seller.
+   */
+  stoppedByTriFid?: true;
 }
 
 /** API-034. My stock — listings with days remaining, filterable by origin and state. */
@@ -438,6 +448,7 @@ export async function getMyListings(
         0,
         Math.ceil((listing.expiresAt.getTime() - now) / (24 * 60 * 60 * 1000)),
       ),
+      ...(listing.stoppedBy === 'staff' ? { stoppedByTriFid: true as const } : {}),
     };
   });
 }
@@ -457,9 +468,12 @@ export async function relistListing(
   sellerCounterpartyId: string,
   listingId: string,
 ): Promise<void> {
+  await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace takes no relist.
   const seller = await Seller.findOne({ counterpartyId: sellerCounterpartyId });
   const listing = await Listing.findOne({ _id: listingId, sellerId: seller?._id });
   if (!listing) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Listing not found.' });
+  // RECTIFY-01 — a listing TriFid stopped is lifted only by the staff restart, never by the seller.
+  assertNotStoppedByStaff(listing);
   // 30 Oct — a paused listing on a product TriFid no longer sells stays paused (BR-370).
   if (!(await isProductSellable(listing.productId as Types.ObjectId))) {
     throw new AppError({
@@ -960,6 +974,7 @@ export async function createPileRequest(
   // 29 Oct — Sales may put him on a listed offer on a call; the enquiry then records that.
   options: { channel?: 'self' | 'sales_call'; raisedBy?: string } = {},
 ): Promise<{ pileId: string; enquiryId: string | null }> {
+  await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace takes no new pile request.
   const { buyer, line, listing } = await requireLineVisibleToBuyer(
     buyerCounterpartyId,
     listingLineId,

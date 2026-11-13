@@ -15,6 +15,7 @@ import {
   proxyPromotionDecisionSchema,
 } from '../src/modules/proxy/proxy.validation.js';
 import { staffToken, createTestSku, seedMarginCell } from './m4helpers.js';
+import { withPileRequoteEnabled } from './requoteFlag.js';
 import {
   createTehsil,
   createApprovedBuyerAtTehsil,
@@ -128,7 +129,9 @@ describe('Confirmations — confirm, requote and decline without a note', () => 
 
   it('requotes and declines with no note', async () => {
     const a = await pileOn();
-    const requote = await sellerCall(a.pileId, 'requote', { sellerCounterpartyId: a.sellerCp });
+    const requote = await withPileRequoteEnabled(() =>
+      sellerCall(a.pileId, 'requote', { sellerCounterpartyId: a.sellerCp }),
+    );
     expect(requote.status).toBe(200);
     expect(await Pile.findById(a.pileId)).toMatchObject({ decision: 'requoted' });
 

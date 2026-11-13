@@ -138,6 +138,10 @@ export const PERMISSIONS = {
   // Phase 5 (DEC-060) — sees every buyer and seller whatever the team:
   // Controller and Founder (and Admin, who holds everything).
   LEADS_SEE_ALL: 'leads:see_all',
+  // RECTIFY-01 Phase 0 — staff stop trading at once: stop or restart any listing, withdraw any
+  // seller quote. Purchase Leaders (by position, config/positions.ts) and Admin.
+  LISTING_STOP: 'listing:stop',
+  QUOTE_WITHDRAW: 'quote:withdraw',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];

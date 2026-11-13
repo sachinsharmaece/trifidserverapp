@@ -16,6 +16,7 @@ import type { RateOverrideReasonCode } from '../../models/RateOverride.js';
 import { createSoInSession } from '../chain/chain.service.js';
 import type { StaffFillAdjustment } from './demand.service.js';
 import { computeBuyerFacingRatePaise } from '../listing/listing.service.js';
+import { assertMarketplaceOpen } from '../marketplace/marketplace.guard.js';
 import {
   counterpartyIdForBuyer,
   enqueueNotification,
@@ -190,6 +191,7 @@ export async function acceptPileOffer(
   now: Date = new Date(),
   adjustment?: StaffFillAdjustment,
 ): Promise<{ soId: string; soNo: string; boxes: number }> {
+  await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace takes no deal.
   const request = await requestOfBuyer(requestId, buyerCounterpartyId);
   if (request.offerState === 'offered' && request.holdUntil && request.holdUntil <= now) {
     await expirePileOffer(requestId, now);

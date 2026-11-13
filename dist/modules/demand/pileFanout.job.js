@@ -7,6 +7,7 @@ import { Seller } from '../../models/Seller.js';
 import { AppError } from '../../shared/errors.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { syncEnquiriesForPile } from '../enquiry/enquiry.sync.js';
+import { declineConfirmedPileOfStoppedListing, } from '../marketplace/marketplace.closure.js';
 import { offerPileRequests } from './pileOffer.service.js';
 /**
  * WF-05's fan-out, run by the worker process 5 seconds after `demand.service.ts`'s `confirmPile`
@@ -42,6 +43,22 @@ export async function runConfirmPileFanout(pileId) {
     const listing = await Listing.findById(line.listingId);
     if (!listing)
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Listing not found.' });
+    // RECTIFY-01 — staff stopped this listing after the seller confirmed and before the buyers were given
+    // their deal. They get no deal at the rate TriFid stopped: the pile closes as a desk decline (no
+    // strike, no message to the buyers) and Sales is told whom to ring. Deals already offered are left
+    // alone; this pile has none yet.
+    if (listing.stoppedBy === 'staff') {
+        const ctx = {
+            employeeId: String(listing.stoppedByEmployeeId ?? listing.sellerId),
+            correlationId: `pile-${pileId}`,
+            reasonCode: listing.stopReasonCode ?? 'other',
+            note: listing.stopNote ?? '',
+            stopBatchId: listing.stopBatchId ?? null,
+            now: new Date(),
+        };
+        await withTransaction((session) => declineConfirmedPileOfStoppedListing(pile._id, listing.productId, ctx, session));
+        return;
+    }
     const seller = await Seller.findById(listing.sellerId);
     if (!seller)
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Seller not found.' });

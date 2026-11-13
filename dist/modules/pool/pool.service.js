@@ -17,6 +17,7 @@ import { enqueueNotification, counterpartyIdForBuyer, } from '../notification/no
 import { createSoInSession } from '../chain/chain.service.js';
 import { getPostedReceiptsPaiseForSo } from '../payment/payment.service.js';
 import { computeBuyerFacingRatePaise, defaultDeliveryLocationId, } from '../listing/listing.service.js';
+import { assertMarketplaceOpen } from '../marketplace/marketplace.guard.js';
 const PAY_WINDOW_HOURS = 16; // BR-156.
 const RECONFIRM_THRESHOLD = 0.75; // BR-154.
 // B-41 — "NaN of 200 boxes": one commitment with a missing/non-numeric
@@ -94,7 +95,7 @@ export async function getPool(buyerCounterpartyId, poolId) {
  * `New` tier sellers. No incumbent right, no last look — recomputed fresh
  * every time this is called, including at trigger.
  */
-async function findCurrentSupplier(pool) {
+export async function findCurrentSupplier(pool) {
     const liveListings = await Listing.find({ state: 'live' });
     const lines = await ListingLine.find({
         listingId: { $in: liveListings.map((l) => l._id) },
@@ -122,6 +123,7 @@ async function findCurrentSupplier(pool) {
  * (`CH §3.10.7`) — checked against whoever currently supplies the pool.
  */
 export async function commitToPool(buyerCounterpartyId, poolId, input) {
+    await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace takes no new pool commitment.
     const buyer = await requireActiveBuyer(buyerCounterpartyId);
     const counterparty = await Counterparty.findById(buyer.counterpartyId);
     if (counterparty?.status === 'blacklisted') {
