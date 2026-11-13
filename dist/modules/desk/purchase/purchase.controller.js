@@ -87,6 +87,9 @@ export async function getSupplyMatrixBySeller(req, res) {
 export async function getPilesAwaitingDecision(req, res) {
     ok(res, req, await purchaseService.getPilesAwaitingDecision());
 }
+export async function getPilesConfirmedNotCompleted(req, res) {
+    ok(res, req, await purchaseService.getPilesConfirmedNotCompleted());
+}
 export async function getSellerStageFunnelRoute(req, res) {
     ok(res, req, await getSellerStageFunnel(req.params.sellerId));
 }

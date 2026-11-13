@@ -199,6 +199,14 @@ purchaseRouter.get(
   scopeList('purchase', bySellerId),
   controller.getPilesAwaitingDecision,
 );
+// Confirmed, but the buyers have not been given their deal — see pileRecovery.job.ts.
+purchaseRouter.get(
+  '/staff/purchase/piles/not-completed',
+  authenticate,
+  requirePermission(PERMISSIONS.DEMAND_READ),
+  scopeList('purchase', bySellerId),
+  controller.getPilesConfirmedNotCompleted,
+);
 purchaseRouter.post(
   '/staff/purchase/piles/:pileId/chase',
   authenticate,

@@ -98,6 +98,9 @@ export const PERMISSIONS = {
     // all-accepted dock inspection itself. Take it off the Sales role once Logistics and
     // the dock record those steps for real.
     SALES_SKIP_TO_BILLED: 'sales:skip_to_billed',
+    // 4 Nov — approving a Sales request to confirm a held rate at other boxes or another rate
+    // (BR-050). Sales Leaders for their own team, by position; Admin for anyone's. Never your own.
+    SALES_APPROVE_RATE_CHANGE: 'sales:approve_rate_change',
     // Enquiry journey (DEC-051) — owner, follow-up and notes on an enquiry.
     // Sales and Purchase work their own desk's half; Controller (and Admin) either.
     ENQUIRY_MANAGE: 'enquiry:manage',

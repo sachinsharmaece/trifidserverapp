@@ -32,6 +32,9 @@ const soLineSchema = new Schema(
     rateBasis: { type: String, enum: ['per_base_unit'], required: true, default: 'per_base_unit' },
     classAtOrder: { type: String, enum: ['High', 'Medium', 'Low'], required: true },
     marginPctAtOrder: { type: Number, required: true, min: 0 },
+    // The product's own rupee margin (product_margin_matrix) when it priced this line — GST-
+    // inclusive paise per base unit. Null when the class matrix did, or a staff override did.
+    marginPaiseAtOrder: { type: Number, default: null, min: 0 },
     sellerNetPaise: { type: Number, required: true },
     staffPriceId: { type: Schema.Types.ObjectId, ref: 'RateOverride', default: null },
     baseUnitsPerBoxAtOrder: { type: Number, required: true },

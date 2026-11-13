@@ -33,6 +33,8 @@ import {
   type FunnelKey,
 } from './sales.funnel.js';
 import { listCallLogsForBuyer, type CallLogDto } from './sales.calls.js';
+import { rateChangesByTarget, type BuyerFileRateChange } from './sales.rateChange.js';
+import type { StaffCaller } from '../../../shared/team.js';
 import { CallLog } from '../../../models/CallLog.js';
 import { listOrders, type SalesOrderRow } from './sales.orders.js';
 import { isHoldingEnabled } from '../../holding/holding.settings.js';
@@ -434,6 +436,8 @@ export interface BuyerFileLiveQuote {
   /** When the rate was given to him; the desk shows it as "15 minutes ago". */
   givenAt: string;
   bindingUntil: string;
+  /** 4 Nov — the change to boxes / rate Sales has asked for on it, if any (Rate given → Change). */
+  rateChange: BuyerFileRateChange | null;
 }
 
 /**
@@ -501,14 +505,15 @@ export interface BuyerFileDto {
    * 2 Nov — BR-378: deals given to him when a seller confirmed the pile he is on — his boxes, the
    * expiry, his rate — held 24 hours for his word. They show under "Rate given" beside the quotes.
    */
-  pileOffers: PileOfferDto[];
+  /** 4 Nov — each carries the change Sales has asked for on it, if any (Rate given → Change). */
+  pileOffers: Array<PileOfferDto & { rateChange: BuyerFileRateChange | null }>;
   callLogs: CallLogDto[];
   orders: SalesOrderRow[];
   ordersByStage: BuyerFileOrdersByStage;
 }
 
 /** GET /staff/sales/buyers/:buyerId — the buyer-file drill-down. */
-export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
+export async function getBuyerFile(buyerId: string, caller?: StaffCaller): Promise<BuyerFileDto> {
   const buyer = await Buyer.findById(buyerId);
   if (!buyer) throw new AppError({ code: 'NOT_FOUND', messageEn: 'Buyer not found.' });
   const counterparty = await Counterparty.findById(buyer.counterpartyId);
@@ -629,6 +634,10 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
     return skuId ? computeBuyerFacingRatePaise(buyer, skuId, q.ratePaiseForIndore) : null;
   };
 
+  const rateChanges = await rateChangesByTarget(
+    liveQuotes.map((q) => (q._id as Types.ObjectId).toString()),
+    caller,
+  );
   const liveQuoteRows: BuyerFileLiveQuote[] = await Promise.all(
     liveQuotes.map(async (q) => {
       const ask = askById.get((q.askId as Types.ObjectId).toString());
@@ -645,6 +654,7 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
         daysToIndore: q.daysToIndore,
         givenAt: (q as unknown as { createdAt: Date }).createdAt.toISOString(),
         bindingUntil: q.bindingUntil.toISOString(),
+        rateChange: rateChanges.get((q._id as Types.ObjectId).toString()) ?? null,
       };
     }),
   );
@@ -667,7 +677,15 @@ export async function getBuyerFile(buyerId: string): Promise<BuyerFileDto> {
   }
 
   const waitingOnSeller = await listWaitingOnSeller(buyer);
-  const pileOffers = await listPileOffersForBuyer(buyer);
+  const pileOfferDtos = await listPileOffersForBuyer(buyer);
+  const pileRateChanges = await rateChangesByTarget(
+    pileOfferDtos.map((o) => o.requestId),
+    caller,
+  );
+  const pileOffers = pileOfferDtos.map((o) => ({
+    ...o,
+    rateChange: pileRateChanges.get(o.requestId) ?? null,
+  }));
 
   // The same nine joints as the Funnel tab, with the same state lists and wording,
   // counted over this buyer's own records only.

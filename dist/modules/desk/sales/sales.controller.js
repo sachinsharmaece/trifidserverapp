@@ -8,9 +8,10 @@ import * as salesOrdersService from './sales.orders.js';
 import * as salesFunnelService from './sales.funnel.js';
 import * as salesFunnelDrillService from './sales.funnelDrill.js';
 import * as salesStageService from './sales.stageActions.js';
+import * as salesRateChangeService from './sales.rateChange.js';
 import * as salesShortPilesService from './sales.shortPiles.js';
 import { visibilityFor } from '../../../shared/scope.js';
-import { requestMspSchema, respondToMspSchema, createCallLogSchema, giveRateSchema, giveParkedQuoteSchema, markPaidSchema, cancelOrderSchema, markBilledSchema, dispatchOrderSchema, markDeliveredSchema, skipToBilledSchema, resolveShortPileSchema, } from './sales.validation.js';
+import { requestMspSchema, respondToMspSchema, createCallLogSchema, giveRateSchema, giveParkedQuoteSchema, requestRateChangeSchema, decideRateChangeSchema, markPaidSchema, cancelOrderSchema, markBilledSchema, dispatchOrderSchema, markDeliveredSchema, skipToBilledSchema, resolveShortPileSchema, } from './sales.validation.js';
 function ok(res, req, data, status = 200) {
     res.status(status).json({ data, meta: { correlationId: req.correlationId } });
 }
@@ -40,6 +41,28 @@ export async function postGiveParkedQuote(req, res) {
     const { callNote } = giveParkedQuoteSchema.parse(req.body);
     const result = await salesStageService.giveParkedQuote(req.params.quoteId, stageActor(req), callNote);
     ok(res, req, result, 201);
+}
+// 4 Nov — Rate given → Change: Sales asks, the Sales Leader (or Admin) decides.
+export async function postRequestRateChange(req, res) {
+    const { callNote, ...input } = requestRateChangeSchema.parse(req.body);
+    ok(res, req, await salesRateChangeService.requestRateChange(req.params.quoteId, input, stageActor(req), callNote), 201);
+}
+export async function postRequestPileOfferChange(req, res) {
+    const { callNote, ...input } = requestRateChangeSchema.parse(req.body);
+    ok(res, req, await salesRateChangeService.requestPileOfferChange(req.params.requestId, input, stageActor(req), callNote), 201);
+}
+export async function postWithdrawRateChange(req, res) {
+    ok(res, req, await salesRateChangeService.withdrawRateChange(req.params.requestId, {
+        ...callerOf(req),
+        correlationId: req.correlationId,
+    }));
+}
+export async function postDecideRateChange(req, res) {
+    const input = decideRateChangeSchema.parse(req.body);
+    ok(res, req, await salesRateChangeService.decideRateChange(req.params.requestId, input, {
+        ...callerOf(req),
+        correlationId: req.correlationId,
+    }));
 }
 export async function postMarkPaid(req, res) {
     const { utr, callNote } = markPaidSchema.parse(req.body);
@@ -161,7 +184,7 @@ export async function getBuyerBoard(req, res) {
     ok(res, req, await salesBoardService.getBoardForBuyer(req.params.buyerId));
 }
 export async function getBuyerFile(req, res) {
-    ok(res, req, await salesBuyersService.getBuyerFile(req.params.buyerId));
+    ok(res, req, await salesBuyersService.getBuyerFile(req.params.buyerId, callerOf(req)));
 }
 // Sales desk v2 — orders.
 export async function getOrders(req, res) {

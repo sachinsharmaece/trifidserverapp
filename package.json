@@ -27,6 +27,7 @@
     "approve:pendingBuyers": "tsx src/scripts/approvePendingBuyers.ts",
     "import:buyerLeads": "tsx src/scripts/importBuyerLeads.ts",
     "backfill:callHistory": "tsx src/scripts/backfillCallHistory.ts",
+    "purge:demoProducts": "tsx src/scripts/purgeDemoProducts.ts",
     "migrate:owners": "tsx src/scripts/migrateOwners.ts",
     "import:margBills": "tsx src/scripts/importMargBills.ts",
     "import:callerLists": "tsx src/scripts/importCallerLists.ts",

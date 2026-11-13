@@ -32,6 +32,7 @@ import { writeAuditLog } from '../../../shared/audit.js';
 import { addDays } from '../../../shared/clock.js';
 import { FUNNEL_WINDOW_DAYS, getSellerFunnelMetrics, } from './purchase.funnel.js';
 import { getSellerScorecard } from '../../conduct/conduct.service.js';
+import { RECOVERY_MAX_AGE_MS, RECOVERY_MIN_AGE_MS } from '../../demand/pileRecovery.job.js';
 import { getSellerDealerships, resolveCatalogueEntries, } from './purchase.catalogue.js';
 const RETURN_NOTE_WINDOW_DAYS = 30; // BR-189.
 /**
@@ -808,6 +809,50 @@ export async function getPilesAwaitingDecision() {
         };
     });
 }
+export async function getPilesConfirmedNotCompleted(now = new Date()) {
+    const piles = await Pile.find({
+        decision: 'confirmed',
+        executedAt: null,
+        decidedAt: { $lte: new Date(now.getTime() - RECOVERY_MIN_AGE_MS) },
+    }).sort({ decidedAt: 1 });
+    if (piles.length === 0)
+        return [];
+    const lines = await ListingLine.find({ _id: { $in: piles.map((p) => p.listingLineId) } });
+    const lineById = new Map(lines.map((l) => [l._id.toString(), l]));
+    const listings = await Listing.find({ _id: { $in: lines.map((l) => l.listingId) } });
+    const listingById = new Map(listings.map((l) => [l._id.toString(), l]));
+    const firmBySellerId = await getFirmBySellerId(listings.map((l) => l.sellerId));
+    const skus = await Sku.find({ _id: { $in: lines.map((l) => l.skuId) } });
+    const skuById = new Map(skus.map((s) => [s._id.toString(), s]));
+    const products = await Product.find({ _id: { $in: skus.map((s) => s.productId) } });
+    const productById = new Map(products.map((p) => [p._id.toString(), p]));
+    const requests = await PileRequest.find({ pileId: { $in: piles.map((p) => p._id) } });
+    return piles.map((pile) => {
+        const line = lineById.get(pile.listingLineId.toString());
+        const listing = line
+            ? listingById.get(line.listingId.toString())
+            : undefined;
+        const sellerId = listing ? listing.sellerId.toString() : '';
+        const sku = line ? skuById.get(line.skuId.toString()) : undefined;
+        const product = sku ? productById.get(sku.productId.toString()) : undefined;
+        const mine = requests.filter((r) => r.pileId.equals(pile._id));
+        const confirmedAt = pile.decidedAt ?? now;
+        const ageMs = now.getTime() - confirmedAt.getTime();
+        return {
+            pileId: pile._id.toString(),
+            sellerId,
+            sellerFirm: firmBySellerId.get(sellerId) ?? '—',
+            packLabel: sku?.packLabel ?? '—',
+            brand: product?.brand ?? '—',
+            boxes: pile.confirmedQty ?? mine.reduce((sum, r) => sum + r.qty, 0),
+            buyers: new Set(mine.map((r) => r.buyerId.toString())).size,
+            confirmedAt: confirmedAt.toISOString(),
+            minutesSinceConfirmed: Math.round(ageMs / 60_000),
+            lastError: pile.fanoutError ?? null,
+            retrying: ageMs <= RECOVERY_MAX_AGE_MS,
+        };
+    });
+}
 export async function getDispatchChaseQueue(sellerId) {
     const now = Date.now();
     const sellerFilter = sellerId ? { sellerId } : {};
@@ -1036,16 +1081,23 @@ export async function getSellerFile(sellerId) {
     const lines = await ListingLine.find({ listingId: { $in: listings.map((l) => l._id) } });
     const skus = await Sku.find({ _id: { $in: lines.map((l) => l.skuId) } });
     const skuById = new Map(skus.map((s) => [s._id.toString(), s]));
+    const listedProducts = await Product.find({ _id: { $in: skus.map((s) => s.productId) } });
+    const listedProductById = new Map(listedProducts.map((p) => [p._id.toString(), p]));
     const listingById = new Map(listings.map((l) => [l._id.toString(), l]));
     const now = Date.now();
     const listingDtos = lines.map((line) => {
         const listing = listingById.get(line.listingId.toString());
         const sku = skuById.get(line.skuId.toString());
+        const product = sku
+            ? listedProductById.get(sku.productId.toString())
+            : undefined;
         const lastProxy = line.proxyLog.length ? line.proxyLog[line.proxyLog.length - 1] : null;
         return {
             listingId: listing ? listing._id.toString() : '',
             lineId: line._id.toString(),
             skuId: line.skuId.toString(),
+            brand: product?.brand ?? '—',
+            technical: product?.technical ?? '—',
             packLabel: sku?.packLabel ?? '—',
             ratePaise: line.ratePaise,
             scopeType: listing?.scopeType ?? '',

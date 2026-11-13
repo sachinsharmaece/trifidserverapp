@@ -12,7 +12,9 @@ import { AppError } from '../../shared/errors.js';
 import { addHours } from '../../shared/clock.js';
 import { assertValidObjectId } from '../../shared/objectId.js';
 import { writeAuditLog } from '../../shared/audit.js';
+import type { RateOverrideReasonCode } from '../../models/RateOverride.js';
 import { createSoInSession } from '../chain/chain.service.js';
+import type { StaffFillAdjustment } from './demand.service.js';
 import { computeBuyerFacingRatePaise } from '../listing/listing.service.js';
 import {
   counterpartyIdForBuyer,
@@ -33,6 +35,9 @@ export interface PileOrderContext {
   sellerId: string;
   sellerNetPaise: number;
   actor: { employeeId: string; correlationId: string };
+  /** 4 Nov — an approved Sales change of the rate (BR-379); the matrix rate is replaced by it. */
+  overrideRatePaise?: number;
+  overrideReasonCode?: RateOverrideReasonCode;
 }
 
 /** One buyer's order off a pile: the SO for `boxes`, and his "order confirmed" message (WF-05 steps 5–8). */
@@ -52,6 +57,9 @@ export async function raiseOrderForRequest(
       placeOfSupply: 'intra_state', // Refined once M6's tax-jurisdiction lookup exists; see CHANGELOG.
       pileRequestId: (request._id as Types.ObjectId).toString(),
       ...(request.enquiryId ? { enquiryId: (request.enquiryId as Types.ObjectId).toString() } : {}),
+      ...(ctx.overrideRatePaise !== undefined
+        ? { overrideRatePaise: ctx.overrideRatePaise, overrideReasonCode: ctx.overrideReasonCode }
+        : {}),
     },
     ctx.actor,
     session,
@@ -180,6 +188,7 @@ export async function acceptPileOffer(
   buyerCounterpartyId: string,
   actor: PileOfferActor,
   now: Date = new Date(),
+  adjustment?: StaffFillAdjustment,
 ): Promise<{ soId: string; soNo: string; boxes: number }> {
   const request = await requestOfBuyer(requestId, buyerCounterpartyId);
   if (request.offerState === 'offered' && request.holdUntil && request.holdUntil <= now) {
@@ -195,7 +204,15 @@ export async function acceptPileOffer(
       { session },
     );
     if (!claimed) throw closedError('ordered');
-    const boxes = claimed.offerQty ?? claimed.qty;
+    const offered = claimed.offerQty ?? claimed.qty;
+    // 4 Nov — an approved Sales change (BR-379): fewer boxes than the seller confirmed, never more.
+    if (adjustment && adjustment.boxes > offered) {
+      throw new AppError({
+        code: 'VALIDATION_FAILED',
+        messageEn: 'The approved boxes are more than the seller confirmed for him.',
+      });
+    }
+    const boxes = adjustment ? adjustment.boxes : offered;
     const pile = await Pile.findById(claimed.pileId).session(session);
     const line = pile ? await ListingLine.findById(pile.listingLineId).session(session) : null;
     const listing = line ? await Listing.findById(line.listingId).session(session) : null;
@@ -208,12 +225,31 @@ export async function acceptPileOffer(
         skuId: String(line.skuId),
         sellerId: String(seller._id),
         sellerNetPaise: line.ratePaise,
-        actor: { employeeId: actor.actorId, correlationId: actor.correlationId },
+        // An approved change is the requesting staff member's act, so a rate override is logged
+        // against him — not against whoever presses Confirm.
+        actor: {
+          employeeId: adjustment ? adjustment.staffId : actor.actorId,
+          correlationId: actor.correlationId,
+        },
+        ...(adjustment?.overrideRatePaise !== undefined
+          ? {
+              overrideRatePaise: adjustment.overrideRatePaise,
+              overrideReasonCode: adjustment.overrideReasonCode,
+            }
+          : {}),
       },
       claimed,
       boxes,
       session,
     );
+    // The boxes he does not take were held off the listing for him: they go back on it.
+    if (boxes < offered) {
+      await ListingLine.updateOne(
+        { _id: line._id },
+        { $inc: { qty: offered - boxes } },
+        { session },
+      );
+    }
     await writeAuditLog(
       {
         actorId: actor.actorId,

@@ -86,6 +86,16 @@ describe('Enter a listing — a product he does not carry yet', () => {
     ).toBe(1);
 
     expect((await list(productId, skuId)).status).toBe(201);
+
+    // 4 Nov — the seller file's "On the board" names the product, not just the pack.
+    const product = (await Product.findById(productId))!;
+    const file = await request(app)
+      .get(`/api/v1/staff/purchase/sellers/${sellerId}/file`)
+      .set('Authorization', `Bearer ${purchase.token}`);
+    expect(file.status).toBe(200);
+    expect(file.body.data.listings).toEqual([
+      expect.objectContaining({ skuId, brand: product.brand, technical: product.technical }),
+    ]);
   });
 });
 

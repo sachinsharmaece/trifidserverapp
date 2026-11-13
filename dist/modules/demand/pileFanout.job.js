@@ -21,6 +21,12 @@ import { offerPileRequests } from './pileOffer.service.js';
  *
  * This function is also called directly in tests, bypassing the scheduler, so the fan-out logic
  * itself is exercised without waiting on real time.
+ *
+ * It can be reached twice for one pile: by the scheduled job above and, if that one failed, by the
+ * recovery job (`pileRecovery.job.ts`). It is safe to run more than once — the pile is claimed with
+ * one atomic update first, and only the runner that wins it goes on — so a buyer is never given his
+ * deal, or messaged, twice. The claim is a single update, not a document save, so an unrelated
+ * sub-document on the pile (its `proxyLog`) can no longer fail the whole fan-out on validation.
  */
 export async function runConfirmPileFanout(pileId) {
     const pile = await Pile.findById(pileId);
@@ -42,23 +48,24 @@ export async function runConfirmPileFanout(pileId) {
     const requests = await PileRequest.find({ pileId: pile._id }).sort({ requestedAt: 1 });
     const totalAsked = requests.reduce((sum, r) => sum + r.qty, 0);
     const canSend = pile.confirmedQty ?? totalAsked;
+    const short = canSend < totalAsked;
+    // Taken before the transaction so a retry of it subtracts from the same starting figure.
+    const lineQtyBefore = line.qty;
     await withTransaction(async (session) => {
-        // BR-134 — short pile: no automatic allocation rule exists. Flag it for
-        // desk adjudication and stop here rather than guessing who gets how
+        const claimed = await Pile.findOneAndUpdate({ _id: pile._id, decision: 'confirmed', executedAt: null }, { $set: { executedAt: new Date(), ...(short ? { shortfall: true } : {}) } }, { session });
+        if (!claimed)
+            return; // Another runner got here first — nothing left to do.
+        // BR-134 — short pile: no automatic allocation rule exists. Flagged above for
+        // desk adjudication; stop here rather than guessing who gets how
         // much; the seller is never asked to choose between buyers.
-        if (canSend < totalAsked) {
-            pile.shortfall = true;
-            pile.executedAt = new Date();
-            await pile.save({ session });
+        if (short) {
             await syncEnquiriesForPile(pile._id, session); // DEC-051.
             return;
         }
         await offerPileRequests(requests.map((request) => ({ request, qty: request.qty })), session);
         // Held for the buyers while their 24 hours run; a deal walked away from gives its boxes back.
-        line.qty = Math.max(0, line.qty - canSend);
+        line.qty = Math.max(0, lineQtyBefore - canSend);
         await line.save({ session });
-        pile.executedAt = new Date();
-        await pile.save({ session });
         await syncEnquiriesForPile(pile._id, session);
         await writeAuditLog({
             actorId: seller._id,

@@ -60,7 +60,7 @@ export async function getPoPrintData(poId) {
             baseUnit,
             baseUnitsPerBox,
             ratePaise: line.sellerNetPaise,
-            taxablePaise: money.taxablePaise,
+            totalPaise: money.totalPaise,
         };
     });
     const split = splitTax(totalPaise - taxablePaise, placeOfSupply);

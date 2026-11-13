@@ -53,6 +53,8 @@ purchaseRouter.get('/staff/purchase/matrix/by-product/:productId/call-list', aut
 purchaseRouter.get('/staff/purchase/demand/on-board-not-quoted', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), controller.getOnBoardNotQuotedQueue);
 // Confirmations — piles waiting on a seller's decision.
 purchaseRouter.get('/staff/purchase/piles', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), scopeList('purchase', bySellerId), controller.getPilesAwaitingDecision);
+// Confirmed, but the buyers have not been given their deal — see pileRecovery.job.ts.
+purchaseRouter.get('/staff/purchase/piles/not-completed', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), scopeList('purchase', bySellerId), controller.getPilesConfirmedNotCompleted);
 purchaseRouter.post('/staff/purchase/piles/:pileId/chase', authenticate, requirePermission(PERMISSIONS.DEMAND_READ), requireInScope('purchase', sellerOfPile()), controller.postPileChase);
 // Stock → PO → Billed. Reads and the hand-over use `po:edit` like Dispatch; recording what the
 // seller said on a call (hold, invoice) uses the seller-call permission, with a call note.

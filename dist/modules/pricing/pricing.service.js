@@ -1,5 +1,9 @@
 import { MarginMatrix } from '../../models/MarginMatrix.js';
+import { ProductMarginMatrix } from '../../models/ProductMarginMatrix.js';
+import { Product } from '../../models/Product.js';
 import { AppError } from '../../shared/errors.js';
+import { assertValidObjectId } from '../../shared/objectId.js';
+const RATE_TIERS = ['Distributor', 'Dealer', 'Retailer', 'Trader'];
 /**
  * BR-040/BR-046 — the cell that applies is the one with the latest
  * `effectiveFrom` that is not in the future. BR-046: effective-dating is
@@ -21,6 +25,24 @@ export async function resolveMarginMatrixCell(skuClass, tier, asOf = new Date())
         });
     }
     return cell;
+}
+/**
+ * BR-040 — the margin that prices a buyer of this tier on this product. A product's own rupee
+ * cell wins; a product with no cell for the tier (or whose latest row is a "back to the class
+ * matrix" null) falls back to the class percentage. Throws MARGIN_CELL_MISSING only when
+ * neither exists.
+ */
+export async function resolveBuyerMargin(productId, skuClass, tier, asOf = new Date()) {
+    const own = await ProductMarginMatrix.findOne({
+        productId,
+        tier,
+        effectiveFrom: { $lte: asOf },
+    }).sort({ effectiveFrom: -1, createdAt: -1 });
+    if (own && typeof own.marginPaise === 'number') {
+        return { kind: 'rupees', marginPaise: own.marginPaise };
+    }
+    const cell = await resolveMarginMatrixCell(skuClass, tier, asOf);
+    return { kind: 'percent', pct: cell.pct };
 }
 function toDto(doc) {
     return {
@@ -111,4 +133,72 @@ export async function getMarginMatrixHistory(limit = 200) {
         ...toDto(doc),
         createdAt: doc.createdAt,
     }));
+}
+function toProductMarginDto(doc) {
+    return {
+        productMarginId: doc.id,
+        productId: String(doc.productId),
+        tier: doc.tier,
+        marginPaise: doc.marginPaise ?? null,
+        effectiveFrom: doc.effectiveFrom,
+        createdAt: doc.createdAt,
+    };
+}
+async function assertProductExists(productId) {
+    assertValidObjectId(productId, 'productId');
+    if (!(await Product.exists({ _id: productId }))) {
+        throw new AppError({ code: 'NOT_FOUND', messageEn: 'Product not found.' });
+    }
+}
+/**
+ * The rupee cells in effect now for one product, one per tier that has one. A tier with no row,
+ * or whose latest row is a null, is left out: that tier is on the class matrix.
+ */
+export async function getCurrentProductMargin(productId, asOf = new Date()) {
+    await assertProductExists(productId);
+    const results = [];
+    for (const tier of RATE_TIERS) {
+        const row = await ProductMarginMatrix.findOne({
+            productId,
+            tier,
+            effectiveFrom: { $lte: asOf },
+        }).sort({ effectiveFrom: -1, createdAt: -1 });
+        if (row && typeof row.marginPaise === 'number')
+            results.push(toProductMarginDto(row));
+    }
+    return results;
+}
+/**
+ * Saves several tiers for one product under one `effectiveFrom`, in one `insertMany`. Forward
+ * only (BR-046): every cell is a new row, and `marginPaise: null` is how a tier goes back to
+ * the class matrix. Maker-checker does not apply, as for the class matrix (BR-016).
+ */
+export async function setProductMargin(productId, input, actor) {
+    await assertProductExists(productId);
+    const seen = new Set();
+    for (const cell of input.cells) {
+        if (seen.has(cell.tier)) {
+            throw new AppError({
+                code: 'VALIDATION_FAILED',
+                messageEn: `Tier ${cell.tier} appears more than once in this save.`,
+            });
+        }
+        seen.add(cell.tier);
+    }
+    const created = await ProductMarginMatrix.insertMany(input.cells.map((cell) => ({
+        productId,
+        tier: cell.tier,
+        marginPaise: cell.marginPaise,
+        effectiveFrom: input.effectiveFrom,
+        createdBy: actor.employeeId,
+    })));
+    return created.map((doc) => toProductMarginDto(doc));
+}
+/** Every row ever written for one product, newest `effectiveFrom` first, future-dated ones included. */
+export async function getProductMarginHistory(productId, limit = 200) {
+    await assertProductExists(productId);
+    const rows = await ProductMarginMatrix.find({ productId })
+        .sort({ effectiveFrom: -1, createdAt: -1 })
+        .limit(limit);
+    return rows.map((doc) => toProductMarginDto(doc));
 }

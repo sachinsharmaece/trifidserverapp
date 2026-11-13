@@ -10,6 +10,25 @@ export const setMarginMatrixCellSchema = z
   })
   .strict();
 
+// A product's own rupee margin — up to the four tiers, one shared `effectiveFrom`. `marginPaise`
+// is GST-inclusive paise per base unit; `null` sends that tier back to the class matrix.
+export const setProductMarginSchema = z
+  .object({
+    cells: z
+      .array(
+        z
+          .object({
+            tier: z.enum(['Distributor', 'Dealer', 'Retailer', 'Trader']),
+            marginPaise: z.number().int().min(0).nullable(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(4),
+    effectiveFrom: z.coerce.date(),
+  })
+  .strict();
+
 // API-132 — up to the twelve cells, one shared `effectiveFrom`.
 export const setMarginMatrixBulkSchema = z
   .object({

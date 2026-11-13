@@ -6,6 +6,7 @@ import { logger } from '../shared/logger.js';
 import { writeHeartbeat } from './heartbeat.js';
 import {
   JOB_CONFIRM_PILE_FANOUT,
+  JOB_CONFIRMED_PILE_RECOVERY,
   JOB_DELIVERY_AUTO_CLOSE,
   JOB_DORMANCY_CLOCKS,
   JOB_DISPATCH_CHASE,
@@ -18,6 +19,7 @@ import {
   JOB_TEMPLATE_STATUS_POLL,
 } from './agendaProducer.js';
 import { runConfirmPileFanout } from '../modules/demand/pileFanout.job.js';
+import { runConfirmedPileRecovery } from '../modules/demand/pileRecovery.job.js';
 import { runHeadStartOpen } from '../modules/demand/headStartOpen.job.js';
 import { runListingDropping } from '../modules/listing/listingDropping.job.js';
 import {
@@ -64,6 +66,12 @@ async function startWorker(): Promise<void> {
     const pileId = job.attrs.data?.pileId;
     if (!pileId) return;
     await runConfirmPileFanout(pileId);
+  });
+
+  // The second chance for the job above: a confirmed pile whose fan-out failed or never ran is
+  // retried, and staff are told once if it still will not go through.
+  agenda.define(JOB_CONFIRMED_PILE_RECOVERY, async () => {
+    await runConfirmedPileRecovery();
   });
 
   // M8 — the outbox drain (BR-292, BR-290). Sends queued WhatsApp messages and
@@ -127,6 +135,7 @@ async function startWorker(): Promise<void> {
   await agenda.every('5 minutes', JOB_PROMOTION_OFFER_EXPIRY);
   await agenda.every('1 hour', JOB_DELIVERY_AUTO_CLOSE);
   await agenda.every('5 minutes', JOB_PILE_OFFER_EXPIRY);
+  await agenda.every('5 minutes', JOB_CONFIRMED_PILE_RECOVERY);
   await agenda.every('0 2 * * *', JOB_DORMANCY_CLOCKS, undefined, { timezone: 'Asia/Kolkata' });
   // Write one immediately so a fresh deployment does not look stale for the
   // first WORKER_HEARTBEAT_SECONDS window.

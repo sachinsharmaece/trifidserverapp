@@ -41,6 +41,7 @@ import {
   type SellerFunnelMetrics,
 } from './purchase.funnel.js';
 import { getSellerScorecard, type SellerScorecardDto } from '../../conduct/conduct.service.js';
+import { RECOVERY_MAX_AGE_MS, RECOVERY_MIN_AGE_MS } from '../../demand/pileRecovery.job.js';
 import {
   getSellerDealerships,
   resolveCatalogueEntries,
@@ -1283,6 +1284,78 @@ export async function getPilesAwaitingDecision(): Promise<PileAwaitingDecisionIt
 }
 
 // ---------------------------------------------------------------------------
+// Confirmed, deal not given yet — a pile the seller (or Purchase on his behalf) confirmed whose
+// fan-out has not run (BR-137, BR-378). `pileRecovery.job.ts` retries it; this keeps it in sight
+// meanwhile, so a confirmed request never drops off every queue. Buyer counts only (BR-365).
+// ---------------------------------------------------------------------------
+
+export interface PileNotCompletedItem {
+  pileId: string;
+  sellerId: string;
+  sellerFirm: string;
+  packLabel: string;
+  brand: string;
+  boxes: number;
+  buyers: number;
+  confirmedAt: string;
+  minutesSinceConfirmed: number;
+  /** The last error a retry hit; null before the first retry. */
+  lastError: string | null;
+  /** True while the recovery job is still retrying it; false once it is past its 24 hours. */
+  retrying: boolean;
+}
+
+export async function getPilesConfirmedNotCompleted(
+  now: Date = new Date(),
+): Promise<PileNotCompletedItem[]> {
+  const piles = await Pile.find({
+    decision: 'confirmed',
+    executedAt: null,
+    decidedAt: { $lte: new Date(now.getTime() - RECOVERY_MIN_AGE_MS) },
+  }).sort({ decidedAt: 1 });
+  if (piles.length === 0) return [];
+
+  const lines = await ListingLine.find({ _id: { $in: piles.map((p) => p.listingLineId) } });
+  const lineById = new Map(lines.map((l) => [(l._id as Types.ObjectId).toString(), l]));
+  const listings = await Listing.find({ _id: { $in: lines.map((l) => l.listingId) } });
+  const listingById = new Map(listings.map((l) => [(l._id as Types.ObjectId).toString(), l]));
+  const firmBySellerId = await getFirmBySellerId(listings.map((l) => l.sellerId as Types.ObjectId));
+  const skus = await Sku.find({ _id: { $in: lines.map((l) => l.skuId) } });
+  const skuById = new Map(skus.map((s) => [(s._id as Types.ObjectId).toString(), s]));
+  const products = await Product.find({ _id: { $in: skus.map((s) => s.productId) } });
+  const productById = new Map(products.map((p) => [(p._id as Types.ObjectId).toString(), p]));
+  const requests = await PileRequest.find({ pileId: { $in: piles.map((p) => p._id) } });
+
+  return piles.map((pile) => {
+    const line = lineById.get((pile.listingLineId as Types.ObjectId).toString());
+    const listing = line
+      ? listingById.get((line.listingId as Types.ObjectId).toString())
+      : undefined;
+    const sellerId = listing ? (listing.sellerId as Types.ObjectId).toString() : '';
+    const sku = line ? skuById.get((line.skuId as Types.ObjectId).toString()) : undefined;
+    const product = sku ? productById.get((sku.productId as Types.ObjectId).toString()) : undefined;
+    const mine = requests.filter((r) =>
+      (r.pileId as Types.ObjectId).equals(pile._id as Types.ObjectId),
+    );
+    const confirmedAt = pile.decidedAt ?? now;
+    const ageMs = now.getTime() - confirmedAt.getTime();
+    return {
+      pileId: (pile._id as Types.ObjectId).toString(),
+      sellerId,
+      sellerFirm: firmBySellerId.get(sellerId) ?? '—',
+      packLabel: sku?.packLabel ?? '—',
+      brand: product?.brand ?? '—',
+      boxes: pile.confirmedQty ?? mine.reduce((sum, r) => sum + r.qty, 0),
+      buyers: new Set(mine.map((r) => (r.buyerId as Types.ObjectId).toString())).size,
+      confirmedAt: confirmedAt.toISOString(),
+      minutesSinceConfirmed: Math.round(ageMs / 60_000),
+      lastError: pile.fanoutError ?? null,
+      retrying: ageMs <= RECOVERY_MAX_AGE_MS,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch chase — Purchase's own pre-leg-1 queue, built entirely from
 // fields `chain.service.ts` already maintains (`dispatchDueDate`,
 // `sameDayMissAt`, `noDispatch48hAt`) plus `Movement` for the in-transit
@@ -1598,6 +1671,9 @@ export interface SellerFileListingItem {
   listingId: string;
   lineId: string;
   skuId: string;
+  /** 4 Nov — the product the pack belongs to, so the board reads "brand · technical", not just "350 ML". */
+  brand: string;
+  technical: string;
   packLabel: string;
   ratePaise: number;
   scopeType: string;
@@ -1676,17 +1752,26 @@ export async function getSellerFile(sellerId: string): Promise<SellerFileDto> {
   const lines = await ListingLine.find({ listingId: { $in: listings.map((l) => l._id) } });
   const skus = await Sku.find({ _id: { $in: lines.map((l) => l.skuId) } });
   const skuById = new Map(skus.map((s) => [(s._id as Types.ObjectId).toString(), s]));
+  const listedProducts = await Product.find({ _id: { $in: skus.map((s) => s.productId) } });
+  const listedProductById = new Map(
+    listedProducts.map((p) => [(p._id as Types.ObjectId).toString(), p]),
+  );
   const listingById = new Map(listings.map((l) => [(l._id as Types.ObjectId).toString(), l]));
 
   const now = Date.now();
   const listingDtos: SellerFileListingItem[] = lines.map((line) => {
     const listing = listingById.get((line.listingId as Types.ObjectId).toString());
     const sku = skuById.get((line.skuId as Types.ObjectId).toString());
+    const product = sku
+      ? listedProductById.get((sku.productId as Types.ObjectId).toString())
+      : undefined;
     const lastProxy = line.proxyLog.length ? line.proxyLog[line.proxyLog.length - 1] : null;
     return {
       listingId: listing ? (listing._id as Types.ObjectId).toString() : '',
       lineId: (line._id as Types.ObjectId).toString(),
       skuId: (line.skuId as Types.ObjectId).toString(),
+      brand: product?.brand ?? '—',
+      technical: product?.technical ?? '—',
       packLabel: sku?.packLabel ?? '—',
       ratePaise: line.ratePaise,
       scopeType: listing?.scopeType ?? '',

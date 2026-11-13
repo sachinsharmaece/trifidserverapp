@@ -28,8 +28,8 @@ import { AppError } from '../../shared/errors.js';
 import { assertValidObjectId } from '../../shared/objectId.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { env } from '../../config/env.js';
-import { computeBuyerInclusiveRatePaise, computeBuyerLineMoney, computeAbsorptionCapPaise, } from '../../shared/pricing.js';
-import { resolveMarginMatrixCell, } from '../pricing/pricing.service.js';
+import { computeBuyerLineMoney, computeBuyerRatePaiseWithMargin, computeAbsorptionCapPaise, marginPctOf, } from '../../shared/pricing.js';
+import { resolveBuyerMargin } from '../pricing/pricing.service.js';
 import { nextChainNo, nextPoNo, nextSoNo } from './chain.numbering.js';
 import { writeChainEvent } from './chain.events.js';
 import { syncEnquiryForAsk } from '../enquiry/enquiry.sync.js';
@@ -64,6 +64,7 @@ export async function resolveSkuClass(skuId) {
     }
     return {
         skuClass,
+        productId: sku.productId,
         baseUnitsPerBox: sku.baseUnitsPerBox,
         baseUnit: sku.baseUnit,
     };
@@ -122,14 +123,18 @@ export async function createSoInSession(input, actor, session) {
             messageEn: 'Seller is not an active account.',
         });
     }
-    const { skuClass, baseUnitsPerBox, baseUnit } = await resolveSkuClass(input.skuId);
+    const { skuClass, productId, baseUnitsPerBox, baseUnit } = await resolveSkuClass(input.skuId);
     const sku = await Sku.findById(input.skuId).session(session);
     const tier = toRateTier(buyer);
-    // BR-040/QR-007 — throws MARGIN_CELL_MISSING rather than guessing.
-    const cell = await resolveMarginMatrixCell(skuClass, tier);
-    const prefillRatePaise = computeBuyerInclusiveRatePaise(input.sellerNetPaise, cell.pct);
+    // BR-040/QR-007 — the product's own rupee margin if it has one for this tier, else the class
+    // percentage. Throws MARGIN_CELL_MISSING rather than guessing.
+    const margin = await resolveBuyerMargin(productId, skuClass, tier);
+    const prefillRatePaise = computeBuyerRatePaiseWithMargin(input.sellerNetPaise, margin);
     let ratePaise = prefillRatePaise;
-    let marginPctAtOrder = cell.pct;
+    let marginPctAtOrder = marginPctOf(input.sellerNetPaise, margin);
+    // BR-045 — the rupee figure that priced the line, frozen beside the percentage. Null when the
+    // class matrix priced it, or when a staff override replaced the matrix rate altogether.
+    let marginPaiseAtOrder = margin.kind === 'rupees' ? margin.marginPaise : null;
     const usingOverride = input.overrideRatePaise !== undefined;
     if (usingOverride) {
         if (!input.overrideReasonCode) {
@@ -148,6 +153,7 @@ export async function createSoInSession(input, actor, session) {
             });
         }
         marginPctAtOrder = ratePaise / input.sellerNetPaise - 1;
+        marginPaiseAtOrder = null;
     }
     const line = computeBuyerLineMoney(input.boxes, baseUnitsPerBox, ratePaise, input.placeOfSupply);
     const now = new Date();
@@ -191,6 +197,7 @@ export async function createSoInSession(input, actor, session) {
                 ratePaise,
                 classAtOrder: skuClass,
                 marginPctAtOrder,
+                marginPaiseAtOrder,
                 sellerNetPaise: input.sellerNetPaise,
                 staffPriceId: null,
                 baseUnitsPerBoxAtOrder: baseUnitsPerBox,
@@ -566,7 +573,10 @@ export async function transitionToInspected(soId, poId) {
  * the session report as a real simplification, not a quoted rule.
  */
 async function findPromotionCandidate(so, soLine, excludeSellerId) {
-    const zeroMarginRate = computeBuyerInclusiveRatePaise(soLine.sellerNetPaise, 0);
+    // Both margin kinds are added to the quote as it stands (GST included), so zero margin is the
+    // quote itself.
+    const zeroMargin = { kind: 'rupees', marginPaise: 0 };
+    const zeroMarginRate = computeBuyerRatePaiseWithMargin(soLine.sellerNetPaise, zeroMargin);
     const zeroMarginTotal = computeBuyerLineMoney(soLine.boxes, soLine.baseUnitsPerBoxAtOrder, zeroMarginRate, so.placeOfSupply).totalPaise;
     const marginOnLinePaise = so.totalPaise - zeroMarginTotal;
     const cap = computeAbsorptionCapPaise(so.totalPaise, marginOnLinePaise);
@@ -586,7 +596,7 @@ async function findPromotionCandidate(so, soLine, excludeSellerId) {
         const sellerCounterparty = await Counterparty.findById(seller.counterpartyId);
         if (sellerCounterparty?.status !== 'active')
             continue; // Never promote a blacklisted or pending seller.
-        const candidateZeroMarginRate = computeBuyerInclusiveRatePaise(line.ratePaise, 0);
+        const candidateZeroMarginRate = computeBuyerRatePaiseWithMargin(line.ratePaise, zeroMargin);
         const candidateZeroMarginTotal = computeBuyerLineMoney(soLine.boxes, soLine.baseUnitsPerBoxAtOrder, candidateZeroMarginRate, so.placeOfSupply).totalPaise;
         const deltaPaise = Math.max(candidateZeroMarginTotal - zeroMarginTotal, 0);
         if (deltaPaise <= cap) {
