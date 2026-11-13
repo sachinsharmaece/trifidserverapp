@@ -1,11 +1,12 @@
 import { Employee } from '../models/Employee.js';
 import { Role } from '../models/Role.js';
 import { PERMISSIONS } from '../config/permissions.js';
+import { isHoldingEnabled } from '../modules/holding/holding.settings.js';
 import { AppError } from './errors.js';
 const SIDE = {
     sales: {
         leader: 'SALES_LEADER',
-        exec: 'SALES_EXEC',
+        execs: ['SALES_EXEC', 'SR_SALES_EXEC'],
         reportsTo: 'reportsToSalesLeaderId',
         role: 'sales',
         admin: PERMISSIONS.BUYER_ADMIN,
@@ -14,7 +15,7 @@ const SIDE = {
     },
     purchase: {
         leader: 'PURCHASE_LEADER',
-        exec: 'PURCHASE_EXEC',
+        execs: ['PURCHASE_EXEC'],
         reportsTo: 'reportsToPurchaseLeaderId',
         role: 'purchase',
         admin: PERMISSIONS.SELLER_ADMIN,
@@ -56,7 +57,7 @@ async function sideFilter(side) {
     return {
         active: true,
         $or: [
-            { positions: { $in: [SIDE[side].exec, SIDE[side].leader] } },
+            { positions: { $in: [...SIDE[side].execs, SIDE[side].leader] } },
             ...(role ? [{ roleIds: role._id }] : []),
         ],
     };
@@ -140,6 +141,10 @@ export async function callerCovers(side, caller, ownerId, options) {
  * team's leads and the Queue. Never an executive.
  */
 export async function mayChangeOwner(side, caller, ownerId) {
+    // LOCK-34 — with the holding rules on, nobody moves a buyer by hand (the
+    // Change owner button is hidden); claims and the Team Leader's Assign do it.
+    if (side === 'sales' && (await isHoldingEnabled()))
+        return false;
     if (caller.permissions.includes(SIDE[side].admin))
         return true;
     if (!(await isLeaderOf(side, caller.employeeId)))

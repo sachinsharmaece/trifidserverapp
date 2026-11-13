@@ -27,8 +27,9 @@ import { computeBuyerRatePaiseWithMargin } from '../../shared/pricing.js';
 import { resolveBuyerMargin } from '../pricing/pricing.service.js';
 import { resolveSkuClass, toRateTier } from '../chain/chain.service.js';
 import { resolveVisibility } from '../territory/resolver.js';
+import { assertMarketplaceOpen, assertNotStoppedByStaff, } from '../marketplace/marketplace.guard.js';
 const SIX_MONTHS_MS = 183 * 24 * 60 * 60 * 1000;
-const LISTING_LIFE_DAYS = 45; // BR-108.
+export const LISTING_LIFE_DAYS = 45; // BR-108.
 /**
  * BR-060/BR-006 — a buyer is never shown a seller's net rate. Every
  * buyer-facing read (feed, product offers, buy screen) computes this
@@ -130,6 +131,7 @@ function assertBatchRequiredForAuth(provenance, batch) {
 }
 /** API-033. BR-083 — no area, no listing. BR-113 — one rate per ticked pack. */
 export async function createListing(sellerCounterpartyId, input, options = {}) {
+    await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace takes no new listing.
     const seller = await Seller.findOne({ counterpartyId: sellerCounterpartyId });
     if (!seller)
         throw new AppError({ code: 'PERMISSION_DENIED', messageEn: 'Sellers only.' });
@@ -327,6 +329,7 @@ export async function getMyListings(sellerCounterpartyId, filters) {
             state: listing.state,
             expiresAt: listing.expiresAt,
             daysRemaining: Math.max(0, Math.ceil((listing.expiresAt.getTime() - now) / (24 * 60 * 60 * 1000))),
+            ...(listing.stoppedBy === 'staff' ? { stoppedByTriFid: true } : {}),
         };
     });
 }
@@ -342,10 +345,13 @@ export async function pauseListing(sellerCounterpartyId, listingId) {
 }
 /** API-036 relist — BR-108, one tap, history preserved (a fresh 45-day window on the same listing). */
 export async function relistListing(sellerCounterpartyId, listingId) {
+    await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace takes no relist.
     const seller = await Seller.findOne({ counterpartyId: sellerCounterpartyId });
     const listing = await Listing.findOne({ _id: listingId, sellerId: seller?._id });
     if (!listing)
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Listing not found.' });
+    // RECTIFY-01 — a listing TriFid stopped is lifted only by the staff restart, never by the seller.
+    assertNotStoppedByStaff(listing);
     // 30 Oct — a paused listing on a product TriFid no longer sells stays paused (BR-370).
     if (!(await isProductSellable(listing.productId))) {
         throw new AppError({
@@ -680,6 +686,7 @@ export async function requireLineVisibleToBuyer(buyerCounterpartyId, listingLine
 export async function createPileRequest(buyerCounterpartyId, listingLineId, input, 
 // 29 Oct — Sales may put him on a listed offer on a call; the enquiry then records that.
 options = {}) {
+    await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace takes no new pile request.
     const { buyer, line, listing } = await requireLineVisibleToBuyer(buyerCounterpartyId, listingLineId);
     if (input.qty < line.moqExact) {
         throw new AppError({

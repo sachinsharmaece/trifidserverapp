@@ -23,6 +23,7 @@ import { assertValidObjectId } from '../../shared/objectId.js';
 import { decryptPii, encryptPii, maskAadhaar, maskPan } from '../../shared/encryption.js';
 import { forgetStaffActive } from '../../shared/staffActive.js';
 import { assertPasswordMeetsPolicy, type AdminActor } from './admin.service.js';
+import { transferHoldings } from '../holding/holding.service.js';
 
 /**
  * Phase 2 — the Team page's server side (DEC-059, DEC-061, DEC-063):
@@ -68,6 +69,8 @@ export interface TeamInput {
   reportsToPurchaseLeaderId?: ReportsTo;
   worksForTeamLeaderIds?: string[];
   worksForAllTeams?: boolean;
+  // LOCK-34 — whether new leads are dealt to him. Left out = unchanged (on for a new employee).
+  receivingLeads?: boolean;
   // Required on create; optional on Edit, where leaving it out keeps what is on record.
   hr?: HrInput;
 }
@@ -125,9 +128,10 @@ async function resolveTeam(input: TeamInput, selfId: string | null): Promise<Res
     throw fieldError('roleKeys', 'One or more roles do not exist.');
   }
 
-  const reportsToSalesLeaderId = positions.includes('SALES_EXEC')
-    ? await resolveLeader('sales', input.reportsToSalesLeaderId, positions, selfId)
-    : null;
+  const reportsToSalesLeaderId =
+    positions.includes('SALES_EXEC') || positions.includes('SR_SALES_EXEC')
+      ? await resolveLeader('sales', input.reportsToSalesLeaderId, positions, selfId)
+      : null;
   // DEC-066 — a Sales Leader is his team's Purchase Executive (DEC-059) but
   // reports to Admin, not to a Purchase Leader; unless he is a Purchase
   // Leader too, his Purchase reports-to stays empty.
@@ -259,6 +263,7 @@ export interface TeamMemberDto {
   reportsToPurchaseLeader: { employeeId: string; person: string } | null;
   worksForTeams: Array<{ employeeId: string; person: string }>;
   worksForAllTeams: boolean;
+  receivingLeads: boolean;
   laneKeys: string[];
   active: boolean;
   mfaEnabled: boolean;
@@ -309,6 +314,7 @@ async function toTeamDtos(
     reportsToPurchaseLeader: ref(e.reportsToPurchaseLeaderId),
     worksForTeams: e.worksForTeamLeaderIds.map((t) => ref(t)!),
     worksForAllTeams: e.worksForAllTeams,
+    receivingLeads: e.receivingLeads !== false,
     laneKeys: lanes.filter((l) => id(l.employeeId) === id(e._id)).map((l) => l.laneKey),
     active: e.active,
     mfaEnabled: e.mfaEnabled,
@@ -454,6 +460,7 @@ export async function createEmployee(
           positions: team.positions,
           worksForTeamLeaderIds: team.worksForTeamLeaderIds,
           worksForAllTeams: team.worksForAllTeams,
+          ...(input.receivingLeads === undefined ? {} : { receivingLeads: input.receivingLeads }),
           hr,
         },
       ],
@@ -563,6 +570,7 @@ export async function updateEmployee(
     employee.reportsToPurchaseLeaderId = leaderIdOrSelf(team.reportsToPurchaseLeaderId, selfId);
     employee.worksForTeamLeaderIds = team.worksForTeamLeaderIds;
     employee.worksForAllTeams = team.worksForAllTeams;
+    if (input.receivingLeads !== undefined) employee.receivingLeads = input.receivingLeads;
     employee.hr = hr;
     if (mfa.issued) {
       employee.mfaSecret = mfa.secret;
@@ -829,6 +837,8 @@ export async function deactivateEmployee(
         },
         { session },
       );
+      // LOCK-34 — the holdings move with the book rows, so the two stay in step.
+      await transferHoldings(from, to, session);
       await SellerAssignment.updateMany(
         { ownerEmployeeId: from },
         {

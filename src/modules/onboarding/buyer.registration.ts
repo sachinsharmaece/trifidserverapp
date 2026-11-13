@@ -25,6 +25,8 @@ import {
 import { assertLocationChain, recordPincodeIfUnknown } from '../territory/territory.masters.js';
 import { enqueueNotification } from '../notification/notification.outbox.js';
 import { checkBuyerIdentity } from './buyer.identity.js';
+import { isHoldingEnabled } from '../holding/holding.settings.js';
+import { assignNewParty } from '../holding/holding.service.js';
 import {
   assertBankDetailIsWellFormed,
   assertStaffAssistedOtpConfirmed,
@@ -92,6 +94,8 @@ async function setAssignment(
   reason: string,
   session: ClientSession,
 ): Promise<void> {
+  // LOCK-34 — with the holding rules on, intake / claim / the Team Leader decide who holds him.
+  if (await isHoldingEnabled()) return;
   await BookAssignment.findOneAndUpdate(
     { buyerId },
     { $set: { ownerEmployeeId, assignedAt: new Date(), assignedBy, reason } },
@@ -148,6 +152,7 @@ export async function registerBuyerByStaff(
   await assertMayAssignBuyer(caller, assignee);
 
   let accountNameWarning: string | null = null;
+  let newBuyerId: Types.ObjectId | null = null;
   const registrationId = await withTransaction(async (session) => {
     const [counterparty] = await Counterparty.create(
       [
@@ -187,6 +192,7 @@ export async function registerBuyerByStaff(
       { session },
     );
     if (!buyer) throw new Error('Buyer.create returned no document.');
+    newBuyerId = buyer._id as Types.ObjectId;
 
     if (input.dealerships?.length) {
       await BuyerDealership.create(
@@ -252,6 +258,9 @@ export async function registerBuyerByStaff(
     }
     return id(counterpartyId);
   });
+
+  // LOCK-34 — a new party is dealt to a caller (or is the registering caller's own call).
+  if (newBuyerId) await assignNewParty(newBuyerId, 'staff', caller.employeeId);
 
   return { registrationId, accountNameWarning, loginMobile: Boolean(identity.loginMobile) };
 }

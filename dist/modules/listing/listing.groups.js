@@ -11,7 +11,11 @@ import { Pile } from '../../models/Pile.js';
 export function closedStateOf(line, groups) {
     if (groups.some((g) => !g.decision))
         return null; // An open group takes more.
-    const latest = [...groups].sort((a, b) => b.openedAt.getTime() - a.openedAt.getTime())[0];
+    // A group staff closed when they stopped the listing says nothing about the seller's mind: once
+    // the listing is restarted the line takes requests again.
+    const latest = [...groups]
+        .filter((g) => !g.deskDeclined)
+        .sort((a, b) => b.openedAt.getTime() - a.openedAt.getTime())[0];
     if (!latest)
         return null; // Never piled: nothing has been decided.
     if (latest.decision === 'requoted')
@@ -33,6 +37,7 @@ export function groupFacts(pile) {
         shortfall: Boolean(pile.shortfall),
         shortfallResolved: Boolean(pile.shortfallResolvedAt),
         openedAt: pile.openedAt,
+        deskDeclined: Boolean(pile.deskDeclined),
     };
 }
 /** The state for many lines at once: one read, however long the board is. */
@@ -47,6 +52,7 @@ export async function closedStateByLine(lines) {
         shortfall: 1,
         shortfallResolvedAt: 1,
         openedAt: 1,
+        deskDeclined: 1,
     });
     const byLine = new Map();
     for (const pile of piles) {

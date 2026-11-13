@@ -19,6 +19,7 @@ import { encryptAccountNumber } from '../../shared/encryption.js';
 import { enqueueNotification } from '../notification/notification.outbox.js';
 import { toBankDetailDto } from './onboarding.dto.js';
 import { checkBuyerIdentity } from './buyer.identity.js';
+import { assignNewParty } from '../holding/holding.service.js';
 import { BookAssignment } from '../../models/BookAssignment.js';
 import { SellerAssignment } from '../../models/SellerAssignment.js';
 import { assertMayAssign, callerCovers } from '../../shared/team.js';
@@ -155,6 +156,7 @@ export async function registerBuyer(input, staffAssisted, correlationId = 'unkno
     if (input.bankDetail && !staffAssisted)
         assertBankDetailIsWellFormed(input.bankDetail);
     let accountNameWarning = null;
+    let newBuyerId = null;
     const registrationId = await withTransaction(async (session) => {
         const [counterparty] = await Counterparty.create([
             {
@@ -187,6 +189,7 @@ export async function registerBuyer(input, staffAssisted, correlationId = 'unkno
         ], { session });
         if (!buyer)
             throw new Error('Buyer.create returned no document.');
+        newBuyerId = buyer._id;
         if (input.dealerships && input.dealerships.length > 0) {
             await BuyerDealership.create(input.dealerships.map((dealership) => ({
                 buyerId: buyer._id,
@@ -220,6 +223,10 @@ export async function registerBuyer(input, staffAssisted, correlationId = 'unkno
         }
         return counterparty._id.toString();
     });
+    // LOCK-34 — a new party is dealt to a caller (a staff-entered one may be the caller's own call).
+    if (newBuyerId) {
+        await assignNewParty(newBuyerId, staffAssisted ? 'staff' : 'app', staffAssisted?.employeeId);
+    }
     return { registrationId, accountNameWarning };
 }
 /** API-011. WF-02. */

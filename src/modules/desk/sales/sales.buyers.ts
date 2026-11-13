@@ -37,6 +37,8 @@ import { rateChangesByTarget, type BuyerFileRateChange } from './sales.rateChang
 import type { StaffCaller } from '../../../shared/team.js';
 import { CallLog } from '../../../models/CallLog.js';
 import { listOrders, type SalesOrderRow } from './sales.orders.js';
+import { isHoldingEnabled } from '../../holding/holding.settings.js';
+import { holdingInfoForParties, type HoldingInfo } from '../../holding/holding.queries.js';
 
 // B-52 — `tradePosition` is stored lowercase (the enum); `rateTier` (the
 // pricing-side computation in chain.service.ts#toRateTier) already
@@ -79,6 +81,8 @@ export interface BuyerListRow {
   lastCalledAt: string | null;
   lastCalledBy: string | null;
   rateViews: number;
+  /** LOCK-34 — present only while the holding rules are on and he is held. */
+  holding?: HoldingInfo;
   ownerName: string | null; // The Sales employee whose book he is in — not the firm's owner.
   contactName: string | null; // The firm's own owner, from the counterparty.
   mobile: string | null;
@@ -317,6 +321,14 @@ export async function listBuyersPage(
         : null,
     };
   });
+  // LOCK-34 — with the holding rules on, each held buyer carries his kind and clock.
+  if (items.length > 0 && (await isHoldingEnabled())) {
+    const info = await holdingInfoForParties(items.map((i) => i.buyerId));
+    for (const item of items) {
+      const holding = info.get(item.buyerId);
+      if (holding) item.holding = holding;
+    }
+  }
   return { items, total, facets };
 }
 

@@ -8,6 +8,7 @@ import {
   JOB_CONFIRM_PILE_FANOUT,
   JOB_CONFIRMED_PILE_RECOVERY,
   JOB_DELIVERY_AUTO_CLOSE,
+  JOB_DORMANCY_CLOCKS,
   JOB_DISPATCH_CHASE,
   JOB_HEAD_START_OPEN,
   JOB_LISTING_DROPPING,
@@ -28,6 +29,7 @@ import {
   runPileOfferExpiry,
   runPromotionOfferExpiry,
 } from '../modules/clocks/clocks.jobs.js';
+import { runDormancyClocks } from '../modules/holding/holding.job.js';
 import { runOutboxDrain } from '../modules/notification/notification.drain.js';
 import { runTemplateStatusPoll } from '../modules/notification/notification.poll.js';
 
@@ -111,6 +113,13 @@ async function startWorker(): Promise<void> {
     await runPileOfferExpiry(); // BR-378
   });
 
+  // LOCK-34 — the 90-day / 60-day lapse watch. Does nothing until DORMANCY_JOB_ENABLED is
+  // 'true' (and the admin switch is on), so nothing is released before the client says go.
+  agenda.define(JOB_DORMANCY_CLOCKS, async () => {
+    if (!env.dormancyJobEnabled) return;
+    await runDormancyClocks();
+  });
+
   agenda.on('ready', () => {
     logger.info({ msg: 'Worker process ready, agenda connected' });
   });
@@ -127,6 +136,7 @@ async function startWorker(): Promise<void> {
   await agenda.every('1 hour', JOB_DELIVERY_AUTO_CLOSE);
   await agenda.every('5 minutes', JOB_PILE_OFFER_EXPIRY);
   await agenda.every('5 minutes', JOB_CONFIRMED_PILE_RECOVERY);
+  await agenda.every('0 2 * * *', JOB_DORMANCY_CLOCKS, undefined, { timezone: 'Asia/Kolkata' });
   // Write one immediately so a fresh deployment does not look stale for the
   // first WORKER_HEARTBEAT_SECONDS window.
   await writeHeartbeat();

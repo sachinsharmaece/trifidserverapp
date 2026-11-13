@@ -13,6 +13,7 @@ import { assertValidObjectId } from '../../shared/objectId.js';
 import { writeAuditLog } from '../../shared/audit.js';
 import { createSoInSession } from '../chain/chain.service.js';
 import { computeBuyerFacingRatePaise } from '../listing/listing.service.js';
+import { assertMarketplaceOpen } from '../marketplace/marketplace.guard.js';
 import { counterpartyIdForBuyer, enqueueNotification, } from '../notification/notification.outbox.js';
 /**
  * 2 Nov — BR-378. When the seller confirms a pile, each buyer on it is *given the deal* — his boxes,
@@ -114,6 +115,7 @@ async function releaseOffer(requestId, outcome, actor, session) {
  * the boxes). The order, the request's state and the audit entry commit together.
  */
 export async function acceptPileOffer(requestId, buyerCounterpartyId, actor, now = new Date(), adjustment) {
+    await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace takes no deal.
     const request = await requestOfBuyer(requestId, buyerCounterpartyId);
     if (request.offerState === 'offered' && request.holdUntil && request.holdUntil <= now) {
         await expirePileOffer(requestId, now);

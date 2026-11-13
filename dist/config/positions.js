@@ -18,17 +18,23 @@ export const POSITIONS = [
     'SALES_LEADER',
     'PURCHASE_LEADER',
     'SALES_EXEC',
+    // LOCK-34 — a senior caller. Sits in a Sales team like a Sales Executive.
+    'SR_SALES_EXEC',
     'PURCHASE_EXEC',
 ];
+/** LOCK-34 — the positions that make calls and hold parties. */
+export const SALES_CALLER_POSITIONS = ['SALES_EXEC', 'SR_SALES_EXEC'];
 export const POSITION_LABEL = {
     SALES_LEADER: 'Sales Leader',
     PURCHASE_LEADER: 'Purchase Leader',
     SALES_EXEC: 'Sales Executive',
+    SR_SALES_EXEC: 'Sr. Sales Executive',
     PURCHASE_EXEC: 'Purchase Executive',
 };
 export const POSITION_ROLE = {
     SALES_LEADER: 'sales',
     SALES_EXEC: 'sales',
+    SR_SALES_EXEC: 'sales',
     PURCHASE_LEADER: 'purchase',
     PURCHASE_EXEC: 'purchase',
 };
@@ -40,8 +46,14 @@ export const POSITION_PERMISSIONS = {
         PERMISSIONS.BUYER_APPROVE,
         PERMISSIONS.SALES_APPROVE_RATE_CHANGE,
     ],
-    PURCHASE_LEADER: [PERMISSIONS.LOCATION_MASTER_WRITE, PERMISSIONS.SELLER_APPROVE],
+    PURCHASE_LEADER: [
+        PERMISSIONS.LOCATION_MASTER_WRITE,
+        PERMISSIONS.SELLER_APPROVE,
+        PERMISSIONS.LISTING_STOP,
+        PERMISSIONS.QUOTE_WITHDRAW,
+    ],
     SALES_EXEC: [],
+    SR_SALES_EXEC: [],
     PURCHASE_EXEC: [],
 };
 /** The positions actually held once the Sales-Leader rule is applied. */

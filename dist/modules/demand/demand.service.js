@@ -23,6 +23,7 @@ import { computeBuyerFacingRatePaise, createListing } from '../listing/listing.s
 import { recordPulseEvent } from '../desk/sales/sales.service.js';
 import { getAgendaProducer, JOB_CONFIRM_PILE_FANOUT } from '../../worker/agendaProducer.js';
 import { runConfirmPileFanout } from './pileFanout.job.js';
+import { assertMarketplaceOpen, assertNotStoppedByStaff, isPileRequoteEnabled, } from '../marketplace/marketplace.guard.js';
 import { withTransaction } from '../../db/transaction.js';
 import { enqueueNotification, counterpartyIdForBuyer, } from '../notification/notification.outbox.js';
 const OPEN_DEMAND_TTL_DAYS = 30; // BR-120.
@@ -245,6 +246,19 @@ export async function declineAsk(buyerCounterpartyId, askId) {
     });
 }
 /**
+ * After a live quote leaves an ask (taken in a short fill, or withdrawn by staff): the ask stays
+ * `quoted` while another live quote remains, else it is `open` again. BR-126 — the hold starts at a
+ * quote and never restarts; with none left, the next quote is the first of a new round and starts
+ * it (and tells him, `rate_ready`). Saves the ask in the caller's transaction.
+ */
+export async function settleAskAfterQuoteLeaves(ask, session) {
+    const stillQuoted = await Quote.exists({ askId: ask._id, status: 'live' }).session(session);
+    ask.state = stillQuoted ? 'quoted' : 'open';
+    if (!stillQuoted)
+        ask.holdExpiresAt = null;
+    await ask.save({ session });
+}
+/**
  * API-042. BR-127/BR-128 — a split fill is two trades; each seller's portion is its own chain.
  *
  * 2 Nov — a fill that covers fewer boxes than he asked for (a seller quoted 10 of 100) no longer
@@ -254,6 +268,7 @@ export async function declineAsk(buyerCounterpartyId, askId) {
  * `keepRemainderOpen: false` — closes the ask and ranks the quotes not taken (BR-063).
  */
 export async function acceptAskFill(buyerCounterpartyId, askId, input, correlationId, adjustment) {
+    await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace takes no quote.
     const buyer = await requireActiveBuyer(buyerCounterpartyId);
     const ask = await Ask.findOne({ _id: askId, buyerId: buyer._id });
     if (!ask)
@@ -328,13 +343,7 @@ export async function acceptAskFill(buyerCounterpartyId, askId, input, correlati
         await withTransaction(async (session) => {
             ask.filledQty = (ask.filledQty ?? 0) + filled;
             ask.qty = remaining;
-            const stillQuoted = await Quote.exists({ askId: ask._id, status: 'live' }).session(session);
-            ask.state = stillQuoted ? 'quoted' : 'open';
-            // BR-126 — the hold starts at a quote and never restarts; with none left, the next quote
-            // is the first of a new round and starts it (and tells him, `rate_ready`).
-            if (!stillQuoted)
-                ask.holdExpiresAt = null;
-            await ask.save({ session });
+            await settleAskAfterQuoteLeaves(ask, session);
             await syncEnquiryForAsk(ask._id, session);
         });
         return { soIds, filledBoxes: filled, remainingBoxes: remaining };
@@ -489,6 +498,7 @@ function computeGapCodes(ask, input) {
 }
 /** API-045. BR-124 — no inbound freight field. BR-126 — starts the buyer's hold; never restarts it. */
 export async function postQuote(sellerCounterpartyId, askId, input, options = {}) {
+    await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace takes no new quote.
     const seller = await requireActiveSeller(sellerCounterpartyId);
     await assertCounterpartyActive(sellerCounterpartyId); // QR-015 — blacklist blocks new quotes.
     const ask = await Ask.findById(askId);
@@ -559,6 +569,7 @@ export async function postQuote(sellerCounterpartyId, askId, input, options = {}
  * Sales wants can be given on one ask. A buyer with no margin cell cannot be given a rate.
  */
 export async function releaseQuote(quoteId) {
+    await assertMarketplaceOpen(); // RECTIFY-01 — a paused marketplace gives no parked quote.
     assertValidObjectId(quoteId, 'quoteId');
     const quote = await Quote.findById(quoteId);
     if (!quote)
@@ -664,6 +675,8 @@ export async function confirmPile(sellerCounterpartyId, pileId, input, correlati
  * seller's own confirm keeps them.
  */
 options = {}) {
+    // RECTIFY-01 — confirming is what gives the buyers a 24-hour deal, so a paused marketplace takes none.
+    await assertMarketplaceOpen();
     const seller = await requireActiveSeller(sellerCounterpartyId);
     const pile = await Pile.findById(pileId);
     if (!pile)
@@ -680,6 +693,8 @@ options = {}) {
         : null;
     if (!line || !listing)
         throw new AppError({ code: 'NOT_FOUND', messageEn: 'Listing line not found.' });
+    // RECTIFY-01 — a listing TriFid stopped confirms nothing, from the seller or from Purchase on a call.
+    assertNotStoppedByStaff(listing);
     // The expiry he gives now, else the one the listing was entered with. The year is the least needed.
     const expiryExact = input.expiryExact ?? line.expiryExact ?? undefined;
     if (!expiryExact && !options.staffAssisted) {
@@ -699,13 +714,24 @@ options = {}) {
     const now = new Date();
     // DEC-051 — the decision, the line and every buyer's enquiry on this pile commit together.
     await withTransaction(async (session) => {
-        pile.decision = 'confirmed';
-        pile.decidedAt = now;
-        pile.confirmedQty = Math.min(input.canSendBoxes, totalAsked);
-        pile.expiryExact = expiryExact ?? null;
-        pile.batch = input.batch ?? null;
-        pile.sellerLockedUntil = addHours(now, 24); // BR-032.
-        await pile.save({ session });
+        // The decision is the lock: written only while it is still empty, so a staff stop that declined
+        // this pile an instant ago is not overwritten by the seller's confirm.
+        const claimed = await Pile.findOneAndUpdate({ _id: pile._id, decision: null }, {
+            $set: {
+                decision: 'confirmed',
+                decidedAt: now,
+                confirmedQty: Math.min(input.canSendBoxes, totalAsked),
+                expiryExact: expiryExact ?? null,
+                batch: input.batch ?? null,
+                sellerLockedUntil: addHours(now, 24), // BR-032.
+            },
+        }, { session });
+        if (!claimed) {
+            throw new AppError({
+                code: 'PILE_ALREADY_DECIDED',
+                messageEn: 'This pile has already been decided.',
+            });
+        }
         // With no expiry (staff path only) the line is left as it was: nothing is fixed, so nothing
         // displays (the buyer feed shows an expiry only when `expiryFixed && expiryExact`).
         if (expiryExact) {
@@ -758,6 +784,13 @@ export async function undoPileConfirm(sellerCounterpartyId, pileId) {
 }
 /** API-050 requote. Every buyer on the line is asked to accept or cancel — no strike, but scored. */
 export async function requotePile(sellerCounterpartyId, pileId) {
+    // RECTIFY-01 — requote is being rebuilt (it closes the pile and gives the buyers nothing to accept).
+    if (!(await isPileRequoteEnabled())) {
+        throw new AppError({
+            code: 'VALIDATION_FAILED',
+            messageEn: 'Requote is being rebuilt. Decline or confirm instead.',
+        });
+    }
     const seller = await requireActiveSeller(sellerCounterpartyId);
     const pile = await Pile.findById(pileId);
     const line = pile ? await ListingLine.findById(pile.listingLineId) : null;

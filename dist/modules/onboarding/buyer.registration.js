@@ -17,6 +17,8 @@ import { assertMayAssignBuyer, callerCoversBuyer, defaultAssigneeFor, salesLeade
 import { assertLocationChain, recordPincodeIfUnknown } from '../territory/territory.masters.js';
 import { enqueueNotification } from '../notification/notification.outbox.js';
 import { checkBuyerIdentity } from './buyer.identity.js';
+import { isHoldingEnabled } from '../holding/holding.settings.js';
+import { assignNewParty } from '../holding/holding.service.js';
 import { assertBankDetailIsWellFormed, assertStaffAssistedOtpConfirmed, auditAccountNameMismatchIfAny, createPendingBankDetail, writeConsents, } from './onboarding.service.js';
 const id = (value) => String(value);
 async function assertDealershipsExist(dealerships) {
@@ -50,6 +52,9 @@ async function assertMargCodeFree(code, exceptBuyerId) {
     }
 }
 async function setAssignment(buyerId, ownerEmployeeId, assignedBy, reason, session) {
+    // LOCK-34 — with the holding rules on, intake / claim / the Team Leader decide who holds him.
+    if (await isHoldingEnabled())
+        return;
     await BookAssignment.findOneAndUpdate({ buyerId }, { $set: { ownerEmployeeId, assignedAt: new Date(), assignedBy, reason } }, { upsert: true, session });
 }
 export async function registerBuyerByStaff(input, caller) {
@@ -73,6 +78,7 @@ export async function registerBuyerByStaff(input, caller) {
         : input.assignedToEmployeeId;
     await assertMayAssignBuyer(caller, assignee);
     let accountNameWarning = null;
+    let newBuyerId = null;
     const registrationId = await withTransaction(async (session) => {
         const [counterparty] = await Counterparty.create([
             {
@@ -107,6 +113,7 @@ export async function registerBuyerByStaff(input, caller) {
         ], { session });
         if (!buyer)
             throw new Error('Buyer.create returned no document.');
+        newBuyerId = buyer._id;
         if (input.dealerships?.length) {
             await BuyerDealership.create(input.dealerships.map((d) => ({
                 buyerId: buyer._id,
@@ -151,6 +158,9 @@ export async function registerBuyerByStaff(input, caller) {
         }
         return id(counterpartyId);
     });
+    // LOCK-34 — a new party is dealt to a caller (or is the registering caller's own call).
+    if (newBuyerId)
+        await assignNewParty(newBuyerId, 'staff', caller.employeeId);
     return { registrationId, accountNameWarning, loginMobile: Boolean(identity.loginMobile) };
 }
 // ---------------------------------------------------------------------------
