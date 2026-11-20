@@ -1,14 +1,11 @@
 import type { NextFunction, Request, Response } from 'express';
 import { SessionModel, UserModel } from '../../models/index.js';
-import { unauthenticated } from '../../shared/errors.js';
+import { HttpError, unauthenticated } from '../../shared/errors.js';
+import { toCurrentUser, type CurrentUser } from './currentUser.js';
 import { findSession } from './session.js';
 
-/**
- * Put this in front of any route that needs a signed-in user:
- *   router.get('/orders', requireAuth, listOrders);
- * It fills `req.user`. Not signed in, or account turned off: 401.
- */
-export async function requireAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
+/** Finds who is signed in and puts them on `req.user`. Not signed in, or account turned off: 401. */
+async function loadSignedInUser(req: Request): Promise<void> {
   const session = await findSession(req);
   if (!session) throw unauthenticated();
 
@@ -18,6 +15,38 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
     throw unauthenticated();
   }
 
-  req.user = { id: user.id, email: user.email, name: user.name, role: user.role };
+  req.user = toCurrentUser(user);
+}
+
+/**
+ * Put this in front of any route that needs a signed-in user:
+ *   router.get('/orders', requireAuth, listOrders);
+ * A person who is still on a temporary password gets 403 PASSWORD_CHANGE_REQUIRED here.
+ */
+export async function requireAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
+  await loadSignedInUser(req);
+  if (req.user?.mustChangePassword) {
+    throw new HttpError(
+      403,
+      'PASSWORD_CHANGE_REQUIRED',
+      'You must choose a new password before continuing.',
+    );
+  }
   next();
+}
+
+/** Like `requireAuth`, but also lets a person on a temporary password through. Only /me and /auth/password use it. */
+export async function requireSignedIn(
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+): Promise<void> {
+  await loadSignedInUser(req);
+  next();
+}
+
+/** The signed-in user, inside a route that has `requireAuth` (or `requireSignedIn`) in front of it. */
+export function currentUserOf(req: Request): CurrentUser {
+  if (!req.user) throw unauthenticated(); // cannot happen after requireAuth; keeps TypeScript honest
+  return req.user;
 }

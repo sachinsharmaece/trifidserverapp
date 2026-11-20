@@ -1,9 +1,15 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { UserModel } from '../../models/index.js';
-import { HttpError, forbidden, unauthenticated } from '../../shared/errors.js';
-import { fakePasswordCheck, isPasswordCorrect } from './password.js';
-import { requireAuth } from './requireAuth.js';
+import { SessionModel, UserModel } from '../../models/index.js';
+import { HttpError, badRequest, forbidden } from '../../shared/errors.js';
+import { toCurrentUser } from './currentUser.js';
+import {
+  fakePasswordCheck,
+  hashPassword,
+  isPasswordCorrect,
+  newPasswordSchema,
+} from './password.js';
+import { currentUserOf, requireSignedIn } from './requireAuth.js';
 import { endSession, startSession } from './session.js';
 
 export const authRouter: Router = Router();
@@ -61,7 +67,7 @@ authRouter.post('/auth/login', async (req, res) => {
     { failedLoginCount: 0, $unset: { lockedUntil: '' } },
   );
   await startSession(req, res, user._id);
-  res.json({ user: { id: user.id, email: user.email, name: user.name, role: user.role } });
+  res.json({ user: toCurrentUser(user) });
 });
 
 /** POST /auth/logout  ->  204. Works even if the session is already gone. */
@@ -71,7 +77,38 @@ authRouter.post('/auth/logout', async (req, res) => {
 });
 
 /** GET /me  ->  { user }. The admin app calls this on start to find out who is signed in. */
-authRouter.get('/me', requireAuth, (req, res) => {
-  if (!req.user) throw unauthenticated(); // requireAuth always sets it; this keeps TypeScript honest
-  res.json({ user: req.user });
+authRouter.get('/me', requireSignedIn, (req, res) => {
+  res.json({ user: currentUserOf(req) });
+});
+
+const changePasswordBody = z.object({
+  currentPassword: z.string().min(1).max(128),
+  newPassword: newPasswordSchema,
+});
+
+/**
+ * POST /auth/password  { currentPassword, newPassword }  ->  { user } and a fresh cookie.
+ * Used by people on a temporary password (forced at first sign-in) and by anyone who wants a new one.
+ * Every other session of this person is ended, so a stolen old session stops working.
+ */
+authRouter.post('/auth/password', requireSignedIn, async (req, res) => {
+  const me = currentUserOf(req);
+  const { currentPassword, newPassword } = changePasswordBody.parse(req.body);
+
+  const user = await UserModel.findById(me.id).select('+passwordHash');
+  if (!user || !(await isPasswordCorrect(user.passwordHash, currentPassword))) {
+    // Not 401: that code means "your session ended" and would sign the person out of the app.
+    throw new HttpError(400, 'WRONG_PASSWORD', 'The current password is not correct.');
+  }
+  if (newPassword === currentPassword) {
+    throw badRequest('Choose a password that is different from the current one.');
+  }
+
+  await UserModel.updateOne(
+    { _id: user._id },
+    { passwordHash: await hashPassword(newPassword), mustChangePassword: false },
+  );
+  await SessionModel.deleteMany({ userId: user._id });
+  await startSession(req, res, user._id);
+  res.json({ user: { ...toCurrentUser(user), mustChangePassword: false } });
 });

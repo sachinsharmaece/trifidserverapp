@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authRouter } from '../modules/auth/auth.routes.js';
+import { usersRouter } from '../modules/users/users.routes.js';
 import { healthRouter } from '../modules/health/health.routes.js';
 
 /**
@@ -14,3 +15,6 @@ apiRouter.use(healthRouter);
 
 // /api/v1/auth/login, /auth/logout and /me.
 apiRouter.use(authRouter);
+
+// /api/v1/users: staff accounts (Founder and Admin only).
+apiRouter.use(usersRouter);

@@ -21,8 +21,9 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
 
 ## Conventions
 
-- Protect a route with `requireAuth` (`src/modules/auth/requireAuth.ts`); it sets `req.user`. Add a small `requireRole`
-  the first time a route needs a role check.
+- Protect a route with `requireAuth` (`src/modules/auth/requireAuth.ts`); it sets `req.user`. Limit it to roles with
+  `requireRole('ADMIN', …)` placed after it, e.g. `router.use('/users', requireAuth, requireRole('FOUNDER', 'ADMIN'))`.
+  Read the person with `currentUserOf(req)`.
 - Throw `HttpError` helpers; never `res.status(...).json({ error })` by hand. Zod errors become 422 automatically.
 - Validate every request with Zod. Never trust ids, money or roles from the client.
 - Money writes and the audit/voucher entries that go with them happen in ONE MongoDB transaction.

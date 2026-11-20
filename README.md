@@ -87,7 +87,7 @@ src/
   scripts/             db-sync.ts, db-seed.ts (run with npm run db:sync / db:seed)
   middleware/          requestId (more later: idempotency)
   routes/index.ts      the /api/v1 router — mount feature modules here
-  modules/<feature>/   one folder per feature (health, auth today; users, … later)
+  modules/<feature>/   one folder per feature (health, auth, users today)
   shared/              errors (HttpError + error envelope), logger, shutdown, enums, validators
   types/               Express type additions (req.requestId, req.user)
 ```
@@ -105,10 +105,32 @@ src/
 ## Sign-in (modules/auth)
 
 - `POST /api/v1/auth/login` `{ email, password }` → `{ user }` and the cookie `sid`. `POST /api/v1/auth/logout` → 204.
-  `GET /api/v1/me` → `{ user }`, or 401 when nobody is signed in.
+  `GET /api/v1/me` → `{ user }`, or 401 when nobody is signed in. `user` is `{ id, email, name, role, mustChangePassword }`.
+- `POST /api/v1/auth/password` `{ currentPassword, newPassword }` (10+ characters) → `{ user }` and a new cookie. Ends the
+  person's other sessions. New and reset accounts have `mustChangePassword: true`; until they change it, every route
+  except `/me` and `/auth/password` answers 403 `PASSWORD_CHANGE_REQUIRED`.
 - Passwords are stored as argon2id hashes. The cookie holds a random token; the database keeps only its hash
   (`sessions._id`), so deleting the session row signs that person out at once.
 - A session ends after 12 hours without a request, or 7 days in total. 5 wrong passwords lock the account for 15 minutes.
 - The cookie is `httpOnly` and `SameSite=Strict` (and `Secure` in production). In development the admin app calls the API
   through Vite's proxy, so both are on one origin.
-- Left out for now: MFA, step-up re-authentication, change/reset password, rate limit per IP, breached-password check.
+
+## Staff accounts (modules/users)
+
+Founder and Admin only (`requireRole`). Everyone else gets 403 `FORBIDDEN`.
+
+| Call                                    | What it does                                                                          |
+| --------------------------------------- | ------------------------------------------------------------------------------------- |
+| `GET /api/v1/users`                     | List all staff (no paging: a company has a handful)                                   |
+| `POST /api/v1/users`                    | `{ name, email, role }` → creates the account, returns a one-time `temporaryPassword` |
+| `PATCH /api/v1/users/:id`               | `{ name?, role?, active? }`. A role change or turning off ends that person's sessions |
+| `POST /api/v1/users/:id/reset-password` | New one-time `temporaryPassword`; unlocks the account and ends its sessions           |
+
+Rules: only a Founder can create, edit or reset a Founder (otherwise an Admin could make themselves one); nobody can
+change their own role, turn themselves off or reset their own password here. Accounts are never deleted. Every create,
+update and reset writes a line to `audit_events` (never the password). A duplicate email answers 409 `EMAIL_TAKEN`.
+
+## Left out for now
+
+MFA, step-up re-authentication, a per-IP rate limit on login, a breached-password check, and "forgot password" by
+email (an Admin resets it instead).

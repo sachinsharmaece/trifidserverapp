@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import argon2 from 'argon2';
 import { z } from 'zod';
 
@@ -26,4 +27,9 @@ let fakeHash: Promise<string> | undefined;
 export async function fakePasswordCheck(password: string): Promise<void> {
   fakeHash ??= hashPassword('this-is-not-a-real-password');
   await isPasswordCorrect(await fakeHash, password);
+}
+
+/** A random 12-character password for a new or reset account. The person must replace it at first sign-in. */
+export function generateTemporaryPassword(): string {
+  return randomBytes(9).toString('base64url');
 }
