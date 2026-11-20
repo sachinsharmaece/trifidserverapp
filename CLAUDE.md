@@ -1,0 +1,33 @@
+# trifidserverapp (API)
+
+Workspace rules and the server ↔ admin-app contract are in `../CLAUDE.md` (loaded automatically).
+Full commands and folder layout: `README.md`.
+
+## Commands
+
+`npm run dev` (port 4000) · `npm run typecheck` · `npm run lint` · `npm run format:check` · `npm run build`
+`npm run db:sync` (collections + indexes) · `npm run db:seed` (default settings; never overwrites) ·
+`npm run create-founder` (first Founder account; asks for the password, shows nothing while typing).
+MongoDB must be a replica set (transactions). `.env` holds secrets: never print, commit or edit it.
+
+## Where code goes
+
+- `src/models/<name>.model.ts`: one Mongoose model per collection, exported from `src/models/index.ts`.
+  Use ARCH §B1/§B3 for collection and field names, but only the fields the current feature needs. Reuse `intField`,
+  `bpField`, `refField`, `textField` from `src/models/_fields.ts`. Enums only from `src/shared/enums.ts`.
+- `src/modules/<feature>/`: routes, Zod request schemas, service code for one feature. Mount in `src/routes/index.ts`.
+- `src/shared/`: errors (`HttpError`, `badRequest`, `notFound`, …), logger, validators, enums.
+- `src/db/`: connection, `nextDocumentNumber()`, seeds. `src/scripts/`: one-off CLI scripts.
+
+## Conventions
+
+- Protect a route with `requireAuth` (`src/modules/auth/requireAuth.ts`); it sets `req.user`. Add a small `requireRole`
+  the first time a route needs a role check.
+- Throw `HttpError` helpers; never `res.status(...).json({ error })` by hand. Zod errors become 422 automatically.
+- Validate every request with Zod. Never trust ids, money or roles from the client.
+- Money writes and the audit/voucher entries that go with them happen in ONE MongoDB transaction.
+- `margin_cells` and `audit_events` cannot be changed after insert (append-only). Other collections use Mongoose
+  defaults; add optimistic locking (`version`) only to documents several people edit at once (orders, trades).
+- `select: false` and a `toJSON` transform for secrets (`passwordHash`, encrypted bank numbers).
+- Mongoose 9: pre hooks are async or throw (no `next`); use `doc.validate()`, not the deprecated `validateSync()`.
+- Keep TypeScript on 5.9.x (typescript-eslint does not support 7). No new dependency without saying why.
