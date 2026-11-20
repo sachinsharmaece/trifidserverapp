@@ -7,6 +7,7 @@ TriFid back-office API: Express 5, MongoDB (Mongoose 9), TypeScript, Zod.
 ```powershell
 npm install
 copy .env.example .env      # then set MONGODB_URI (must be a replica set, e.g. MongoDB Atlas)
+                            # and DATA_ENCRYPTION_KEY (how to make one is in .env.example)
 npm run dev                 # http://localhost:4000  (restarts on file changes)
 ```
 
@@ -137,23 +138,39 @@ Everyone signed in can read; only Founder and Admin can change (`canEditMasters`
 deleted: turn it off with `active: false`. Every change writes a line to `audit_events` with only the fields that changed.
 Names are unique ignoring case and extra spaces (409 `NAME_TAKEN`; HSN codes: 409 `CODE_TAKEN`; packs: 409 `PACK_TAKEN`).
 
-| Call                                                  | What it does                                                                                                                                     |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET/POST /manufacturers`, `PATCH /manufacturers/:id` | `{ name }`; patch `{ name?, active? }`                                                                                                           |
-| `GET/POST /technicals`, `PATCH /technicals/:id`       | `{ name, description? }`; patch `{ name?, description?, active? }`                                                                               |
-| `GET/POST /hsn-codes`, `PATCH /hsn-codes/:id`         | `{ code (4/6/8 digits), description?, gstBp }`; patch `{ description?, gstBp?, active? }` (code never changes)                                   |
-| `GET /products?q=&page=&pageSize=`                    | `{ products, total, page, pageSize }`, each product with its packs; `q` searches the name; A to Z                                                |
-| `GET /products/:id`                                   | One product with its packs                                                                                                                       |
-| `POST /products`                                      | `{ name, category?, manufacturerId, technicalId, hsnCodeId, taxBp?, skus: [...] }`: at least one pack, saved with the product in ONE transaction |
-| `PATCH /products/:id`                                 | Any of the product fields and `active`. Only newly chosen manufacturer/technical/HSN must be active                                              |
-| `POST /products/:id/skus`, `PATCH /skus/:id`          | Add a pack; patch `{ packLabel?, unitsPerBox?, skuClass?, active? }`                                                                             |
+| Call                                                  | What it does                                                                                                                                                                                  |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET/POST /manufacturers`, `PATCH /manufacturers/:id` | `{ name }`; patch `{ name?, active? }`                                                                                                                                                        |
+| `GET/POST /technicals`, `PATCH /technicals/:id`       | `{ name, description? }`; patch `{ name?, description?, active? }`                                                                                                                            |
+| `GET/POST /hsn-codes`, `PATCH /hsn-codes/:id`         | `{ code (4/6/8 digits), description?, gstBp }`; patch `{ description?, gstBp?, active? }` (code never changes)                                                                                |
+| `GET /company`, `PUT /company`                        | `{ company }` (`null` before setup). PUT `{ name, gstin, address, bank: { accountNumber?, ifsc, bankName } }` creates or changes the one record. Send no account number to keep the saved one |
+| `GET /products?q=&page=&pageSize=`                    | `{ products, total, page, pageSize }`, each product with its packs; `q` searches the name; A to Z                                                                                             |
+| `GET /products/:id`                                   | One product with its packs                                                                                                                                                                    |
+| `POST /products`                                      | `{ name, category?, manufacturerId, technicalId, hsnCodeId, taxBp?, skus: [...] }`: at least one pack, saved with the product in ONE transaction                                              |
+| `PATCH /products/:id`                                 | Any of the product fields and `active`. Only newly chosen manufacturer/technical/HSN must be active                                                                                           |
+| `POST /products/:id/skus`, `PATCH /skus/:id`          | Add a pack; patch `{ packLabel?, unitsPerBox?, skuClass?, active? }`                                                                                                                          |
+| `GET /tehsils?q=&page=&pageSize=`                     | `{ tehsils, total, page, pageSize }`; `q` is a 6-digit pincode, or part of the state / district / tehsil name; sorted by state, district, name                                                |
+| `POST /tehsils`, `PATCH /tehsils/:id`                 | `{ state, district, name, pincodes: [] }`; patch any of them plus `active`. Same state + district + name twice: 409 `TEHSIL_TAKEN`                                                            |
+| `GET /reason-codes?context=&active=`                  | `{ reasonCodes }` sorted by context, then `sort`, then label                                                                                                                                  |
+| `POST /reason-codes`, `PATCH /reason-codes/:id`       | `{ code (CAPITALS_AND_DIGITS), label, context, sort? }`; patch `{ label?, sort?, active? }` only: code and context never change. Duplicate: 409 `CODE_TAKEN`                                  |
 
 `taxBp` defaults to the HSN code's rate. Changing an HSN code's GST rate does not change products that use it: each
 product keeps its own `taxBp`.
 
+**Company bank number.** `PUT /company` locks the account number with AES-256-GCM (`src/shared/encryption.ts`, key
+`DATA_ENCRYPTION_KEY`) and saves the locked text plus the last 4 digits. The API only ever returns `accountLast4`; the
+audit log says `accountNumber: 'replaced'` and never holds the number. Nothing reads the full number back yet (the
+proforma and payout files will, later, through `decryptText`). Without the key the server still runs; only saving a bank
+number fails (500 `ENCRYPTION_KEY_MISSING`). If the key is lost the saved number cannot be read: type it in again. This
+is simpler than the KMS data key in ARCH §B12.2: one key from `.env` (a secret store in production); key rotation is not built.
+
+A reason code belongs to one `context` (`BUYER_NO`, `B6_LEAK`, `CANCEL_SO`, `REFUND`, `COMPLAINT`, `MARG_QUERY`,
+`SELL_LEAD_REJECT`, `CALL_OUTCOME`); screens ask for `?context=...&active=true` so a reason shows only where it is used.
+Pincodes are 6 digits, not starting with 0; duplicates inside one tehsil are dropped.
+
 ## Left out for now
 
 MFA, step-up re-authentication, a per-IP rate limit on login, a breached-password check, and "forgot password" by
-email (an Admin resets it instead). Masters not built yet: company profile (bank-number encryption to decide), tehsils,
-reason codes, the margin matrix (needs step-up). Not enforced yet: pack label vs unit family (SRS-MST-01), and making
-`unitsPerBox` read-only once listings or orders use a pack.
+email (an Admin resets it instead). Masters not built yet: the margin matrix (needs step-up). Bank number: no
+"reveal" action and no key rotation yet. Not enforced yet: pack label vs unit family (SRS-MST-01), making `unitsPerBox` read-only once
+listings or orders use a pack, and blocking a tehsil's turn-off while buyers or sellers use it (there are no parties yet).

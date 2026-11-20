@@ -33,6 +33,7 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
 - Money writes and the audit/voucher entries that go with them happen in ONE MongoDB transaction.
 - `margin_cells` and `audit_events` cannot be changed after insert (append-only). Other collections use Mongoose
   defaults; add optimistic locking (`version`) only to documents several people edit at once (orders, trades).
-- `select: false` and a `toJSON` transform for secrets (`passwordHash`, encrypted bank numbers).
+- `select: false` and a `toJSON` transform for secrets (`passwordHash`, encrypted bank numbers). Bank numbers are locked
+  with `encryptText()` (`src/shared/encryption.ts`); return only `accountLast4`, never the number or the locked text.
 - Mongoose 9: pre hooks are async or throw (no `next`); use `doc.validate()`, not the deprecated `validateSync()`.
 - Keep TypeScript on 5.9.x (typescript-eslint does not support 7). No new dependency without saying why.

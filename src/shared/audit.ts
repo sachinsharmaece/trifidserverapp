@@ -36,9 +36,14 @@ export async function writeAudit(req: Request, entry: AuditEntry): Promise<void>
   );
 }
 
+/** Values are the same if they are equal, or are lists/objects holding the same things (like two pincode lists). */
+function isSame(a: unknown, b: unknown): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
 /** Keeps only the fields whose value differs, so the audit log shows exactly what changed. */
 export function onlyChanged(before: Record<string, unknown>, after: Record<string, unknown>) {
-  const changed = Object.keys(after).filter((key) => before[key] !== after[key]);
+  const changed = Object.keys(after).filter((key) => !isSame(before[key], after[key]));
   return {
     before: Object.fromEntries(changed.map((key) => [key, before[key]])),
     after: Object.fromEntries(changed.map((key) => [key, after[key]])),

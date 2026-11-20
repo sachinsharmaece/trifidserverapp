@@ -1,10 +1,13 @@
 import { Router } from 'express';
 import { authRouter } from '../modules/auth/auth.routes.js';
+import { companyRouter } from '../modules/masters/company.routes.js';
 import { hsnCodesRouter } from '../modules/masters/hsnCodes.routes.js';
 import { manufacturersRouter } from '../modules/masters/manufacturers.routes.js';
 import { productsRouter } from '../modules/masters/products.routes.js';
+import { reasonCodesRouter } from '../modules/masters/reasonCodes.routes.js';
 import { skusRouter } from '../modules/masters/skus.routes.js';
 import { technicalsRouter } from '../modules/masters/technicals.routes.js';
+import { tehsilsRouter } from '../modules/masters/tehsils.routes.js';
 import { usersRouter } from '../modules/users/users.routes.js';
 import { healthRouter } from '../modules/health/health.routes.js';
 
@@ -24,10 +27,13 @@ apiRouter.use(authRouter);
 // /api/v1/users: staff accounts (Founder and Admin only).
 apiRouter.use(usersRouter);
 
-// /api/v1/manufacturers, /technicals, /hsn-codes, /products and /skus: the masters.
+// /api/v1/company, /manufacturers, /technicals, /hsn-codes, /products, /skus, /tehsils and /reason-codes: the masters.
 // Everyone signed in can read them; only Founder and Admin can change them.
+apiRouter.use(companyRouter);
 apiRouter.use(manufacturersRouter);
 apiRouter.use(technicalsRouter);
 apiRouter.use(hsnCodesRouter);
 apiRouter.use(productsRouter);
 apiRouter.use(skusRouter);
+apiRouter.use(tehsilsRouter);
+apiRouter.use(reasonCodesRouter);
