@@ -1,8 +1,10 @@
-import { Router, type Request } from 'express';
+import { Router } from 'express';
 import { isValidObjectId } from 'mongoose';
 import { z } from 'zod';
-import { AuditEventModel, SessionModel, UserModel } from '../../models/index.js';
-import { conflict, forbidden, notFound } from '../../shared/errors.js';
+import { SessionModel, UserModel } from '../../models/index.js';
+import { onlyChanged, writeAudit } from '../../shared/audit.js';
+import { forbidden, notFound } from '../../shared/errors.js';
+import { failIfDuplicate } from '../../shared/mongo.js';
 import { ROLES, type Role } from '../../shared/enums.js';
 import { generateTemporaryPassword, hashPassword } from '../auth/password.js';
 import { currentUserOf, requireAuth } from '../auth/requireAuth.js';
@@ -62,42 +64,7 @@ function assertMayManage(actorRole: Role, targetRole: Role): void {
   }
 }
 
-/** The email column has a unique index; MongoDB answers with error code 11000 when it is taken. */
-function failIfEmailTaken(error: unknown): never {
-  if (typeof error === 'object' && error !== null && 'code' in error && error.code === 11000) {
-    throw conflict('A staff member with this email already exists.', 'EMAIL_TAKEN');
-  }
-  throw error;
-}
-
-/** Keeps only the fields whose value differs, for the audit log. */
-function onlyChanged(before: Record<string, unknown>, after: Record<string, unknown>) {
-  const changed = Object.keys(after).filter((key) => before[key] !== after[key]);
-  return {
-    before: Object.fromEntries(changed.map((key) => [key, before[key]])),
-    after: Object.fromEntries(changed.map((key) => [key, after[key]])),
-  };
-}
-
-/** Writes one line to the append-only audit log: who did what to which account. */
-async function audit(
-  req: Request,
-  action: string,
-  targetId: string,
-  changes?: { before: Record<string, unknown>; after: Record<string, unknown> },
-): Promise<void> {
-  const actor = currentUserOf(req);
-  await AuditEventModel.create({
-    actorId: actor.id,
-    actorRole: actor.role,
-    entityType: 'User',
-    entityId: targetId,
-    action,
-    ...changes,
-    requestId: req.requestId,
-    ip: req.ip ?? '',
-  });
-}
+const EMAIL_TAKEN = 'A staff member with this email already exists.';
 
 /** GET /users  ->  { users }. A company has a handful of staff, so there is no paging. */
 usersRouter.get('/users', async (_req, res) => {
@@ -123,9 +90,12 @@ usersRouter.post('/users', async (req, res) => {
     passwordHash: await hashPassword(temporaryPassword),
     mustChangePassword: true,
     createdBy: actor.id,
-  }).catch(failIfEmailTaken);
+  }).catch(failIfDuplicate(EMAIL_TAKEN, 'EMAIL_TAKEN'));
 
-  await audit(req, 'user.create', user.id, {
+  await writeAudit(req, {
+    action: 'user.create',
+    entityType: 'User',
+    entityId: user.id,
     before: {},
     after: { email: user.email, role: user.role },
   });
@@ -160,13 +130,19 @@ usersRouter.patch('/users/:id', async (req, res) => {
     return;
   }
 
-  const updated = await UserModel.findByIdAndUpdate(user._id, after, { new: true });
+  const updated = await UserModel.findByIdAndUpdate(user._id, after, { returnDocument: 'after' });
   if (!updated) throw notFound('Staff member not found.');
 
   if (after.role !== undefined || after.active === false) {
     await SessionModel.deleteMany({ userId: user._id });
   }
-  await audit(req, 'user.update', user.id, { before, after });
+  await writeAudit(req, {
+    action: 'user.update',
+    entityType: 'User',
+    entityId: user.id,
+    before,
+    after,
+  });
   res.json({ user: toStaffMember(updated) });
 });
 
@@ -193,6 +169,10 @@ usersRouter.post('/users/:id/reset-password', async (req, res) => {
   );
   await SessionModel.deleteMany({ userId: user._id });
 
-  await audit(req, 'user.reset_password', user.id);
+  await writeAudit(req, {
+    action: 'user.reset_password',
+    entityType: 'User',
+    entityId: user.id,
+  });
   res.json({ temporaryPassword });
 });

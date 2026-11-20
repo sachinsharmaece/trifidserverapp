@@ -50,7 +50,7 @@ authRouter.post('/auth/login', async (req, res) => {
     const updated = await UserModel.findByIdAndUpdate(
       user._id,
       { $inc: { failedLoginCount: 1 } },
-      { new: true },
+      { returnDocument: 'after' },
     );
     if (updated && updated.failedLoginCount >= MAX_WRONG_PASSWORDS) {
       const lockedUntil = new Date(Date.now() + LOCK_MINUTES * 60_000);

@@ -7,7 +7,9 @@ import type { Role } from '../../shared/enums.js';
  *   router.use('/users', requireAuth, requireRole('FOUNDER', 'ADMIN'));
  */
 export function requireRole(...allowed: Role[]) {
-  return (req: Request, _res: Response, next: NextFunction): void => {
+  // The generic <P> lets this guard sit in front of routes like '/products/:id' without
+  // losing the type of req.params.id.
+  return <P>(req: Request<P>, _res: Response, next: NextFunction): void => {
     if (!req.user || !allowed.includes(req.user.role)) throw forbidden();
     next();
   };

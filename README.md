@@ -87,8 +87,9 @@ src/
   scripts/             db-sync.ts, db-seed.ts (run with npm run db:sync / db:seed)
   middleware/          requestId (more later: idempotency)
   routes/index.ts      the /api/v1 router — mount feature modules here
-  modules/<feature>/   one folder per feature (health, auth, users today)
-  shared/              errors (HttpError + error envelope), logger, shutdown, enums, validators
+  modules/<feature>/   one folder per feature (health, auth, users, masters today)
+  shared/              errors (HttpError + error envelope), audit (writeAudit), mongo (duplicate-key helper), logger,
+                       shutdown, enums, validators
   types/               Express type additions (req.requestId, req.user)
 ```
 
@@ -130,7 +131,29 @@ Rules: only a Founder can create, edit or reset a Founder (otherwise an Admin co
 change their own role, turn themselves off or reset their own password here. Accounts are never deleted. Every create,
 update and reset writes a line to `audit_events` (never the password). A duplicate email answers 409 `EMAIL_TAKEN`.
 
+## Masters (modules/masters)
+
+Everyone signed in can read; only Founder and Admin can change (`canEditMasters` in `permissions.ts`). Nothing is
+deleted: turn it off with `active: false`. Every change writes a line to `audit_events` with only the fields that changed.
+Names are unique ignoring case and extra spaces (409 `NAME_TAKEN`; HSN codes: 409 `CODE_TAKEN`; packs: 409 `PACK_TAKEN`).
+
+| Call                                                  | What it does                                                                                                                                     |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET/POST /manufacturers`, `PATCH /manufacturers/:id` | `{ name }`; patch `{ name?, active? }`                                                                                                           |
+| `GET/POST /technicals`, `PATCH /technicals/:id`       | `{ name, description? }`; patch `{ name?, description?, active? }`                                                                               |
+| `GET/POST /hsn-codes`, `PATCH /hsn-codes/:id`         | `{ code (4/6/8 digits), description?, gstBp }`; patch `{ description?, gstBp?, active? }` (code never changes)                                   |
+| `GET /products?q=&page=&pageSize=`                    | `{ products, total, page, pageSize }`, each product with its packs; `q` searches the name; A to Z                                                |
+| `GET /products/:id`                                   | One product with its packs                                                                                                                       |
+| `POST /products`                                      | `{ name, category?, manufacturerId, technicalId, hsnCodeId, taxBp?, skus: [...] }`: at least one pack, saved with the product in ONE transaction |
+| `PATCH /products/:id`                                 | Any of the product fields and `active`. Only newly chosen manufacturer/technical/HSN must be active                                              |
+| `POST /products/:id/skus`, `PATCH /skus/:id`          | Add a pack; patch `{ packLabel?, unitsPerBox?, skuClass?, active? }`                                                                             |
+
+`taxBp` defaults to the HSN code's rate. Changing an HSN code's GST rate does not change products that use it: each
+product keeps its own `taxBp`.
+
 ## Left out for now
 
 MFA, step-up re-authentication, a per-IP rate limit on login, a breached-password check, and "forgot password" by
-email (an Admin resets it instead).
+email (an Admin resets it instead). Masters not built yet: company profile (bank-number encryption to decide), tehsils,
+reason codes, the margin matrix (needs step-up). Not enforced yet: pack label vs unit family (SRS-MST-01), and making
+`unitsPerBox` read-only once listings or orders use a pack.
