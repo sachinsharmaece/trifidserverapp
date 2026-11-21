@@ -30,10 +30,17 @@ export const manufacturerIdsField = z
   .max(200, 'Too many manufacturers.')
   .transform((ids) => [...new Set(ids)]);
 
-export const listQuery = z.object({
+/** The search and paging parts of a list request (?q=&page=&pageSize=), shared by every list. */
+export const pagingShape = {
   q: z.string().trim().max(100).default(''),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
+};
+
+/** The query of the seller and buyer lists. `active=true` or `false` shows only the ones that are on or off. */
+export const listQuery = z.object({
+  ...pagingShape,
+  active: z.enum(['true', 'false']).optional(),
 });
 
 /** The new id if it differs from the current one, otherwise undefined (so an old, turned-off value can stay). */

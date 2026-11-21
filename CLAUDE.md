@@ -31,6 +31,10 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
 - Parties live in `src/modules/parties/`: the role wall is `permissions.ts` (`canUseSellers`, `canUseBuyers`), shared
   request pieces are in `common.ts`. Party numbers come from `nextPartyNumber()`. To find a duplicate bank account use
   `hashText()` (a fingerprint); never decrypt numbers to compare them.
+- Listings live in `src/modules/listings/`: the wall is `canUseListings` (same file as the party walls), the rate maths is
+  in `rates.ts` (`landedRate`, `dropExceeds`, `dedupeKeyOf`), and `expireOldListings()` runs at the start of each listings
+  request (there is no scheduler yet). Read a number setting with `numberSetting(key, fallback)` (`src/db/settings.ts`).
+  A listing is never edited, only paused, resumed or withdrawn.
 - Throw `HttpError` helpers; never `res.status(...).json({ error })` by hand. Zod errors become 422 automatically.
 - Validate every request with Zod. Never trust ids, money or roles from the client.
 - Money writes and the audit/voucher entries that go with them happen in ONE MongoDB transaction.

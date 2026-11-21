@@ -52,12 +52,13 @@ percentages in basis points (`…Bp`, 1800 = 18%), dates in UTC, `_id` never sho
 like `SO-26-0001` from `nextDocumentNumber()` in `src/db/documentNumbers.ts`). Records are deactivated, never
 deleted. Enums are in `src/shared/enums.ts`, GSTIN/IFSC/HSN/pincode checks in `src/shared/validators.ts`.
 
-| Area    | Collections                                                                                                                            |
-| ------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| System  | `users`, `sessions` (TTL), `counters`, `idempotency_keys` (TTL 72 h), `audit_events` (append-only), `settings`                         |
-| Masters | `company` (single document), `manufacturers`, `technicals`, `hsn_codes`, `products`, `skus`, `tehsils`, `reason_codes`, `margin_cells` |
-| Parties | `sellers`, `buyers` (each party's dealerships are kept on the party itself)                                                            |
-| Not yet | listings, orders, trades, books (vouchers/ledgers), dock, trips (ARCH §B3.3–B3.7)                                                      |
+| Area     | Collections                                                                                                                            |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| System   | `users`, `sessions` (TTL), `counters`, `idempotency_keys` (TTL 72 h), `audit_events` (append-only), `settings`                         |
+| Masters  | `company` (single document), `manufacturers`, `technicals`, `hsn_codes`, `products`, `skus`, `tehsils`, `reason_codes`, `margin_cells` |
+| Parties  | `sellers`, `buyers` (each party's dealerships are kept on the party itself)                                                            |
+| Listings | `listings` (a seller's offer of one pack)                                                                                              |
+| Not yet  | orders, trades, books (vouchers/ledgers), dock, trips (ARCH §B3.4–B3.7)                                                                |
 
 First time on a database (after `.env` points at it):
 
@@ -89,7 +90,7 @@ src/
   scripts/             db-sync.ts, db-seed.ts (run with npm run db:sync / db:seed)
   middleware/          requestId (more later: idempotency)
   routes/index.ts      the /api/v1 router — mount feature modules here
-  modules/<feature>/   one folder per feature (health, auth, users, masters, parties today)
+  modules/<feature>/   one folder per feature (health, auth, users, masters, parties, listings today)
   shared/              errors (HttpError + error envelope), audit (writeAudit), mongo (duplicate-key helper), logger,
                        shutdown, enums, validators
   types/               Express type additions (req.requestId, req.user)
@@ -175,17 +176,17 @@ Sellers (who we buy from) and buyers (who we sell to). The visibility wall is en
 Controller, Founder and Admin; `/buyers` is for Sales, Controller, Founder and Admin; any other role gets 403
 (`modules/parties/permissions.ts`). Admin on both sides follows the open question Q-ROL-01: change it in that one file.
 
-| Call                              | What it does                                                                                                                                                                                                 |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /sellers?q=&page=&pageSize=` | `{ sellers, total, page, pageSize }`; `q` is a number like `SEL-0007`, part of the firm or contact name, or the start of a mobile number or GSTIN; sorted by firm name                                       |
-| `GET /sellers/:id`                | `{ seller }`                                                                                                                                                                                                 |
-| `POST /sellers`                   | `{ firmName, gstin, mobile, contactName?, tehsilId, address?, dispatchCutoff ("17:30"), manufacturerIds?, bank: { accountNumber, ifsc, bankName, holderName } }` → 201 `{ seller }` with the next `SEL-0001` |
-| `PATCH /sellers/:id`              | Any of those plus `active`. `bank` may hold only the parts that change; no `accountNumber` keeps the saved one. An empty `contactName` or `address` clears it                                                |
-| `GET /buyers?q=&page=&pageSize=`  | `{ buyers, total, page, pageSize }`, searched the same way (any of the buyer's mobile numbers)                                                                                                               |
-| `GET /buyers/:id`                 | `{ buyer }`                                                                                                                                                                                                  |
-| `POST /buyers`                    | `{ firmName, contactName, mobiles (1 to 5), gstin?, tehsilId, village?, address, deliveryLocation, tradePosition, traderFlag, manufacturerIds? }` → 201 `{ buyer }` with the next `BUY-0001`                 |
-| `PATCH /buyers/:id`               | Any of those plus `active`. An empty `gstin` or `village` clears it                                                                                                                                          |
-| `POST /buyers/:id/classify`       | Confirms the buyer's rate tier (`classified: true`). Doing it again changes nothing                                                                                                                          |
+| Call                                      | What it does                                                                                                                                                                                                 |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /sellers?q=&page=&pageSize=&active=` | `{ sellers, total, page, pageSize }`; `q` is a number like `SEL-0007`, part of the firm or contact name, or the start of a mobile number or GSTIN; sorted by firm name                                       |
+| `GET /sellers/:id`                        | `{ seller }`                                                                                                                                                                                                 |
+| `POST /sellers`                           | `{ firmName, gstin, mobile, contactName?, tehsilId, address?, dispatchCutoff ("17:30"), manufacturerIds?, bank: { accountNumber, ifsc, bankName, holderName } }` → 201 `{ seller }` with the next `SEL-0001` |
+| `PATCH /sellers/:id`                      | Any of those plus `active`. `bank` may hold only the parts that change; no `accountNumber` keeps the saved one. An empty `contactName` or `address` clears it                                                |
+| `GET /buyers?q=&page=&pageSize=&active=`  | `{ buyers, total, page, pageSize }`, searched the same way (any of the buyer's mobile numbers)                                                                                                               |
+| `GET /buyers/:id`                         | `{ buyer }`                                                                                                                                                                                                  |
+| `POST /buyers`                            | `{ firmName, contactName, mobiles (1 to 5), gstin?, tehsilId, village?, address, deliveryLocation, tradePosition, traderFlag, manufacturerIds? }` → 201 `{ buyer }` with the next `BUY-0001`                 |
+| `PATCH /buyers/:id`                       | Any of those plus `active`. An empty `gstin` or `village` clears it                                                                                                                                          |
+| `POST /buyers/:id/classify`               | Confirms the buyer's rate tier (`classified: true`). Doing it again changes nothing                                                                                                                          |
 
 - **Numbers.** `nextPartyNumber('SEL' | 'BUY')` in `src/db/documentNumbers.ts`: one counter per kind, never reset by year,
   taken inside the same transaction as the create, so a refused request leaves no gap.
@@ -209,6 +210,54 @@ Controller, Founder and Admin; `/buyers` is for Sales, Controller, Founder and A
   confirmed order is not built because there are no orders yet.
 - **Audit.** `seller.create|update`, `buyer.create|update|classify`; updates record only the fields that changed, and a
   new bank number is logged as `accountNumber: 'replaced'`.
+- **Active filter.** Both lists take `active=true` or `false` (anything else is a 422). The listing form's seller picker
+  uses `active=true`.
+
+## Listings (modules/listings)
+
+A listing is one seller's offer of one product pack: the rate, the shelf life left, the minimum order (MOQ) and the
+quantity in boxes, and where the goods come from. It is Purchase work, so it has the seller side's wall: Purchase,
+Controller, Founder and Admin; any other role gets 403 (`canUseListings` in `modules/parties/permissions.ts`, today the
+same as `canUseSellers`). Every listing is visible all over India (a tehsil-scoped view is shelved, Q-PUR-07).
+
+A request body is `{ sellerId, skuId, rateType: 'FOR', ratePaisePerUnit }` or
+`{ sellerId, skuId, rateType: 'EX', exRatePaisePerUnit, colPaisePerBox }`, plus `expiryBand` (`M6_TO_9`, `M9_TO_12`,
+`M12_PLUS`), `moqBoxes`, `quantityBoxes` and `provenance` (`OWN_STOCK`, or `SOURCED`, shown to people as "Company
+billing"). All money is whole paise.
+
+| Call                                                        | What it does                                                                                                                         |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /listings?q=&page=&pageSize=&status=&sellerId=&skuId=` | `{ listings, total, page, pageSize }`, newest first; `q` is a seller number, part of the firm name, or part of the product name      |
+| `POST /listings/preview`                                    | The same body as the create; saves nothing. `{ unitsPerBox, landedPaisePerUnit, boxValuePaise, lotValuePaise, duplicate, decrease }` |
+| `POST /listings`                                            | The body above, plus `confirmDecrease?` → 201 `{ listing }`                                                                          |
+| `PATCH /listings/:id`                                       | `{ status: 'PAUSED' \| 'ACTIVE' \| 'WITHDRAWN' }` → `{ listing }`                                                                    |
+
+- **Landed rate.** The stored `ratePaisePerUnit` is always the landed per-unit rate, so everything later uses one figure.
+  FOR: the rate as given. EX: `Ex rate + COL per box ÷ units per box`, rounded to a whole paise (`landedRate()` in
+  `modules/listings/rates.ts`). The raw Ex rate and COL are kept for audit. A box is `landed × units per box`; the MOQ lot is
+  `box × moqBoxes`. The pack's units per box is copied onto the listing (`unitsPerBoxSnapshot`).
+- **Who and what.** The seller, the pack and its product must all be active, otherwise 400.
+- **Duplicates.** The same seller, pack, rate type, landed rate, shelf life, MOQ and source as a live (ACTIVE) listing is 409
+  `LISTING_EXISTS`. The quantity is not part of it. The unique index on `dedupeKey` (live listings only) is the last guard.
+  Paused listings do not count, so resuming one while a live twin exists is also refused.
+- **Rate drops.** A new rate lower than the seller's latest live listing of the same pack by more than
+  `RATE_DECREASE_CONFIRM_BP` (seeded as 200, i.e. 2%; exactly 2% is allowed) is refused with 409
+  `RATE_DECREASE_NEEDS_CONFIRMATION` (`details: { fromPaisePerUnit, toPaisePerUnit, pctBp }`) unless the body has
+  `confirmDecrease: true`; the listing then keeps `decreaseConfirmed` (old rate, percent, who, when). Two Ex listings are
+  compared on the Ex rate (a COL change alone is not a drop); FOR against EX compares landed rates. Paused, withdrawn and
+  expired listings are not "the last one". `POST /listings/preview` returns the same `decrease`, so the screen can warn
+  before saving.
+- **Life.** A listing lives `LISTING_LIFE_DAYS` (seeded as 45) from the day it is added (`expiresAt`). There is no scheduler
+  yet: every list, preview, create and change first calls `expireOldListings()`, which marks live or paused listings
+  past `expiresAt` as EXPIRED. A daily job can call the same function later.
+- **Changes.** ACTIVE and PAUSED switch both ways; WITHDRAWN is final. EXPIRED and WITHDRAWN listings are closed (409
+  `LISTING_CLOSED`); asking for the status a listing already has changes nothing and writes no audit row. A listing is
+  never edited: to change a rate, withdraw it and add a new one, so the history stays honest.
+- **Audit.** `listing.create` (with `decreaseConfirmedPctBp` when a drop was confirmed) and `listing.update` (status
+  before and after). The settings `RATE_DECREASE_CONFIRM_BP` and `LISTING_LIFE_DAYS` come from the `settings` collection
+  (`npm run db:seed` adds them); if one is missing, 200 and 45 are used.
+- **Privacy.** A listing response names the seller (number and firm name) and the pack. It never carries the seller's GSTIN,
+  mobile number or bank details.
 
 ## Left out for now
 
@@ -216,5 +265,7 @@ MFA, step-up re-authentication, a per-IP rate limit on login, a breached-passwor
 email (an Admin resets it instead). Masters not built yet: the margin matrix (needs step-up). Bank number: no
 "reveal" action and no key rotation yet. Not enforced yet: pack label vs unit family (SRS-MST-01), making `unitsPerBox` read-only once
 listings or orders use a pack, and blocking the turn-off of a tehsil or manufacturer that buyers or sellers use (parties exist now; the check is not written yet).
-Parties not built yet: listings, opening ledgers, seller KYC documents (Q-PUR-01), the bulk import of existing parties
+Parties not built yet: opening ledgers, seller KYC documents (Q-PUR-01), the bulk import of existing parties
 (Q-DATA-01), placeholder parties, and automatic classification at the first order.
+Listings not built yet: the Sales-side rate board and selling prices (they need the margin matrix), a daily job to expire
+listings (the sweep inside the API does it for now), editing a listing, and a seller's own `/sellers/:id/listings` view.

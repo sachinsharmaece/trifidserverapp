@@ -168,12 +168,12 @@ async function findDuplicate(
 sellersRouter.use('/sellers', requireAuth, canUseSellers);
 
 /**
- * GET /sellers?q=&page=&pageSize=  ->  { sellers, total, page, pageSize }
+ * GET /sellers?q=&page=&pageSize=&active=  ->  { sellers, total, page, pageSize }
  * `q` searches the seller number, firm name, contact name, mobile and GSTIN. Sorted by firm name.
  */
 sellersRouter.get('/sellers', async (req, res) => {
-  const { q, page, pageSize } = listQuery.parse(req.query);
-  const filter = q
+  const { q, page, pageSize, active } = listQuery.parse(req.query);
+  const search = q
     ? {
         $or: [
           { number: new RegExp(escapeRegex(q), 'i') },
@@ -184,6 +184,7 @@ sellersRouter.get('/sellers', async (req, res) => {
         ],
       }
     : {};
+  const filter = { ...search, ...(active ? { active: active === 'true' } : {}) };
 
   const [total, sellers] = await Promise.all([
     SellerModel.countDocuments(filter),

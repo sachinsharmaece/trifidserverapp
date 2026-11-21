@@ -70,3 +70,18 @@ export type CounterPrefix = (typeof COUNTER_PREFIXES)[number];
 /** Seller and buyer numbers have no year: SEL-0001, BUY-0001 (they stay the same for the life of the party). */
 export const PARTY_PREFIXES = ['SEL', 'BUY'] as const;
 export type PartyPrefix = (typeof PARTY_PREFIXES)[number];
+
+/** FOR = one landed rate delivered to Indore. EX = the seller's ex-works rate plus a carriage cost (COL) per box. */
+export const LISTING_RATE_TYPES = ['FOR', 'EX'] as const;
+export type ListingRateType = (typeof LISTING_RATE_TYPES)[number];
+
+/** How much shelf life the stock has left. Anything under 6 months is not offered at all (so it is not a choice). */
+export const EXPIRY_BANDS = ['M6_TO_9', 'M9_TO_12', 'M12_PLUS'] as const;
+export type ExpiryBand = (typeof EXPIRY_BANDS)[number];
+
+/** Where the goods come from. SOURCED is shown to people as "Company billing". */
+export const PROVENANCES = ['OWN_STOCK', 'SOURCED'] as const;
+export type Provenance = (typeof PROVENANCES)[number];
+
+export const LISTING_STATUSES = ['ACTIVE', 'PAUSED', 'EXPIRED', 'WITHDRAWN'] as const;
+export type ListingStatus = (typeof LISTING_STATUSES)[number];

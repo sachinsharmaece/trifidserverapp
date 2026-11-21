@@ -166,12 +166,12 @@ async function stateCodeFor(gstin: string | null | undefined, tehsilId: unknown)
 buyersRouter.use('/buyers', requireAuth, canUseBuyers);
 
 /**
- * GET /buyers?q=&page=&pageSize=  ->  { buyers, total, page, pageSize }
+ * GET /buyers?q=&page=&pageSize=&active=  ->  { buyers, total, page, pageSize }
  * `q` searches the buyer number, firm name, contact name, mobile numbers and GSTIN. Sorted by firm name.
  */
 buyersRouter.get('/buyers', async (req, res) => {
-  const { q, page, pageSize } = listQuery.parse(req.query);
-  const filter = q
+  const { q, page, pageSize, active } = listQuery.parse(req.query);
+  const search = q
     ? {
         $or: [
           { number: new RegExp(escapeRegex(q), 'i') },
@@ -182,6 +182,7 @@ buyersRouter.get('/buyers', async (req, res) => {
         ],
       }
     : {};
+  const filter = { ...search, ...(active ? { active: active === 'true' } : {}) };
 
   const [total, buyers] = await Promise.all([
     BuyerModel.countDocuments(filter),

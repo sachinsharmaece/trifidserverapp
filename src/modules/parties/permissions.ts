@@ -9,3 +9,9 @@ import { requireRole } from '../auth/requireRole.js';
  */
 export const canUseSellers = requireRole('PURCHASE', 'CONTROLLER', 'FOUNDER', 'ADMIN');
 export const canUseBuyers = requireRole('SALES', 'CONTROLLER', 'FOUNDER', 'ADMIN');
+
+/**
+ * Listings hold the seller's rate, so they sit behind the same wall as sellers: Purchase and the supervisors only.
+ * Sales will see buyer rates worked out from listings (later), never the listings themselves.
+ */
+export const canUseListings = canUseSellers;

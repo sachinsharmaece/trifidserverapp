@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authRouter } from '../modules/auth/auth.routes.js';
+import { listingsRouter } from '../modules/listings/listings.routes.js';
 import { buyersRouter } from '../modules/parties/buyers.routes.js';
 import { companyRouter } from '../modules/masters/company.routes.js';
 import { hsnCodesRouter } from '../modules/masters/hsnCodes.routes.js';
@@ -42,3 +43,5 @@ apiRouter.use(reasonCodesRouter);
 // Parties: each is visible to its own desk only (modules/parties/permissions.ts).
 apiRouter.use(sellersRouter);
 apiRouter.use(buyersRouter);
+// Listings hold the seller's rate: same wall as sellers.
+apiRouter.use(listingsRouter);
