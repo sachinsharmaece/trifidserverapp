@@ -56,7 +56,8 @@ deleted. Enums are in `src/shared/enums.ts`, GSTIN/IFSC/HSN/pincode checks in `s
 | ------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | System  | `users`, `sessions` (TTL), `counters`, `idempotency_keys` (TTL 72 h), `audit_events` (append-only), `settings`                         |
 | Masters | `company` (single document), `manufacturers`, `technicals`, `hsn_codes`, `products`, `skus`, `tehsils`, `reason_codes`, `margin_cells` |
-| Not yet | parties, listings, orders, trades, books (vouchers/ledgers), dock, trips (ARCH §B3.3–B3.7)                                             |
+| Parties | `sellers`, `buyers` (each party's dealerships are kept on the party itself)                                                            |
+| Not yet | listings, orders, trades, books (vouchers/ledgers), dock, trips (ARCH §B3.3–B3.7)                                                      |
 
 First time on a database (after `.env` points at it):
 
@@ -88,7 +89,7 @@ src/
   scripts/             db-sync.ts, db-seed.ts (run with npm run db:sync / db:seed)
   middleware/          requestId (more later: idempotency)
   routes/index.ts      the /api/v1 router — mount feature modules here
-  modules/<feature>/   one folder per feature (health, auth, users, masters today)
+  modules/<feature>/   one folder per feature (health, auth, users, masters, parties today)
   shared/              errors (HttpError + error envelope), audit (writeAudit), mongo (duplicate-key helper), logger,
                        shutdown, enums, validators
   types/               Express type additions (req.requestId, req.user)
@@ -149,7 +150,7 @@ Names are unique ignoring case and extra spaces (409 `NAME_TAKEN`; HSN codes: 40
 | `POST /products`                                      | `{ name, category?, manufacturerId, technicalId, hsnCodeId, taxBp?, skus: [...] }`: at least one pack, saved with the product in ONE transaction                                              |
 | `PATCH /products/:id`                                 | Any of the product fields and `active`. Only newly chosen manufacturer/technical/HSN must be active                                                                                           |
 | `POST /products/:id/skus`, `PATCH /skus/:id`          | Add a pack; patch `{ packLabel?, unitsPerBox?, skuClass?, active? }`                                                                                                                          |
-| `GET /tehsils?q=&page=&pageSize=`                     | `{ tehsils, total, page, pageSize }`; `q` is a 6-digit pincode, or part of the state / district / tehsil name; sorted by state, district, name                                                |
+| `GET /tehsils?q=&page=&pageSize=&active=`             | `{ tehsils, total, page, pageSize }`; `q` is a 6-digit pincode, or part of the state / district / tehsil name; `active=true` or `false` filters; sorted by state, district, name              |
 | `POST /tehsils`, `PATCH /tehsils/:id`                 | `{ state, district, name, pincodes: [] }`; patch any of them plus `active`. Same state + district + name twice: 409 `TEHSIL_TAKEN`                                                            |
 | `GET /reason-codes?context=&active=`                  | `{ reasonCodes }` sorted by context, then `sort`, then label                                                                                                                                  |
 | `POST /reason-codes`, `PATCH /reason-codes/:id`       | `{ code (CAPITALS_AND_DIGITS), label, context, sort? }`; patch `{ label?, sort?, active? }` only: code and context never change. Duplicate: 409 `CODE_TAKEN`                                  |
@@ -168,9 +169,52 @@ A reason code belongs to one `context` (`BUYER_NO`, `B6_LEAK`, `CANCEL_SO`, `REF
 `SELL_LEAD_REJECT`, `CALL_OUTCOME`); screens ask for `?context=...&active=true` so a reason shows only where it is used.
 Pincodes are 6 digits, not starting with 0; duplicates inside one tehsil are dropped.
 
+## Parties (modules/parties)
+
+Sellers (who we buy from) and buyers (who we sell to). The visibility wall is enforced here: `/sellers` is for Purchase,
+Controller, Founder and Admin; `/buyers` is for Sales, Controller, Founder and Admin; any other role gets 403
+(`modules/parties/permissions.ts`). Admin on both sides follows the open question Q-ROL-01: change it in that one file.
+
+| Call                              | What it does                                                                                                                                                                                                 |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /sellers?q=&page=&pageSize=` | `{ sellers, total, page, pageSize }`; `q` is a number like `SEL-0007`, part of the firm or contact name, or the start of a mobile number or GSTIN; sorted by firm name                                       |
+| `GET /sellers/:id`                | `{ seller }`                                                                                                                                                                                                 |
+| `POST /sellers`                   | `{ firmName, gstin, mobile, contactName?, tehsilId, address?, dispatchCutoff ("17:30"), manufacturerIds?, bank: { accountNumber, ifsc, bankName, holderName } }` → 201 `{ seller }` with the next `SEL-0001` |
+| `PATCH /sellers/:id`              | Any of those plus `active`. `bank` may hold only the parts that change; no `accountNumber` keeps the saved one. An empty `contactName` or `address` clears it                                                |
+| `GET /buyers?q=&page=&pageSize=`  | `{ buyers, total, page, pageSize }`, searched the same way (any of the buyer's mobile numbers)                                                                                                               |
+| `GET /buyers/:id`                 | `{ buyer }`                                                                                                                                                                                                  |
+| `POST /buyers`                    | `{ firmName, contactName, mobiles (1 to 5), gstin?, tehsilId, village?, address, deliveryLocation, tradePosition, traderFlag, manufacturerIds? }` → 201 `{ buyer }` with the next `BUY-0001`                 |
+| `PATCH /buyers/:id`               | Any of those plus `active`. An empty `gstin` or `village` clears it                                                                                                                                          |
+| `POST /buyers/:id/classify`       | Confirms the buyer's rate tier (`classified: true`). Doing it again changes nothing                                                                                                                          |
+
+- **Numbers.** `nextPartyNumber('SEL' | 'BUY')` in `src/db/documentNumbers.ts`: one counter per kind, never reset by year,
+  taken inside the same transaction as the create, so a refused request leaves no gap.
+- **Duplicates.** A seller with the same GSTIN, mobile or bank account is refused with 409 `SELLER_EXISTS`; a buyer with
+  the same GSTIN or any same mobile with 409 `BUYER_EXISTS`. The message names the party that already has it
+  (`... seller SEL-0003 (Firm name)`). The unique indexes are the last guard if two people save at the same moment.
+- **Seller bank number.** Locked with AES-256-GCM exactly like the company's (see above); the response has `bank.accountLast4`,
+  never the number. Because the locked text is different every time, the "same bank account" check uses `hashText()`:
+  a one-way fingerprint (HMAC-SHA256 with a key made from `DATA_ENCRYPTION_KEY`). A seller therefore needs the key to be
+  saved. If the key is ever changed, old fingerprints no longer match new ones and that one check stops catching old accounts.
+- **Dealerships.** A dealership is a party's link to a manufacturer it deals in. As ARCH §B3.3 says, it is the list
+  `manufacturerIds` on the seller or buyer itself (the old prototype's `SellerManufacturer` and `BuyerManufacturer`
+  join tables are not needed). Only manufacturers newly added must be active, so a manufacturer turned off later does
+  not block edits.
+- **Tehsil.** Must exist and be active when chosen (the same rule for a change; the old one may stay if turned off later).
+- **Buyer state code.** `stateCode` is the first 2 digits of the GSTIN. With no GSTIN (a consumer, B2C) it comes from the
+  tehsil's state through the table in `src/shared/gstStates.ts`; an unknown state is a 400 asking for a GSTIN. It is worked
+  out again whenever the GSTIN or tehsil changes. Later it decides CGST + SGST (Madhya Pradesh, `23`) or IGST.
+- **Rate tier.** `rateTier` is `TRADER` when `traderFlag` is on, else the `tradePosition`. A buyer is `classified: false`
+  (the tier is only indicative) until someone calls `/classify`. The PRD's automatic classification at the first
+  confirmed order is not built because there are no orders yet.
+- **Audit.** `seller.create|update`, `buyer.create|update|classify`; updates record only the fields that changed, and a
+  new bank number is logged as `accountNumber: 'replaced'`.
+
 ## Left out for now
 
 MFA, step-up re-authentication, a per-IP rate limit on login, a breached-password check, and "forgot password" by
 email (an Admin resets it instead). Masters not built yet: the margin matrix (needs step-up). Bank number: no
 "reveal" action and no key rotation yet. Not enforced yet: pack label vs unit family (SRS-MST-01), making `unitsPerBox` read-only once
-listings or orders use a pack, and blocking a tehsil's turn-off while buyers or sellers use it (there are no parties yet).
+listings or orders use a pack, and blocking the turn-off of a tehsil or manufacturer that buyers or sellers use (parties exist now; the check is not written yet).
+Parties not built yet: listings, opening ledgers, seller KYC documents (Q-PUR-01), the bulk import of existing parties
+(Q-DATA-01), placeholder parties, and automatic classification at the first order.

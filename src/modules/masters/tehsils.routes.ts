@@ -36,6 +36,8 @@ const listQuery = z.object({
   q: z.string().trim().max(100).default(''),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
+  /** `true` lists only active tehsils (what a buyer or seller form offers), `false` only turned-off ones. */
+  active: z.enum(['true', 'false']).optional(),
 });
 
 function toTehsil(tehsil: {
@@ -66,19 +68,22 @@ async function findTehsil(id: string) {
 tehsilsRouter.use('/tehsils', requireAuth);
 
 /**
- * GET /tehsils?q=&page=&pageSize=  ->  { tehsils, total, page, pageSize }
+ * GET /tehsils?q=&page=&pageSize=&active=  ->  { tehsils, total, page, pageSize }
  * `q` is either a 6-digit pincode, or part of the state, district or tehsil name. Sorted by state, district, name.
  * There can be thousands of tehsils, so the server searches and pages.
  */
 tehsilsRouter.get('/tehsils', async (req, res) => {
-  const { q, page, pageSize } = listQuery.parse(req.query);
+  const { q, page, pageSize, active } = listQuery.parse(req.query);
   const search = normaliseKey(q);
   // `key` holds "state|district|name" in lower case, so one search covers all three.
-  const filter = !search
-    ? {}
-    : PINCODE_PATTERN.test(search)
-      ? { pincodes: search }
-      : { key: { $regex: escapeRegex(search) } };
+  const filter = {
+    ...(!search
+      ? {}
+      : PINCODE_PATTERN.test(search)
+        ? { pincodes: search }
+        : { key: { $regex: escapeRegex(search) } }),
+    ...(active ? { active: active === 'true' } : {}),
+  };
 
   const [total, tehsils] = await Promise.all([
     TehsilModel.countDocuments(filter),

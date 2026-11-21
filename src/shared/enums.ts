@@ -32,6 +32,10 @@ export type SkuClass = (typeof SKU_CLASSES)[number];
 export const BUYER_TIERS = ['TRADER', 'DISTRIBUTOR', 'DEALER', 'RETAILER'] as const;
 export type BuyerTier = (typeof BUYER_TIERS)[number];
 
+/** What a buyer is in the trade. Together with the trader flag it decides the buyer's rate tier. */
+export const TRADE_POSITIONS = ['DISTRIBUTOR', 'DEALER', 'RETAILER'] as const;
+export type TradePosition = (typeof TRADE_POSITIONS)[number];
+
 /** Where a reason code may be picked (each dropdown shows only its own context). */
 export const REASON_CODE_CONTEXTS = [
   'BUYER_NO',
@@ -62,3 +66,7 @@ export const COUNTER_PREFIXES = [
   'REF',
 ] as const;
 export type CounterPrefix = (typeof COUNTER_PREFIXES)[number];
+
+/** Seller and buyer numbers have no year: SEL-0001, BUY-0001 (they stay the same for the life of the party). */
+export const PARTY_PREFIXES = ['SEL', 'BUY'] as const;
+export type PartyPrefix = (typeof PARTY_PREFIXES)[number];

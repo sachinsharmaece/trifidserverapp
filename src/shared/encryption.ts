@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
 import { env } from '../config/env.js';
 import { HttpError } from './errors.js';
 
@@ -39,4 +39,14 @@ export function decryptText(saved: string): string {
   return Buffer.concat([decipher.update(Buffer.from(locked, 'base64')), decipher.final()]).toString(
     'utf8',
   );
+}
+
+/**
+ * A fingerprint of a text (a bank account number): the same number always gives the same fingerprint, and the number
+ * cannot be worked out from it. It lets us spot "this account is already used by another seller" without
+ * decrypting anything. (HMAC-SHA256 with a key made from the secret key, so it is not the encryption key itself.)
+ */
+export function hashText(plain: string): string {
+  const hashKey = createHmac('sha256', secretKey()).update('trifid:account-hash').digest();
+  return createHmac('sha256', hashKey).update(plain).digest('hex');
 }

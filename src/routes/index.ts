@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authRouter } from '../modules/auth/auth.routes.js';
+import { buyersRouter } from '../modules/parties/buyers.routes.js';
 import { companyRouter } from '../modules/masters/company.routes.js';
 import { hsnCodesRouter } from '../modules/masters/hsnCodes.routes.js';
 import { manufacturersRouter } from '../modules/masters/manufacturers.routes.js';
@@ -7,6 +8,7 @@ import { productsRouter } from '../modules/masters/products.routes.js';
 import { reasonCodesRouter } from '../modules/masters/reasonCodes.routes.js';
 import { skusRouter } from '../modules/masters/skus.routes.js';
 import { technicalsRouter } from '../modules/masters/technicals.routes.js';
+import { sellersRouter } from '../modules/parties/sellers.routes.js';
 import { tehsilsRouter } from '../modules/masters/tehsils.routes.js';
 import { usersRouter } from '../modules/users/users.routes.js';
 import { healthRouter } from '../modules/health/health.routes.js';
@@ -37,3 +39,6 @@ apiRouter.use(productsRouter);
 apiRouter.use(skusRouter);
 apiRouter.use(tehsilsRouter);
 apiRouter.use(reasonCodesRouter);
+// Parties: each is visible to its own desk only (modules/parties/permissions.ts).
+apiRouter.use(sellersRouter);
+apiRouter.use(buyersRouter);

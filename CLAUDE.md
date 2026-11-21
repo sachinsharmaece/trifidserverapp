@@ -28,6 +28,9 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
   unique-index clash into a 409 with `.catch(failIfDuplicate(message, code))` (`src/shared/mongo.ts`). Master data
   (`src/modules/masters/`): reads need `requireAuth`, writes add `canEditMasters`; change a document with
   `doc.set(...)` then `doc.save()` so the lower-case name hook runs.
+- Parties live in `src/modules/parties/`: the role wall is `permissions.ts` (`canUseSellers`, `canUseBuyers`), shared
+  request pieces are in `common.ts`. Party numbers come from `nextPartyNumber()`. To find a duplicate bank account use
+  `hashText()` (a fingerprint); never decrypt numbers to compare them.
 - Throw `HttpError` helpers; never `res.status(...).json({ error })` by hand. Zod errors become 422 automatically.
 - Validate every request with Zod. Never trust ids, money or roles from the client.
 - Money writes and the audit/voucher entries that go with them happen in ONE MongoDB transaction.
