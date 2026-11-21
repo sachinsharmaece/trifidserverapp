@@ -5,6 +5,7 @@ import { buyersRouter } from '../modules/parties/buyers.routes.js';
 import { companyRouter } from '../modules/masters/company.routes.js';
 import { hsnCodesRouter } from '../modules/masters/hsnCodes.routes.js';
 import { manufacturersRouter } from '../modules/masters/manufacturers.routes.js';
+import { marginCellsRouter } from '../modules/masters/marginCells.routes.js';
 import { productsRouter } from '../modules/masters/products.routes.js';
 import { reasonCodesRouter } from '../modules/masters/reasonCodes.routes.js';
 import { skusRouter } from '../modules/masters/skus.routes.js';
@@ -40,6 +41,8 @@ apiRouter.use(productsRouter);
 apiRouter.use(skusRouter);
 apiRouter.use(tehsilsRouter);
 apiRouter.use(reasonCodesRouter);
+// /api/v1/margin-cells: TriFid's margin. Read by Controller, Founder and Admin only; changed with a password check.
+apiRouter.use(marginCellsRouter);
 // Parties: each is visible to its own desk only (modules/parties/permissions.ts).
 apiRouter.use(sellersRouter);
 apiRouter.use(buyersRouter);

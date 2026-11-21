@@ -7,6 +7,7 @@ Full commands and folder layout: `README.md`.
 
 `npm run dev` (port 4000) · `npm run typecheck` · `npm run lint` · `npm run format:check` · `npm run build`
 `npm run db:sync` (collections + indexes) · `npm run db:seed` (default settings; never overwrites) ·
+`npm run db:seed-demo` (made-up margins for development; refuses production) ·
 `npm run create-founder` (first Founder account; asks for the password, shows nothing while typing).
 MongoDB must be a replica set (transactions). `.env` holds secrets: never print, commit or edit it.
 
@@ -35,6 +36,10 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
   in `rates.ts` (`landedRate`, `dropExceeds`, `dedupeKeyOf`), and `expireOldListings()` runs at the start of each listings
   request (there is no scheduler yet). Read a number setting with `numberSetting(key, fallback)` (`src/db/settings.ts`).
   A listing is never edited, only paused, resumed or withdrawn.
+- Margins live in `src/modules/masters/marginCells.routes.ts`: reading needs `canSeeMargins` (the wall), writing adds
+  `canEditMasters` and `requireStepUp` (`src/modules/auth/stepUp.ts`, 428 until the password was re-checked in the last 5
+  minutes). Use `requireStepUp` after the role check on any route that should ask for the password again. A cell is
+  never edited: add a new one with a later `effectiveFrom`.
 - Throw `HttpError` helpers; never `res.status(...).json({ error })` by hand. Zod errors become 422 automatically.
 - Validate every request with Zod. Never trust ids, money or roles from the client.
 - Money writes and the audit/voucher entries that go with them happen in ONE MongoDB transaction.

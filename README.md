@@ -22,6 +22,7 @@ Check: http://localhost:4000/health → `{"status":"ok"}` and http://localhost:4
 | `npm run lint`           | ESLint (`lint:fix` fixes some)    |
 | `npm run db:sync`        | Create collections + indexes      |
 | `npm run db:seed`        | Add default settings (safe rerun) |
+| `npm run db:seed-demo`   | Add made-up margins (dev only)    |
 | `npm run create-founder` | Create the first Founder account  |
 | `npm run format`         | Prettier (`format:check` reports) |
 
@@ -76,6 +77,10 @@ npm run create-founder
 Run `db:sync` again whenever a model's indexes change. Company, HSN codes, reason codes, margin cells,
 tehsils and products are real business data: they are entered by Admin or imported, not seeded.
 
+To try the Margin matrix screen before the client sends the real margins, `npm run db:seed-demo` adds 12 **made-up**
+margin cells (needs the Founder account from the step above; it refuses to run when `NODE_ENV=production`). It skips any
+class × tier that already has a cell, so it is safe to re-run and never touches a real value.
+
 ## Layout
 
 ```
@@ -87,7 +92,7 @@ src/
   db/documentNumbers.ts  SO-26-0001 style numbers (atomic counters, Indian financial year)
   db/seed/             default reference data (settings)
   models/              Mongoose models, one per collection (index.ts lists them all)
-  scripts/             db-sync.ts, db-seed.ts (run with npm run db:sync / db:seed)
+  scripts/             db-sync.ts, db-seed.ts, db-seed-demo.ts (npm run db:sync / db:seed / db:seed-demo)
   middleware/          requestId (more later: idempotency)
   routes/index.ts      the /api/v1 router — mount feature modules here
   modules/<feature>/   one folder per feature (health, auth, users, masters, parties, listings today)
@@ -116,6 +121,11 @@ src/
 - Passwords are stored as argon2id hashes. The cookie holds a random token; the database keeps only its hash
   (`sessions._id`), so deleting the session row signs that person out at once.
 - A session ends after 12 hours without a request, or 7 days in total. 5 wrong passwords lock the account for 15 minutes.
+- **Step-up** (`requireStepUp` in `stepUp.ts`): a sensitive route answers 428 `STEP_UP_REQUIRED` unless the session
+  re-checked its password within `STEP_UP_MINUTES` (5). `POST /api/v1/auth/step-up` `{ password }` → 204 does that check
+  and stamps `sessions.stepUpAt`. A wrong password is 400 `WRONG_PASSWORD` (not 401, which would sign the person out) and
+  counts toward the same 5-wrong lock as sign-in; a locked account gets 429 `ACCOUNT_LOCKED`. Signing in does not set
+  `stepUpAt`. Today only changing a margin needs it. It is a password re-check because MFA is not built (Q-ROL-03).
 - The cookie is `httpOnly` and `SameSite=Strict` (and `Secure` in production). In development the admin app calls the API
   through Vite's proxy, so both are on one origin.
 
@@ -136,7 +146,7 @@ update and reset writes a line to `audit_events` (never the password). A duplica
 
 ## Masters (modules/masters)
 
-Everyone signed in can read; only Founder and Admin can change (`canEditMasters` in `permissions.ts`). Nothing is
+Everyone signed in can read (except the margin matrix, below); only Founder and Admin can change (`canEditMasters` in `permissions.ts`). Nothing is
 deleted: turn it off with `active: false`. Every change writes a line to `audit_events` with only the fields that changed.
 Names are unique ignoring case and extra spaces (409 `NAME_TAKEN`; HSN codes: 409 `CODE_TAKEN`; packs: 409 `PACK_TAKEN`).
 
@@ -169,6 +179,29 @@ is simpler than the KMS data key in ARCH §B12.2: one key from `.env` (a secret 
 A reason code belongs to one `context` (`BUYER_NO`, `B6_LEAK`, `CANCEL_SO`, `REFUND`, `COMPLAINT`, `MARG_QUERY`,
 `SELL_LEAD_REJECT`, `CALL_OUTCOME`); screens ask for `?context=...&active=true` so a reason shows only where it is used.
 Pincodes are 6 digits, not starting with 0; duplicates inside one tehsil are dropped.
+
+### Margin matrix (`marginCells.routes.ts`)
+
+The parent matrix: a margin (basis points) for each SKU class (A, B, C) and buyer tier (Trader, Distributor, Dealer,
+Retailer). It is on the visibility wall, so it is **not** open to everyone like the other masters: reading is for
+Controller, Founder and Admin (`canSeeMargins`), changing is for Founder and Admin (`canEditMasters`) and also needs a
+step-up. Sales, Purchase, Accounts and Logistics get 403 on both.
+
+| Call                 | What it does                                                                                                                                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /margin-cells`  | `{ cells }`, each `{ id, skuClass, buyerTier, marginBp, effectiveFrom, status, createdBy, createdAt }`; sorted by class, then tier, then newest first                                                              |
+| `POST /margin-cells` | `{ skuClass, buyerTier, marginBp (0 to 10000), effectiveFrom? }` → 201 `{ cell }`. No `effectiveFrom` means now. A start in the past is 400; one not later than the pair's latest cell is 409 `MARGIN_CELL_EXISTS` |
+
+A cell is **never edited or deleted** (the model makes its fields immutable). To change a margin you add a new cell that
+starts now or later; pricing will use the newest cell with `effectiveFrom` ≤ now. `status` is worked out by the server:
+`CURRENT` (the newest cell that has started), `SCHEDULED` (not started yet) or `PAST` (replaced). Every new cell writes a
+`margin_cell.create` line to the audit log. Not built: the SKU ₹/unit matrix with maker–checker (P2, Q-PRC-02), the tier
+order rule (BR-30 applies to those SKU cells), and the real margin values (Q-PRC-07): the table starts empty and the
+screen shows "Not set" until a Founder or Admin enters them. For development, `npm run db:seed-demo` fills the 12 boxes
+with made-up values starting 1 Jan 2026 (`effectiveFrom` = `2025-12-31T18:30:00Z`, in the Founder's name). A real value
+entered on the screen starts later and takes over; the made-up cell then shows as "Replaced". The app cannot delete a
+cell, so to remove the made-up ones completely delete the `margin_cells` documents with that `effectiveFrom` in MongoDB
+Compass or mongosh.
 
 ## Parties (modules/parties)
 
@@ -261,11 +294,11 @@ billing"). All money is whole paise.
 
 ## Left out for now
 
-MFA, step-up re-authentication, a per-IP rate limit on login, a breached-password check, and "forgot password" by
-email (an Admin resets it instead). Masters not built yet: the margin matrix (needs step-up). Bank number: no
+MFA (step-up is a password re-check for now), a per-IP rate limit on login, a breached-password check, and "forgot
+password" by email (an Admin resets it instead). Masters not built yet: the SKU ₹/unit matrix (P2, Q-PRC-02). Bank number: no
 "reveal" action and no key rotation yet. Not enforced yet: pack label vs unit family (SRS-MST-01), making `unitsPerBox` read-only once
 listings or orders use a pack, and blocking the turn-off of a tehsil or manufacturer that buyers or sellers use (parties exist now; the check is not written yet).
 Parties not built yet: opening ledgers, seller KYC documents (Q-PUR-01), the bulk import of existing parties
 (Q-DATA-01), placeholder parties, and automatic classification at the first order.
-Listings not built yet: the Sales-side rate board and selling prices (they need the margin matrix), a daily job to expire
+Listings not built yet: the Sales-side rate board and selling prices (the margin cells they need now exist), a daily job to expire
 listings (the sweep inside the API does it for now), editing a listing, and a seller's own `/sellers/:id/listings` view.
