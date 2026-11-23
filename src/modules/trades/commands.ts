@@ -1,32 +1,38 @@
+import type { Request } from 'express';
 import type { ClientSession, Types } from 'mongoose';
 import { z } from 'zod';
 import { numberSetting } from '../../db/settings.js';
 import {
   BuyerModel,
   ListingModel,
+  ReasonCodeModel,
   SellerModel,
   SkuModel,
   type Trade,
   type TradeModel,
 } from '../../models/index.js';
-import { DECLINE_REASONS, type SkuClass } from '../../shared/enums.js';
+import { DECLINE_REASONS, type ReasonCodeContext, type SkuClass } from '../../shared/enums.js';
 import { conflict, invalidField } from '../../shared/errors.js';
 import { formatRupees } from '../../shared/money.js';
 import { objectId } from '../parties/common.js';
 import { computeBuyerRate, loadMargins, pricingTierOf } from '../pricing/pricing.js';
+import { cancelSalesOrder, raiseSalesOrder } from '../salesOrders/salesOrders.js';
 import type { TradeActionName } from './actions.js';
 import { earliestExpiryMonth, monthsFromNow } from './stages.js';
 
 /**
  * What each engine action does (SRS §6.4). A command checks its input and the business rules, then says what to
- * change; the engine (engine.ts) saves the change, the history line and the audit line in one transaction.
- * A command never saves anything itself.
+ * change; the engine (engine.ts) saves the trade, the history line and the audit line in one transaction.
+ * A command never saves the trade itself. The only other writes are the sales order a step raises or cancels
+ * (`buyerYes`, `leakAfterOrder`), done inside the same transaction (`session`).
  */
 
 /** A trade as loaded from the database. */
 export type TradeDoc = InstanceType<typeof TradeModel>;
 
 export interface CommandContext {
+  /** The request, for the audit line of a sales order raised or cancelled by the step. */
+  req: Request;
   trade: TradeDoc;
   userId: Types.ObjectId;
   now: Date;
@@ -306,6 +312,134 @@ const giveQuote = command(quoteInput, async ({ trade, userId, now }, input) => {
   };
 });
 
+// ---------------------------------------------------------------------------------------------------------------
+// Sales again: the buyer's answer (FR-ORD-02)
+
+/** A reason picked from the reason codes master: it must exist, be turned on and belong to this dropdown. */
+async function reasonFor(reasonCodeId: string, context: ReasonCodeContext) {
+  const reason = await ReasonCodeModel.findById(reasonCodeId);
+  if (!reason?.active || reason.context !== context) {
+    throw invalidField('reasonCodeId', 'Choose a reason from the list.');
+  }
+  return reason;
+}
+
+const reasonInput = z.object({ reasonCodeId: objectId, note: optionalText(300) });
+
+/**
+ * b4 → b5: Sales sends the offer to the buyer (boxes, rate, expiry) and waits for his call. The seller keeps
+ * holding the stock on the same clock. If the margin matrix had no cell when the seller answered, the rate is
+ * worked out now; if there is still none, the offer cannot be sent.
+ */
+const sendToBuyer = command(z.object({}), async ({ trade, now }) => {
+  const answer = trade.sellerAnswer;
+  if (!answer || !trade.offer || !trade.skuId) {
+    throw conflict('The seller has not answered yet.', 'NO_SELLER_ANSWER');
+  }
+  let rate = trade.offer.buyerRatePaisePerUnit ?? null;
+  let newOffer = null;
+  if (rate === null) {
+    const sku = await SkuModel.findById(trade.skuId).orFail();
+    newOffer = await offerFor(trade, sku.skuClass, answer.landedPaisePerUnit, now);
+    rate = newOffer.buyerRatePaisePerUnit;
+    if (rate === null) {
+      throw conflict(
+        "There is no rate yet: the margin matrix has no box for this pack and this buyer's tier. Ask Founder or Admin to fill it, then send again.",
+        'RATE_UNAVAILABLE',
+      );
+    }
+  }
+  return {
+    set: { buyerStage: 'B5_BUYERS_CALL', ...(newOffer ? { offer: newOffer } : {}) },
+    buyerNote: `Offer sent: ${answer.boxes} boxes at ${formatRupees(rate)} a unit (${formatRupees(rate * answer.unitsPerBox)} a box), expiry ${answer.expiryMonth}`,
+    sellerNote: '',
+  };
+});
+
+/**
+ * b5 → b6, seller s1 → s2: the buyer says yes. The engine raises his sales order (SO-26-0001) with the fixed
+ * rate and GST, and the payment clock starts (PAYMENT_WINDOW_HOURS). The seller holds the stock until payment.
+ */
+const buyerYes = command(z.object({}), async (ctx) => {
+  const order = await raiseSalesOrder(ctx);
+  const boxes = ctx.trade.sellerAnswer?.boxes ?? 0;
+  return {
+    set: {
+      buyerStage: 'B6_ORDER_CONFIRMED',
+      sellerStage: 'S2_HOLD',
+      salesOrderId: order._id,
+      dueAt: order.paymentDueAt,
+    },
+    buyerNote: `Buyer said yes: ${order.number} for ${formatRupees(order.totalPaise)}`,
+    sellerNote: `The buyer confirmed ${boxes} boxes: the seller holds them until the buyer pays`,
+  };
+});
+
+const RELEASED_NOTE = 'The buyer did not take it: the seller may sell the stock to someone else';
+
+/** b5 → Leakage: the buyer says no, with a reason (reason codes, context BUYER_NO). The seller's hold ends. */
+const buyerNo = command(reasonInput, async ({ trade, userId, now }, input) => {
+  const reason = await reasonFor(input.reasonCodeId, 'BUYER_NO');
+  return {
+    set: {
+      buyerStage: 'X_LEAKAGE',
+      ...(trade.sellerStage ? { sellerStage: 'S_RELEASED' } : {}),
+      leakage: {
+        context: 'BUYER_NO',
+        reasonCodeId: reason._id,
+        reasonLabel: reason.label,
+        ...(input.note ? { note: input.note } : {}),
+        byUserId: userId,
+        at: now,
+      },
+    },
+    unset: ['dueAt'],
+    buyerNote: `Buyer said no: ${reason.label}${input.note ? ` (${input.note})` : ''}`,
+    sellerNote: RELEASED_NOTE,
+  };
+});
+
+/**
+ * b6 → Leakage: the buyer drops the order before paying (reason codes, context B6_LEAK). His sales order is
+ * cancelled and the seller's hold ends. Refunds for money already paid come with payments (next build).
+ */
+const leakAfterOrder = command(reasonInput, async (ctx, input) => {
+  const reason = await reasonFor(input.reasonCodeId, 'B6_LEAK');
+  const order = await cancelSalesOrder(ctx, {
+    reasonCodeId: reason._id,
+    reasonLabel: reason.label,
+    note: input.note,
+  });
+  return {
+    set: {
+      buyerStage: 'X_LEAKAGE',
+      sellerStage: 'S_RELEASED',
+      leakage: {
+        context: 'B6_LEAK',
+        reasonCodeId: reason._id,
+        reasonLabel: reason.label,
+        ...(input.note ? { note: input.note } : {}),
+        byUserId: ctx.userId,
+        at: ctx.now,
+      },
+    },
+    unset: ['dueAt'],
+    buyerNote: `Buyer dropped the order: ${reason.label}${input.note ? ` (${input.note})` : ''}. ${order.number} cancelled.`,
+    sellerNote: RELEASED_NOTE,
+  };
+});
+
+/**
+ * Leakage → b2: the buyer is interested again. The old seller answer, offer and order link are cleared (a
+ * cancelled order stays on record), so "Send to seller" starts the seller side afresh.
+ */
+const reopen = command(z.object({}), () => ({
+  set: { buyerStage: 'B2_INQUIRY' },
+  unset: ['leakage', 'sellerStage', 'sellerId', 'sellerAnswer', 'offer', 'salesOrderId', 'dueAt'],
+  buyerNote: 'Reopened: send it to the seller again when the buyer is ready',
+  sellerNote: '',
+}));
+
 /** Every action's command. The engine looks the action up here. */
 export const COMMANDS: Record<TradeActionName, Command> = {
   wantIt,
@@ -313,4 +447,9 @@ export const COMMANDS: Record<TradeActionName, Command> = {
   giveQuote,
   confirmStock,
   declineStock,
+  sendToBuyer,
+  buyerYes,
+  buyerNo,
+  leakAfterOrder,
+  reopen,
 };

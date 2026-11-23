@@ -2,6 +2,7 @@ import { Schema, model, type InferSchemaType } from 'mongoose';
 import {
   ASK_REASONS,
   BUYER_STAGES,
+  REASON_CODE_CONTEXTS,
   BUYER_TIERS,
   SELLER_ANSWER_KINDS,
   SELLER_STAGES,
@@ -99,6 +100,26 @@ const tradeSchema = new Schema(
           tier: { type: String, enum: BUYER_TIERS, required: true },
           /** True when the buyer was not classified yet (priced as Retailer). */
           indicative: { type: Boolean, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
+
+    /** The sales order raised when the buyer said yes (b6). Cleared when a lost trade is reopened. */
+    salesOrderId: refField('SalesOrder'),
+
+    /** Why the trade was lost (X_LEAKAGE): the buyer said no (BUYER_NO) or dropped the order (B6_LEAK). */
+    leakage: {
+      type: new Schema(
+        {
+          context: { type: String, enum: REASON_CODE_CONTEXTS, required: true },
+          reasonCodeId: { ...refField('ReasonCode'), required: true },
+          /** The reason's words when it was picked, so the history reads the same if the code is renamed. */
+          reasonLabel: { ...textField(120), required: true },
+          note: textField(300),
+          byUserId: { ...refField('User'), required: true },
+          at: { type: Date, required: true },
         },
         { _id: false },
       ),

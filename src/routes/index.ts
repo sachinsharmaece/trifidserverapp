@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authRouter } from '../modules/auth/auth.routes.js';
 import { listingsRouter } from '../modules/listings/listings.routes.js';
 import { boardRouter } from '../modules/pricing/board.routes.js';
+import { salesOrdersRouter } from '../modules/salesOrders/salesOrders.routes.js';
 import { tradesRouter } from '../modules/trades/trades.routes.js';
 import { buyersRouter } from '../modules/parties/buyers.routes.js';
 import { companyRouter } from '../modules/masters/company.routes.js';
@@ -54,3 +55,5 @@ apiRouter.use(listingsRouter);
 apiRouter.use(boardRouter);
 // Trades: deal cards and funnel lists. Every change goes through the one trade engine (Q-WF-01).
 apiRouter.use(tradesRouter);
+// Sales orders: read only. The trade engine raises and cancels them (buyer says yes / drops the order).
+apiRouter.use(salesOrdersRouter);

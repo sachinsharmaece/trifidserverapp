@@ -2,6 +2,7 @@ import {
   BuyerModel,
   ListingModel,
   ProductModel,
+  SalesOrderModel,
   SellerModel,
   SkuModel,
   TradeEventModel,
@@ -42,8 +43,9 @@ function dueOf(trade: TradeDoc) {
     return { at: trade.dueAt, label: 'Purchase to find a seller' };
   if (trade.buyerStage === 'B3_PENDING_SELLER')
     return { at: trade.dueAt, label: 'Seller to confirm' };
-  if (trade.buyerStage === 'B4_SEND_CONFIRMATION')
+  if (trade.buyerStage === 'B4_SEND_CONFIRMATION' || trade.buyerStage === 'B5_BUYERS_CALL')
     return { at: trade.dueAt, label: 'Seller holds the stock until' };
+  if (trade.buyerStage === 'B6_ORDER_CONFIRMED') return { at: trade.dueAt, label: 'Payment due' };
   return { at: trade.dueAt, label: 'Due' };
 }
 
@@ -119,8 +121,28 @@ export async function tradeView(trade: TradeDoc, role: Role) {
       };
     }
     const answer = trade.sellerAnswer;
+    const order = trade.salesOrderId ? await SalesOrderModel.findById(trade.salesOrderId) : null;
     buyerSide = {
       buyer: { id: buyer.id, number: buyer.number, firmName: buyer.firmName },
+      // The buyer's order (b6 onward): a short summary; the full order is on its own page.
+      salesOrder: order
+        ? {
+            id: order.id,
+            number: order.number,
+            status: order.status,
+            totalPaise: order.totalPaise,
+            paymentDueAt: order.paymentDueAt,
+          }
+        : null,
+      // Why the trade was lost (Leakage): buyer side only.
+      leakage: trade.leakage
+        ? {
+            context: trade.leakage.context,
+            reasonLabel: trade.leakage.reasonLabel,
+            note: trade.leakage.note ?? null,
+            at: trade.leakage.at,
+          }
+        : null,
       boardOffer,
       // After the seller answers: what Sales offers the buyer (no seller name, no seller rate).
       offer:

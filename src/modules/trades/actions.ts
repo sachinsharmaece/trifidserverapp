@@ -39,6 +39,15 @@ export const TRADE_ACTIONS = {
     buyerFrom: ['B3_PENDING_SELLER'],
     sellerFrom: ['S1_CONFIRMATION'],
   },
+  sendToBuyer: { label: 'Send to buyer', desk: 'SALES', buyerFrom: ['B4_SEND_CONFIRMATION'] },
+  buyerYes: { label: 'Buyer says yes', desk: 'SALES', buyerFrom: ['B5_BUYERS_CALL'] },
+  buyerNo: { label: 'Buyer says no', desk: 'SALES', buyerFrom: ['B5_BUYERS_CALL'] },
+  leakAfterOrder: {
+    label: 'Buyer drops the order',
+    desk: 'SALES',
+    buyerFrom: ['B6_ORDER_CONFIRMED'],
+  },
+  reopen: { label: 'Reopen', desk: 'SALES', buyerFrom: ['X_LEAKAGE'] },
 } as const satisfies Record<string, ActionRule>;
 
 export type TradeActionName = keyof typeof TRADE_ACTIONS;

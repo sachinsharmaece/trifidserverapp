@@ -6,11 +6,16 @@ export const BUYER_STAGE_LABELS: Record<BuyerStage, string> = {
   B2_INQUIRY: 'b2 Inquiry',
   B3_PENDING_SELLER: 'b3 Pending seller',
   B4_SEND_CONFIRMATION: 'b4 Send confirmation',
+  B5_BUYERS_CALL: "b5 Buyer's call",
+  B6_ORDER_CONFIRMED: 'b6 Order confirmed',
+  X_LEAKAGE: 'Leakage',
 };
 
 export const SELLER_STAGE_LABELS: Record<SellerStage, string> = {
   S0_DEMAND: 's0 Find a seller',
   S1_CONFIRMATION: 's1 Seller confirmation',
+  S2_HOLD: 's2 Hold for payment',
+  S_RELEASED: 'Released',
 };
 
 /**

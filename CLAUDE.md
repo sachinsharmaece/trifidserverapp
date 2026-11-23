@@ -42,6 +42,9 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
 - Trades live in `src/modules/trades/` and only `engine.ts` writes `trades` and `trade_events` (Q-WF-01, one engine).
   A new button is a row in `actions.ts` plus a handler in `commands.ts`; never a new route that writes a trade. What a
   role may see of a trade is decided in `view.ts` only. Every action needs the trade's `version` (409 `STALE_TRADE`).
+- Sales orders live in `src/modules/salesOrders/`: raised and cancelled only from inside an engine command
+  (`raiseSalesOrder`, `cancelSalesOrder`, in the command's `session`); the routes only read. GST is always worked out
+  with `splitGst()` (`src/shared/money.ts`), never by hand.
 - Margins live in `src/modules/masters/marginCells.routes.ts`: reading needs `canSeeMargins` (the wall), writing adds
   `canEditMasters` and `requireStepUp` (`src/modules/auth/stepUp.ts`, 428 until the password was re-checked in the last 5
   minutes). Use `requireStepUp` after the role check on any route that should ask for the password again. A cell is

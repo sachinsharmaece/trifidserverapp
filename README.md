@@ -95,7 +95,8 @@ src/
   scripts/             db-sync.ts, db-seed.ts, db-seed-demo.ts (npm run db:sync / db:seed / db:seed-demo)
   middleware/          requestId (more later: idempotency)
   routes/index.ts      the /api/v1 router — mount feature modules here
-  modules/<feature>/   one folder per feature (health, auth, users, masters, parties, listings, pricing, trades today)
+  modules/<feature>/   one folder per feature (health, auth, users, masters, parties, listings, pricing, trades,
+                       salesOrders today)
   shared/              errors (HttpError + error envelope), audit (writeAudit), mongo (duplicate-key helper), logger,
                        shutdown, enums, validators
   types/               Express type additions (req.requestId, req.user)
@@ -326,7 +327,7 @@ ever gets bigger. Opening a row as a deal card, "He wants it" and asks are trade
 A trade is one buyer wanting one product. It has two stage tracks: the **buyer stage** (Sales' side, b1…) and the
 **seller stage** (Purchase's side, s0…). Q-WF-01 was decided as Option 3: **one engine**. Only `engine.ts` writes the
 `trades` and `trade_events` collections. The deal card and, later, the desk queues press the same actions, so a rule
-lives in one place. Built so far (the first part):
+lives in one place. Built so far (up to the buyer's order):
 
 ```
 Rate board ─ Open ─▶ b1 Viewing ─ He wants it ─▶ b2 Inquiry ─ Send to seller ─▶ b3 Pending seller ─▶ b4 Send confirmation
@@ -334,6 +335,9 @@ Ask (not listed) ─────────────────────
                                                                  │   Seller confirms ─▶ b4   Seller declines ─▶ back to b2
                                                                  │ no live listing (an ask, or after a decline): s0 Find a seller
                                                                  │   Record the quote ─▶ s1 + b4
+b4 ─ Send to buyer ─▶ b5 Buyer's call ─ Buyer says yes ─▶ b6 Order confirmed (sales order raised; seller s2 Hold for payment)
+                                     └ Buyer says no ─▶ Leakage (seller Released)
+b6 ─ Buyer drops the order ─▶ Leakage (order cancelled; seller Released)      Leakage ─ Reopen ─▶ b2 Inquiry
 ```
 
 | File               | What is in it                                                                                                                              |
@@ -361,6 +365,15 @@ skuId, landedPaisePerUnit, expiryMonth, moqBoxes, boxesAvailable, batchNumber?}`
 smaller of what he wants and what the seller has, which must reach the seller's minimum). `expiryMonth` is `YYYY-MM` and
 must be at least `SHELF_LIFE_FLOOR_MONTHS` (6) months away; the message names the earliest month allowed.
 
+Then, all Sales: `sendToBuyer {}` (b4 → b5; if the margin matrix had no box when the seller answered, the rate is worked
+out now, and with still none it is 409 `RATE_UNAVAILABLE`), `buyerYes {}` (b5 → b6 and seller s2: raises the sales order,
+next section; a turned-off buyer is 409 `BUYER_INACTIVE`), `buyerNo {reasonCodeId, note?}` (b5 → Leakage, seller
+Released), `leakAfterOrder {reasonCodeId, note?}` (b6 → Leakage: cancels the order; refused with 409 `ORDER_HAS_PAYMENT`
+once money is received, as refunds are not built yet) and `reopen {}` (Leakage → b2: clears the seller side, the offer,
+the loss reason and the order link, so "Send to seller" starts afresh; the cancelled order stays on record). A reason
+must come from the reason codes master, turned on and of the right context (BUYER_NO, B6_LEAK), else 422 on
+`reasonCodeId`. The loss reason is on the buyer side only; Purchase reads "the seller may sell the stock".
+
 **Who presses.** Each action belongs to one desk (Sales or Purchase). Founder and Admin may press every button too,
 because they have every right (Q-ROL-01, `canPress` in `actions.ts`). The Controller sees both sides but presses nothing
 here; the history and `trade_events` record who pressed and with which role.
@@ -377,13 +390,41 @@ and Admin. Purchase sees a trade only once it is sent to the seller side. The ma
 a buyer note and a seller note, and each person reads only his side's note.
 
 **Clocks** (`dueAt`, from settings): `SLA_S0_HOURS` (7) for Purchase to find a seller, `SLA_S1_HOURS` (12) for the seller
-to confirm, `SELLER_HOLD_HOURS` (24) that the seller holds the stock after confirming. Shown as "Next" on the lists;
-nothing happens automatically when one runs out yet.
+to confirm, `SELLER_HOLD_HOURS` (24) that the seller holds the stock after confirming (it keeps running at b5), and
+`PAYMENT_WINDOW_HOURS` (24) for the buyer to pay once his order is raised (b6). Shown as "Next" on the lists; nothing
+happens automatically when one runs out yet.
 
 Kept simple on purpose: the ask and the seller's answer are stored inside the trade (no separate collections); decline
 reasons are a fixed list; the buyer rate is fixed at the seller's answer. There is no `Idempotency-Key` check yet (none of the API has
 one): the version check is what stops a double press from moving a trade twice. The lists page in memory, like the
 rate board.
+
+## Sales orders (modules/salesOrders)
+
+An order (`SO-26-0001`) is what the buyer agreed to buy and must pay for. Only the trade engine makes or changes one:
+`raiseSalesOrder` runs inside `buyerYes` and `cancelSalesOrder` inside `leakAfterOrder`, in the engine's transaction,
+each with its own audit line (`salesOrder.raise`, `salesOrder.cancel`). The routes only read.
+
+- Everything is copied onto the order when the buyer says yes: the buyer (number, firm, GSTIN, state, delivery place,
+  tier), and the line (product, pack, units per box, HSN, class, boxes, expiry, batch, seller rate, our rate, box value,
+  line total, GST rate). Later changes to the buyer, the pack or the margins never change an order.
+- Money: rates include GST. Box value = our rate × units per box; line total = box value × boxes; `totalPaise` = the
+  line total. `splitGst(total, taxBp, interState)` in `shared/money.ts` works the tax back out:
+  taxable = round(total × 10,000 ÷ (10,000 + taxBp)); another state → IGST = the rest; same state → SGST = half rounded
+  up, CGST = the rest. Example (ARCH): ₹32,400.00 at 18% in Madhya Pradesh → 2,745,763 + 247,118 + 247,119 paise.
+  "Same state" = the buyer's state code equals the company's (from its GSTIN; 23, Madhya Pradesh, until that is set).
+- `paymentDueAt` = now + `PAYMENT_WINDOW_HOURS` (24); the trade's clock shows it as "Payment due". `paidPaise` stays 0
+  until payments are built.
+
+| Call                                           | Who                                         | What it does                                                                                           |
+| ---------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `GET /sales-orders?q=&status=&page=&pageSize=` | Sales, Accounts, Controller, Founder, Admin | `{ salesOrders, total, page, pageSize }`, newest first; `q` = order no. or buyer                       |
+| `GET /sales-orders/:id`                        | the same                                    | `{ salesOrder }`. Controller, Founder and Admin also get `seller` and each line's `landedPaisePerUnit` |
+
+Purchase and Logistics get 403: an order names the buyer. The margin is never sent. Not built yet: insurance on the order
+(Q-SAL-04, open), payments and the PO at Gate A (Q-ACC-01 and Q-ACC-09 first), the proforma PDF, cancelling an overdue
+order from the order page (the deal card's "Buyer drops the order" does it), and one order for several trades or sellers
+(Q-PUR-05: one trade = one order = one seller for now).
 
 ## Left out for now
 
@@ -395,5 +436,5 @@ Parties not built yet: opening ledgers, seller KYC documents (Q-PUR-01), the bul
 (Q-DATA-01), placeholder parties, and automatic classification at the first order.
 Listings not built yet: a daily job to expire
 listings (the sweep inside the API does it for now), editing a listing, and a seller's own `/sellers/:id/listings` view.
-Trades not built yet: b5 onward (the buyer confirms, SO/PO, payment, dock, Marg bill, dispatch, delivery), the Accounts
+Trades not built yet: b7 onward (payment and Gate A, the PO, dock, Marg bill, dispatch, delivery), the Accounts
 and Logistics desk queues, a job that closes b1 trades nobody touched, and anything that acts when a clock runs out.

@@ -108,7 +108,7 @@ export async function runTradeAction(req: Request, tradeId: string, action: stri
   const now = new Date();
   await mongoose.connection.transaction(async (session) => {
     const change: TradeChange = await COMMANDS[action].run(
-      { trade, userId: new Types.ObjectId(user.id), now, session },
+      { req, trade, userId: new Types.ObjectId(user.id), now, session },
       input,
     );
     const before = { buyerStage: trade.buyerStage, sellerStage: trade.sellerStage };

@@ -87,22 +87,29 @@ export const LISTING_STATUSES = ['ACTIVE', 'PAUSED', 'EXPIRED', 'WITHDRAWN'] as 
 export type ListingStatus = (typeof LISTING_STATUSES)[number];
 
 /**
- * Where a trade stands on the buyer side (SRS §3.7, ARCH B3.4). Built so far: b1 to b4.
- * b1 Viewing → b2 Inquiry (he wants it) → b3 Pending seller → b4 Send confirmation (the seller has answered).
+ * Where a trade stands on the buyer side (SRS §3.7, ARCH B3.4). Built so far: b1 to b6, and Leakage.
+ * b1 Viewing → b2 Inquiry (he wants it) → b3 Pending seller → b4 Send confirmation (the seller has answered)
+ * → b5 Buyer's call (the offer was sent to him) → b6 Order confirmed (he said yes: sales order raised).
+ * X_LEAKAGE = the buyer said no, or dropped the order before paying; Sales may reopen it (back to b2).
  */
 export const BUYER_STAGES = [
   'B1_VIEWING',
   'B2_INQUIRY',
   'B3_PENDING_SELLER',
   'B4_SEND_CONFIRMATION',
+  'B5_BUYERS_CALL',
+  'B6_ORDER_CONFIRMED',
+  'X_LEAKAGE',
 ] as const;
 export type BuyerStage = (typeof BUYER_STAGES)[number];
 
 /**
  * Where a trade stands on the seller side. s0 = Purchase must find a seller (the item is not listed);
- * s1 = waiting for the seller to confirm (or the seller has confirmed and the buyer is deciding).
+ * s1 = waiting for the seller to confirm (or the seller has confirmed and the buyer is deciding);
+ * s2 = the buyer said yes: the seller holds the stock until the buyer pays;
+ * S_RELEASED = the buyer did not take it: the seller may sell the stock to someone else.
  */
-export const SELLER_STAGES = ['S0_DEMAND', 'S1_CONFIRMATION'] as const;
+export const SELLER_STAGES = ['S0_DEMAND', 'S1_CONFIRMATION', 'S2_HOLD', 'S_RELEASED'] as const;
 export type SellerStage = (typeof SELLER_STAGES)[number];
 
 /** LISTED = the buyer picked a listing on the rate board. NOT_LISTED = Sales asked for something not on the board. */
@@ -125,3 +132,7 @@ export type SellerAnswerKind = (typeof SELLER_ANSWER_KINDS)[number];
 /** Why a seller said no at s1. OTHER needs a note. */
 export const DECLINE_REASONS = ['NO_STOCK', 'RATE_CHANGED', 'EXPIRY_TOO_SHORT', 'OTHER'] as const;
 export type DeclineReason = (typeof DECLINE_REASONS)[number];
+
+/** A sales order waits for the buyer's payment, is paid, or was cancelled (the buyer dropped it). */
+export const SALES_ORDER_STATUSES = ['AWAITING_PAYMENT', 'PAID', 'CANCELLED'] as const;
+export type SalesOrderStatus = (typeof SALES_ORDER_STATUSES)[number];
