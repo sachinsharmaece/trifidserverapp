@@ -39,6 +39,9 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
 - Buyer-facing rates come from `computeBuyerRate()` in `src/modules/pricing/pricing.ts`, and from nowhere else: never
   repeat the margin sum in another file. The Sales rate board (`pricing/board.routes.ts`, `GET /buyers/:id/board`) sits on
   the buyer side of the wall: build its response from buyer-safe fields only, never copy a listing or a margin into it.
+- Trades live in `src/modules/trades/` and only `engine.ts` writes `trades` and `trade_events` (Q-WF-01, one engine).
+  A new button is a row in `actions.ts` plus a handler in `commands.ts`; never a new route that writes a trade. What a
+  role may see of a trade is decided in `view.ts` only. Every action needs the trade's `version` (409 `STALE_TRADE`).
 - Margins live in `src/modules/masters/marginCells.routes.ts`: reading needs `canSeeMargins` (the wall), writing adds
   `canEditMasters` and `requireStepUp` (`src/modules/auth/stepUp.ts`, 428 until the password was re-checked in the last 5
   minutes). Use `requireStepUp` after the role check on any route that should ask for the password again. A cell is
@@ -46,7 +49,7 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
 - Throw `HttpError` helpers; never `res.status(...).json({ error })` by hand. Zod errors become 422 automatically.
 - Validate every request with Zod. Never trust ids, money or roles from the client.
 - Money writes and the audit/voucher entries that go with them happen in ONE MongoDB transaction.
-- `margin_cells` and `audit_events` cannot be changed after insert (append-only). Other collections use Mongoose
+- `margin_cells`, `audit_events` and `trade_events` cannot be changed after insert (append-only). Other collections use Mongoose
   defaults; add optimistic locking (`version`) only to documents several people edit at once (orders, trades).
 - `select: false` and a `toJSON` transform for secrets (`passwordHash`, encrypted bank numbers). Bank numbers are locked
   with `encryptText()` (`src/shared/encryption.ts`); return only `accountLast4`, never the number or the locked text.

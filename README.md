@@ -95,7 +95,7 @@ src/
   scripts/             db-sync.ts, db-seed.ts, db-seed-demo.ts (npm run db:sync / db:seed / db:seed-demo)
   middleware/          requestId (more later: idempotency)
   routes/index.ts      the /api/v1 router — mount feature modules here
-  modules/<feature>/   one folder per feature (health, auth, users, masters, parties, listings, pricing today)
+  modules/<feature>/   one folder per feature (health, auth, users, masters, parties, listings, pricing, trades today)
   shared/              errors (HttpError + error envelope), audit (writeAudit), mongo (duplicate-key helper), logger,
                        shutdown, enums, validators
   types/               Express type additions (req.requestId, req.user)
@@ -207,7 +207,7 @@ Compass or mongosh.
 
 Sellers (who we buy from) and buyers (who we sell to). The visibility wall is enforced here: `/sellers` is for Purchase,
 Controller, Founder and Admin; `/buyers` is for Sales, Controller, Founder and Admin; any other role gets 403
-(`modules/parties/permissions.ts`). Admin on both sides follows the open question Q-ROL-01: change it in that one file.
+(`modules/parties/permissions.ts`). Founder and Admin have every right, so they are on both sides (Q-ROL-01, decided).
 
 | Call                                      | What it does                                                                                                                                                                                                 |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -319,8 +319,71 @@ margin cell missing" (SRS-MST-05). The box value uses the units per box the list
 margin and no pack class; the API leaves them out, it does not hide them. The same fields go to every role. A turned-off
 buyer is 409 `BUYER_INACTIVE`; an unknown id is 404. The board only reads: it writes nothing, not even an audit line.
 It loads all live offers and pages them in memory, which is fine for a few thousand offers; use an aggregation if it
-ever gets bigger. Not built: the funnel on the board (open a row, "He wants it", asks, call outcomes), which waits on
-the workflow question Q-WF-01, and quotes and orders.
+ever gets bigger. Opening a row as a deal card, "He wants it" and asks are trade engine commands (next section).
+
+## Trades: the one engine (modules/trades)
+
+A trade is one buyer wanting one product. It has two stage tracks: the **buyer stage** (Sales' side, b1…) and the
+**seller stage** (Purchase's side, s0…). Q-WF-01 was decided as Option 3: **one engine**. Only `engine.ts` writes the
+`trades` and `trade_events` collections. The deal card and, later, the desk queues press the same actions, so a rule
+lives in one place. Built so far (the first part):
+
+```
+Rate board ─ Open ─▶ b1 Viewing ─ He wants it ─▶ b2 Inquiry ─ Send to seller ─▶ b3 Pending seller ─▶ b4 Send confirmation
+Ask (not listed) ──────────────────────────────▶ b2 Inquiry      │ listing still live: s1 Seller confirmation
+                                                                 │   Seller confirms ─▶ b4   Seller declines ─▶ back to b2
+                                                                 │ no live listing (an ask, or after a decline): s0 Find a seller
+                                                                 │   Record the quote ─▶ s1 + b4
+```
+
+| File               | What is in it                                                                                                                              |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `actions.ts`       | The action table: each action's button label, which desk presses it, and from which stage (data, no code)                                  |
+| `commands.ts`      | One handler per action: checks its input and business rules and returns the change to save                                                 |
+| `engine.ts`        | `runTradeAction` (the checks in a fixed order, then one transaction: save, `trade_events` line, audit line), `openViewing`, `askNotListed` |
+| `view.ts`          | What each role may see of a trade (the wall), its buttons, its due time and its history                                                    |
+| `stages.ts`        | Stage labels and the expiry-month maths (Indian time)                                                                                      |
+| `trades.routes.ts` | The routes below                                                                                                                           |
+
+| Call                                            | Who                                  | What it does                                                                                                            |
+| ----------------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `POST /trades/open-viewing`                     | Sales, Founder, Admin                | `{ buyerId, listingId }` → 201 `{ trade }` at b1, or 200 with his open b1 for that listing (no duplicates)              |
+| `POST /trades/asks`                             | Sales, Founder, Admin                | `{ buyerId, productId, skuId?, boxes, reason, note? }` → 201 at b2. No `skuId` = any pack. A note is needed for `OTHER` |
+| `GET /trades/buyer-side?stage&q&page&pageSize`  | Sales, Controller, Founder, Admin    | Buyer funnels: `{ counts, trades, total, page, pageSize }`, rows name the buyer                                         |
+| `GET /trades/seller-side?stage&q&page&pageSize` | Purchase, Controller, Founder, Admin | Purchase's queue: only trades sent to the seller side; rows name the seller                                             |
+| `GET /trades/:id`                               | both sides                           | `{ trade }` built for the person's role. 404 if he may not see it                                                       |
+| `POST /trades/:id/actions/:action`              | the action's desk, Founder, Admin    | `{ version, ...fields }` → `{ trade }`                                                                                  |
+
+The actions: `wantIt {boxes}` (Sales, b1; at least the listing's minimum order), `sendToSeller {}` (Sales, b2),
+`confirmStock {boxes, expiryMonth, batchNumber?}` (Purchase, s1; the batch is needed for the seller's own stock),
+`declineStock {reason, note?}` (Purchase, s1; the trade goes back to b2 and leaves the seller side) and `giveQuote {sellerId,
+skuId, landedPaisePerUnit, expiryMonth, moqBoxes, boxesAvailable, batchNumber?}` (Purchase, s0; the buyer is offered the
+smaller of what he wants and what the seller has, which must reach the seller's minimum). `expiryMonth` is `YYYY-MM` and
+must be at least `SHELF_LIFE_FLOOR_MONTHS` (6) months away; the message names the earliest month allowed.
+
+**Who presses.** Each action belongs to one desk (Sales or Purchase). Founder and Admin may press every button too,
+because they have every right (Q-ROL-01, `canPress` in `actions.ts`). The Controller sees both sides but presses nothing
+here; the history and `trade_events` record who pressed and with which role.
+
+**Checks, always in this order:** signed in → your desk (403 "Purchase does this.") → the right stage (409 `WRONG_STAGE`)
+→ nobody moved it since you loaded it (409 `STALE_TRADE`: the body's `version` must match) → the input (422
+`VALIDATION_FAILED` with field messages) → the business rules (409/422). The save is
+`updateOne({ _id, version }, { …, $inc: { version: 1 } })`, so two people pressing at once cannot both win.
+
+**The wall.** `view.ts` builds the answer per role. The buyer side (`buyer`, `boardOffer` = the live board rate before
+the seller answers, `offer` = the rate fixed when the seller confirms or quotes) goes to Sales, Controller, Founder and
+Admin. The seller side (`seller`, `listing` with its landed rate, `sellerAnswer`) goes to Purchase, Controller, Founder
+and Admin. Purchase sees a trade only once it is sent to the seller side. The margin is never sent. Each history line has
+a buyer note and a seller note, and each person reads only his side's note.
+
+**Clocks** (`dueAt`, from settings): `SLA_S0_HOURS` (7) for Purchase to find a seller, `SLA_S1_HOURS` (12) for the seller
+to confirm, `SELLER_HOLD_HOURS` (24) that the seller holds the stock after confirming. Shown as "Next" on the lists;
+nothing happens automatically when one runs out yet.
+
+Kept simple on purpose: the ask and the seller's answer are stored inside the trade (no separate collections); decline
+reasons are a fixed list; the buyer rate is fixed at the seller's answer. There is no `Idempotency-Key` check yet (none of the API has
+one): the version check is what stops a double press from moving a trade twice. The lists page in memory, like the
+rate board.
 
 ## Left out for now
 
@@ -332,3 +395,5 @@ Parties not built yet: opening ledgers, seller KYC documents (Q-PUR-01), the bul
 (Q-DATA-01), placeholder parties, and automatic classification at the first order.
 Listings not built yet: a daily job to expire
 listings (the sweep inside the API does it for now), editing a listing, and a seller's own `/sellers/:id/listings` view.
+Trades not built yet: b5 onward (the buyer confirms, SO/PO, payment, dock, Marg bill, dispatch, delivery), the Accounts
+and Logistics desk queues, a job that closes b1 trades nobody touched, and anything that acts when a clock runs out.

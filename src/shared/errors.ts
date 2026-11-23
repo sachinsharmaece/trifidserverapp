@@ -36,6 +36,9 @@ export const forbidden = (message = 'You do not have permission to do this.') =>
   new HttpError(403, 'FORBIDDEN', message);
 export const notFound = (message = 'Not found.') => new HttpError(404, 'NOT_FOUND', message);
 export const conflict = (message: string, code = 'CONFLICT') => new HttpError(409, code, message);
+/** One field is wrong for a business reason (like boxes under the minimum). Same shape as a Zod error, so the form shows it on the field. */
+export const invalidField = (path: string, message: string) =>
+  new HttpError(422, 'VALIDATION_FAILED', message, [{ path, message }]);
 
 const CODE_FOR_STATUS: Record<number, string> = {
   400: 'BAD_REQUEST',

@@ -1,14 +1,20 @@
+import type { Role } from '../../shared/enums.js';
 import { requireRole } from '../auth/requireRole.js';
 
 /**
  * The visibility wall (SRS §3.6.2): Sales never sees sellers, Purchase never sees buyers. Accounts and Logistics
  * see parties only inside orders (later), never these party lists. The API refuses everyone else with 403.
  *
- * Admin is allowed on both because the prototype lets Admin see everything; whether Admin should be limited to
- * masters and settings is an open client question (Q-ROL-01). If the answer is "limit Admin", delete 'ADMIN' here.
+ * Founder and Admin have every right, so both are on both sides (Q-ROL-01, decided 23 Nov 2026). The Controller
+ * also sees both sides.
+ *
+ * These two lists are the wall for trades too (`modules/trades/view.ts`): change them here only.
  */
-export const canUseSellers = requireRole('PURCHASE', 'CONTROLLER', 'FOUNDER', 'ADMIN');
-export const canUseBuyers = requireRole('SALES', 'CONTROLLER', 'FOUNDER', 'ADMIN');
+export const SELLER_SIDE_ROLES: readonly Role[] = ['PURCHASE', 'CONTROLLER', 'FOUNDER', 'ADMIN'];
+export const BUYER_SIDE_ROLES: readonly Role[] = ['SALES', 'CONTROLLER', 'FOUNDER', 'ADMIN'];
+
+export const canUseSellers = requireRole(...SELLER_SIDE_ROLES);
+export const canUseBuyers = requireRole(...BUYER_SIDE_ROLES);
 
 /**
  * Listings hold the seller's rate, so they sit behind the same wall as sellers: Purchase and the supervisors only.

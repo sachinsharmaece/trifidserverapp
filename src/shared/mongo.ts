@@ -1,7 +1,7 @@
 import { conflict } from './errors.js';
 
 /** MongoDB answers a unique-index violation (for example a second "Bayer") with error code 11000. */
-function isDuplicateKeyError(error: unknown): boolean {
+export function isDuplicateKeyError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 11000;
 }
 

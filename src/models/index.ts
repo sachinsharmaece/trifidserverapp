@@ -2,8 +2,8 @@
  * Every Mongoose model in one place. Importing this file registers them all with Mongoose
  * (needed by `db:sync` and by `.populate()`).
  *
- * Built so far: system collections + masters (ARCH §B3.1–B3.2) + sellers, buyers and listings (§B3.3).
- * Not yet: orders, trades, books (vouchers/ledgers), dock, trips — see ARCH §B3.3–B3.7.
+ * Built so far: system collections + masters (ARCH §B3.1–B3.2) + sellers, buyers and listings (§B3.3) + trades and
+ * their history (§B3.4, stages b1–b4 / s0–s1). Not yet: orders, books (vouchers/ledgers), dock, trips.
  */
 export { AuditEventModel, type AuditEvent } from './auditEvent.model.js';
 export { BuyerModel, type Buyer } from './buyer.model.js';
@@ -22,4 +22,6 @@ export { SettingModel, type Setting } from './setting.model.js';
 export { SkuModel, type Sku } from './sku.model.js';
 export { TechnicalModel, type Technical } from './technical.model.js';
 export { TehsilModel, type Tehsil } from './tehsil.model.js';
+export { TradeEventModel, type TradeEvent } from './tradeEvent.model.js';
+export { TradeModel, type Trade } from './trade.model.js';
 export { UserModel, type User } from './user.model.js';

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authRouter } from '../modules/auth/auth.routes.js';
 import { listingsRouter } from '../modules/listings/listings.routes.js';
 import { boardRouter } from '../modules/pricing/board.routes.js';
+import { tradesRouter } from '../modules/trades/trades.routes.js';
 import { buyersRouter } from '../modules/parties/buyers.routes.js';
 import { companyRouter } from '../modules/masters/company.routes.js';
 import { hsnCodesRouter } from '../modules/masters/hsnCodes.routes.js';
@@ -51,3 +52,5 @@ apiRouter.use(buyersRouter);
 apiRouter.use(listingsRouter);
 // The Sales rate board: buyer rates worked out from live listings and the margin matrix. Buyer side of the wall.
 apiRouter.use(boardRouter);
+// Trades: deal cards and funnel lists. Every change goes through the one trade engine (Q-WF-01).
+apiRouter.use(tradesRouter);
