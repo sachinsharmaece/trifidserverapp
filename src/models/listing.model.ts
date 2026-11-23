@@ -18,7 +18,7 @@ export const MAX_COL_PAISE = MAX_RATE_PAISE * 100;
  * (`ex + round(col / unitsPerBox)`) and the raw Ex rate and COL are kept next to it. Every price uses only the landed figure.
  *
  * The visibility wall: a listing holds the seller's rate, so only Purchase and the supervisors read it (see
- * modules/listings). Sales will get buyer rates computed from it, never the listing itself.
+ * modules/listings). Sales gets buyer rates computed from it (modules/pricing), never the listing itself.
  */
 const listingSchema = new Schema(
   {

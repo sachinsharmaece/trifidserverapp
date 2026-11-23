@@ -36,6 +36,9 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
   in `rates.ts` (`landedRate`, `dropExceeds`, `dedupeKeyOf`), and `expireOldListings()` runs at the start of each listings
   request (there is no scheduler yet). Read a number setting with `numberSetting(key, fallback)` (`src/db/settings.ts`).
   A listing is never edited, only paused, resumed or withdrawn.
+- Buyer-facing rates come from `computeBuyerRate()` in `src/modules/pricing/pricing.ts`, and from nowhere else: never
+  repeat the margin sum in another file. The Sales rate board (`pricing/board.routes.ts`, `GET /buyers/:id/board`) sits on
+  the buyer side of the wall: build its response from buyer-safe fields only, never copy a listing or a margin into it.
 - Margins live in `src/modules/masters/marginCells.routes.ts`: reading needs `canSeeMargins` (the wall), writing adds
   `canEditMasters` and `requireStepUp` (`src/modules/auth/stepUp.ts`, 428 until the password was re-checked in the last 5
   minutes). Use `requireStepUp` after the role check on any route that should ask for the password again. A cell is

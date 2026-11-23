@@ -95,7 +95,7 @@ src/
   scripts/             db-sync.ts, db-seed.ts, db-seed-demo.ts (npm run db:sync / db:seed / db:seed-demo)
   middleware/          requestId (more later: idempotency)
   routes/index.ts      the /api/v1 router — mount feature modules here
-  modules/<feature>/   one folder per feature (health, auth, users, masters, parties, listings today)
+  modules/<feature>/   one folder per feature (health, auth, users, masters, parties, listings, pricing today)
   shared/              errors (HttpError + error envelope), audit (writeAudit), mongo (duplicate-key helper), logger,
                        shutdown, enums, validators
   types/               Express type additions (req.requestId, req.user)
@@ -292,6 +292,36 @@ billing"). All money is whole paise.
 - **Privacy.** A listing response names the seller (number and firm name) and the pack. It never carries the seller's GSTIN,
   mobile number or bank details.
 
+## Pricing and the rate board (modules/pricing)
+
+How the rate a buyer sees is worked out, and the Sales price list built on it. `pricing.ts` is the only place that
+makes a buyer rate (SRS-PRC-01), so a board, a quote and an order can never disagree:
+
+- `computeBuyerRate(landedPaisePerUnit, marginBp)` = landed + `round(landed × margin ÷ 10,000)`. Example: landed ₹500.00
+  (50000) at 20% (2000 bp) → 50000 + 10000 = ₹600.00. A listing's stored rate is already the landed rate (an Ex offer has
+  had its COL added), and the margin is applied to that, never to the bare Ex rate.
+- `loadMargins(at)` reads the margin matrix once: for each class × tier the newest cell whose `effectiveFrom` has passed.
+  A cell dated in the future is ignored until its day. `marginFor(class, tier)` is `null` when there is none.
+- `pricingTierOf(buyer)`: a buyer who is not classified yet is priced as RETAILER and the rate is "indicative"
+  (SRS-SAL-02). Once classified ("Classify now") he is priced at his own tier.
+
+| Call                                       | What it does                                                                                                                                                                                                                         |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /buyers/:id/board?q=&page=&pageSize=` | `{ buyer: { id, number, firmName, tier, indicative }, rows, total, page, pageSize }`. For Sales, Controller, Founder and Admin (the same wall as `/buyers`; Purchase, Accounts and Logistics get 403). `q` searches the product name |
+
+A row is one live offer (listing ACTIVE and not past `expiresAt`, pack and product turned on):
+`{ id, productName, manufacturerName, packLabel, unitsPerBox, buyerRatePaisePerUnit, boxValuePaise, expiryBand, moqBoxes,
+quantityBoxes }`. Rows are sorted by product, then pack, then lowest rate. `buyerRatePaisePerUnit` and `boxValuePaise` are
+`null` when the margin matrix has no cell for the pack's class and the buyer's tier: the screen shows "Rate unavailable:
+margin cell missing" (SRS-MST-05). The box value uses the units per box the listing was made with.
+
+**The wall.** The response is built from the buyer's side only: it holds no seller, no seller rate (the landed rate), no
+margin and no pack class; the API leaves them out, it does not hide them. The same fields go to every role. A turned-off
+buyer is 409 `BUYER_INACTIVE`; an unknown id is 404. The board only reads: it writes nothing, not even an audit line.
+It loads all live offers and pages them in memory, which is fine for a few thousand offers; use an aggregation if it
+ever gets bigger. Not built: the funnel on the board (open a row, "He wants it", asks, call outcomes), which waits on
+the workflow question Q-WF-01, and quotes and orders.
+
 ## Left out for now
 
 MFA (step-up is a password re-check for now), a per-IP rate limit on login, a breached-password check, and "forgot
@@ -300,5 +330,5 @@ password" by email (an Admin resets it instead). Masters not built yet: the SKU 
 listings or orders use a pack, and blocking the turn-off of a tehsil or manufacturer that buyers or sellers use (parties exist now; the check is not written yet).
 Parties not built yet: opening ledgers, seller KYC documents (Q-PUR-01), the bulk import of existing parties
 (Q-DATA-01), placeholder parties, and automatic classification at the first order.
-Listings not built yet: the Sales-side rate board and selling prices (the margin cells they need now exist), a daily job to expire
+Listings not built yet: a daily job to expire
 listings (the sweep inside the API does it for now), editing a listing, and a seller's own `/sellers/:id/listings` view.
