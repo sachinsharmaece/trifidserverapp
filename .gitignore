@@ -2,8 +2,8 @@
 node_modules/
 
 # Build output
-dist/
-*.tsbuildinfo
+# dist/
+# *.tsbuildinfo
 
 # Local environment files: NEVER commit .env (it holds the database password). Keep .env.example.
 .env
