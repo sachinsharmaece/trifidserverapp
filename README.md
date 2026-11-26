@@ -96,7 +96,7 @@ src/
   middleware/          requestId (more later: idempotency)
   routes/index.ts      the /api/v1 router — mount feature modules here
   modules/<feature>/   one folder per feature (health, auth, users, masters, parties, listings, pricing, trades,
-                       salesOrders today)
+                       salesOrders, payments, purchaseOrders, books today)
   shared/              errors (HttpError + error envelope), audit (writeAudit), mongo (duplicate-key helper), logger,
                        shutdown, enums, validators
   types/               Express type additions (req.requestId, req.user)
@@ -338,6 +338,8 @@ Ask (not listed) ─────────────────────
 b4 ─ Send to buyer ─▶ b5 Buyer's call ─ Buyer says yes ─▶ b6 Order confirmed (sales order raised; seller s2 Hold for payment)
                                      └ Buyer says no ─▶ Leakage (seller Released)
 b6 ─ Buyer drops the order ─▶ Leakage (order cancelled; seller Released)      Leakage ─ Reopen ─▶ b2 Inquiry
+b6 ─ Enter payment (Sales) ─▶ Confirm payment (Accounts) ─ paid in full ─▶ b7 Paid + s3 PO raised
+                                                        └ less ─▶ stays b6 (an advance; enter the rest)
 ```
 
 | File               | What is in it                                                                                                                              |
@@ -374,7 +376,11 @@ the loss reason and the order link, so "Send to seller" starts afresh; the cance
 must come from the reason codes master, turned on and of the right context (BUYER_NO, B6_LEAK), else 422 on
 `reasonCodeId`. The loss reason is on the buyer side only; Purchase reads "the seller may sell the stock".
 
-**Who presses.** Each action belongs to one desk (Sales or Purchase). Founder and Admin may press every button too,
+At b6 (Gate A, next sections): `enterPayment {bankLedgerId, utr, amountPaise, receivedOn}` (Sales), and
+`confirmPayment {receiptId}` / `rejectPayment {receiptId, note}` (Accounts). The trade moves only when a confirmed
+payment makes the order paid in full: b6 → b7, s2 → s3, and the PO is raised.
+
+**Who presses.** Each action belongs to one desk (Sales, Purchase or Accounts). Founder and Admin may press every button too,
 because they have every right (Q-ROL-01, `canPress` in `actions.ts`). The Controller sees both sides but presses nothing
 here; the history and `trade_events` record who pressed and with which role.
 
@@ -391,8 +397,9 @@ a buyer note and a seller note, and each person reads only his side's note.
 
 **Clocks** (`dueAt`, from settings): `SLA_S0_HOURS` (7) for Purchase to find a seller, `SLA_S1_HOURS` (12) for the seller
 to confirm, `SELLER_HOLD_HOURS` (24) that the seller holds the stock after confirming (it keeps running at b5), and
-`PAYMENT_WINDOW_HOURS` (24) for the buyer to pay once his order is raised (b6). Shown as "Next" on the lists; nothing
-happens automatically when one runs out yet.
+`PAYMENT_WINDOW_HOURS` (24) for the buyer to pay once his order is raised (b6), and `SLA_S3_HOURS` (8) for the seller
+to dispatch once the PO is raised (b7 / s3). Shown as "Next" on the lists; nothing happens automatically when one runs
+out yet.
 
 Kept simple on purpose: the ask and the seller's answer are stored inside the trade (no separate collections); decline
 reasons are a fixed list; the buyer rate is fixed at the seller's answer. There is no `Idempotency-Key` check yet (none of the API has
@@ -413,8 +420,8 @@ each with its own audit line (`salesOrder.raise`, `salesOrder.cancel`). The rout
   taxable = round(total × 10,000 ÷ (10,000 + taxBp)); another state → IGST = the rest; same state → SGST = half rounded
   up, CGST = the rest. Example (ARCH): ₹32,400.00 at 18% in Madhya Pradesh → 2,745,763 + 247,118 + 247,119 paise.
   "Same state" = the buyer's state code equals the company's (from its GSTIN; 23, Madhya Pradesh, until that is set).
-- `paymentDueAt` = now + `PAYMENT_WINDOW_HOURS` (24); the trade's clock shows it as "Payment due". `paidPaise` stays 0
-  until payments are built.
+- `paymentDueAt` = now + `PAYMENT_WINDOW_HOURS` (24); the trade's clock shows it as "Payment due". `paidPaise` = the
+  payments Accounts confirmed; at the total the order is PAID (`paidAt`). The order view lists its `payments`.
 
 | Call                                           | Who                                         | What it does                                                                                           |
 | ---------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
@@ -422,9 +429,78 @@ each with its own audit line (`salesOrder.raise`, `salesOrder.cancel`). The rout
 | `GET /sales-orders/:id`                        | the same                                    | `{ salesOrder }`. Controller, Founder and Admin also get `seller` and each line's `landedPaisePerUnit` |
 
 Purchase and Logistics get 403: an order names the buyer. The margin is never sent. Not built yet: insurance on the order
-(Q-SAL-04, open), payments and the PO at Gate A (next: Q-ACC-01 and Q-ACC-09 are decided), the proforma PDF, cancelling an overdue
-order from the order page (the deal card's "Buyer drops the order" does it), and one order for several trades or sellers
-(Q-PUR-05: one trade = one order = one seller for now).
+(Q-SAL-04, open), the proforma PDF, cancelling an overdue order from the order page (the deal card's "Buyer drops the
+order" does it), and one order for several trades or sellers (Q-PUR-05: one trade = one order = one seller for now).
+Dropping an order is refused while a payment waits for Accounts (409 `PAYMENT_WAITING`) or once money is received
+(409 `ORDER_HAS_PAYMENT`, refunds are not built yet).
+
+## Payments: Gate A (modules/payments)
+
+The client's rule (Q-ACC-01): **the PO goes to the seller only when the order is paid in full; a smaller payment is
+held as an advance.** Three engine actions at b6, all in `commands.ts`, with the money work in `payments.ts`:
+
+1. **`enterPayment`** (Sales): our bank account, the UTR (spaces and dashes removed, capitals), the amount and the day
+   it came in. It is saved as a `receipts` record, status LOGGED: **not money yet, nothing is posted**. Refused: a
+   turned-off bank account, a future date, a UTR already live on that bank account (409 `DUPLICATE_UTR`, SRS-PAY-03),
+   or more than is still open on the order (total − confirmed − entries still waiting).
+2. **`confirmPayment`** (Accounts; never the person who entered it: 403, maker ≠ checker, Founder and Admin included):
+   posts the RECEIPT voucher (Dr our bank · Cr the buyer, dated the day received), marks the receipt POSTED and adds it
+   to the order's `paidPaise`. Paid in full → the order is PAID, the PO is raised, b6 → b7, s2 → s3. Less → an advance:
+   the history says how much is still due and the trade stays at b6.
+3. **`rejectPayment`** (Accounts): not found in the bank. The receipt is kept as REJECTED with the note (Sales reads it)
+   and its UTR may be entered again.
+
+Accounts works from its desk queue, **Payments to confirm**, which presses the same engine actions (one engine). The
+engine lets a desk act on a trade it may press even though it cannot open the card (Accounts never sees trades).
+
+| Call                                          | Who                                  | What it does                                                                                                   |
+| --------------------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `GET /payments?status=&q=&page=&pageSize=`    | Accounts, Controller, Founder, Admin | The queue (default LOGGED, oldest first). Rows: buyer, order, amount, UTR, bank, `enteredByMe`, `tradeVersion` |
+| `POST /payments/:id/confirm { version }`      | Accounts, Founder, Admin             | `confirmPayment` for that payment's trade (`version` = the trade's version) → `{ payment }`                    |
+| `POST /payments/:id/reject { version, note }` | the same                             | `rejectPayment` → `{ payment }`                                                                                |
+
+Payments are on the buyer side of the wall: Sales sees them on the card and the order; Purchase never sees an amount.
+Not built yet: hand-added receipts (money with no order: FIFO / on account), refunds, payment reminders.
+
+## The books (modules/books)
+
+Double entry (LOCK-41; Q-ACC-09: **the vouchers are the only books**, no separate bank book). In short:
+
+- **Ledger groups**: the fixed 12 (Sundry Debtors, Sundry Creditors, Bank Accounts, Sales, Purchase, Duties & Taxes,
+  …). `npm run db:seed` adds them; `ledgerGroupId()` also makes one the first time it is needed.
+- **Ledgers**: one per buyer (Sundry Debtors; made the first time money moves for him), one per seller (Sundry
+  Creditors, later), one per bank account (Bank Accounts). A bank account IS its ledger (one bank master): the
+  number is encrypted, only the last 4 digits are sent.
+- **Vouchers**: one money event each, `RV-26-0001` for a receipt. Two or more lines, each a debit or a credit, Σ Dr =
+  Σ Cr (checked by `postVoucher` and the model), one voucher per source (unique index), append-only (a mistake will be
+  undone by a mirror REVERSAL voucher, later). Only `books.ts` writes vouchers.
+- A ledger's balance is the sum of its voucher lines, worked out when asked (fine for TriFid's volume; a cached
+  balance can come later). A bank ledger's statement is the bank book.
+
+| Call                             | Who                                         | What it does                                                                   |
+| -------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------ |
+| `GET /bank-accounts?active=true` | Sales, Accounts, Controller, Founder, Admin | Our bank accounts (Sales picks one when entering a payment). No account number |
+| `POST /bank-accounts`            | Founder, Admin                              | `{ name, kind, bankName, ifsc, accountNumber }` → 201. Name unique (409)       |
+| `PATCH /bank-accounts/:id`       | Founder, Admin                              | `{ version, …changes, active? }`. Never deleted: turn it off                   |
+| `GET /ledgers?q=`                | Accounts, Controller, Founder, Admin        | Every ledger with group, Dr and Cr totals and balance                          |
+| `GET /ledgers/:id/statement`     | the same                                    | Its voucher lines, oldest first, with the running balance                      |
+
+Not built yet: SALES (at the Marg bill), PURCHASE (at the dock) and PAYMENT (seller payouts) vouchers, journals with
+approval, reversals, opening balances, bank reconciliation (instead of day close), and the registers.
+
+## Purchase orders (modules/purchaseOrders)
+
+A PO (`PO-26-0001`) is raised only by `confirmPayment` when the order becomes paid in full (Gate A), in the engine's
+transaction, with its audit line. One PO per sales order (unique), one seller. It copies the order's line at the
+seller's landed rate (and, for an Ex listing, the Ex rate and carriage per box), the expiry and batch, and sets
+`dispatchDueAt` = now + `SLA_S3_HOURS` (8). **A PO never holds the buyer or our selling rate**, so Purchase can read it.
+
+| Call                                      | Who                                            | What it does                         |
+| ----------------------------------------- | ---------------------------------------------- | ------------------------------------ |
+| `GET /purchase-orders?q=&page=&pageSize=` | Purchase, Accounts, Controller, Founder, Admin | Newest first; `q` = PO no. or seller |
+| `GET /purchase-orders/:id`                | the same                                       | `{ purchaseOrder }`                  |
+
+Not built yet: dispatch (leg 1), arrival and inspection at the dock, the seller's bill, payouts.
 
 ## Left out for now
 
@@ -436,5 +512,5 @@ Parties not built yet: opening ledgers, seller KYC documents (Q-PUR-01), the bul
 (Q-DATA-01), placeholder parties, and automatic classification at the first order.
 Listings not built yet: a daily job to expire
 listings (the sweep inside the API does it for now), editing a listing, and a seller's own `/sellers/:id/listings` view.
-Trades not built yet: b7 onward (payment and Gate A, the PO, dock, Marg bill, dispatch, delivery), the Accounts
-and Logistics desk queues, a job that closes b1 trades nobody touched, and anything that acts when a clock runs out.
+Trades not built yet: after b7 (dispatch, dock, Marg bill, dispatch to the buyer, delivery), the Logistics desk queue,
+a job that closes b1 trades nobody touched, and anything that acts when a clock runs out.

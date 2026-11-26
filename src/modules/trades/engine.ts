@@ -91,7 +91,10 @@ export async function runTradeAction(req: Request, tradeId: string, action: stri
   const user = currentUserOf(req);
   if (!isTradeAction(action)) throw notFound('Unknown action.');
   const trade = isValidObjectId(tradeId) ? await TradeModel.findById(tradeId) : null;
-  if (!trade || !canSeeTrade(trade, user.role)) throw notFound('Trade not found.');
+  // A desk that may press this action may act from its queue even if it cannot open the card (Accounts).
+  if (!trade || (!canSeeTrade(trade, user.role) && !canPress(user.role, action))) {
+    throw notFound('Trade not found.');
+  }
 
   const rule = TRADE_ACTIONS[action];
   if (!canPress(user.role, action))

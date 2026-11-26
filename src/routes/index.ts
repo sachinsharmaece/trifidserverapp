@@ -2,6 +2,9 @@ import { Router } from 'express';
 import { authRouter } from '../modules/auth/auth.routes.js';
 import { listingsRouter } from '../modules/listings/listings.routes.js';
 import { boardRouter } from '../modules/pricing/board.routes.js';
+import { booksRouter } from '../modules/books/books.routes.js';
+import { paymentsRouter } from '../modules/payments/payments.routes.js';
+import { purchaseOrdersRouter } from '../modules/purchaseOrders/purchaseOrders.routes.js';
 import { salesOrdersRouter } from '../modules/salesOrders/salesOrders.routes.js';
 import { tradesRouter } from '../modules/trades/trades.routes.js';
 import { buyersRouter } from '../modules/parties/buyers.routes.js';
@@ -57,3 +60,7 @@ apiRouter.use(boardRouter);
 apiRouter.use(tradesRouter);
 // Sales orders: read only. The trade engine raises and cancels them (buyer says yes / drops the order).
 apiRouter.use(salesOrdersRouter);
+// Payments to confirm (the Accounts queue: the same engine actions as the deal card), POs and the books.
+apiRouter.use(paymentsRouter);
+apiRouter.use(purchaseOrdersRouter);
+apiRouter.use(booksRouter);

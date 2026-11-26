@@ -95,8 +95,9 @@ const salesOrderSchema = new Schema(
     },
     /** The buyer must pay by then (PAYMENT_WINDOW_HOURS after he said yes). */
     paymentDueAt: { type: Date, required: true },
-    /** Money received against this order (payments come in the next build). */
+    /** Money confirmed by Accounts against this order (Σ posted receipts). PAID once it reaches the total. */
     paidPaise: { ...intField(0, MAX_PAISE), required: true, default: 0 },
+    paidAt: Date,
     /** Set when the buyer drops the order before paying. */
     cancel: {
       type: new Schema(

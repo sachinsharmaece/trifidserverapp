@@ -64,6 +64,7 @@ export const COUNTER_PREFIXES = [
   'RTN',
   'CMP',
   'REF',
+  'RV',
 ] as const;
 export type CounterPrefix = (typeof COUNTER_PREFIXES)[number];
 
@@ -87,9 +88,10 @@ export const LISTING_STATUSES = ['ACTIVE', 'PAUSED', 'EXPIRED', 'WITHDRAWN'] as 
 export type ListingStatus = (typeof LISTING_STATUSES)[number];
 
 /**
- * Where a trade stands on the buyer side (SRS §3.7, ARCH B3.4). Built so far: b1 to b6, and Leakage.
+ * Where a trade stands on the buyer side (SRS §3.7, ARCH B3.4). Built so far: b1 to b7, and Leakage.
  * b1 Viewing → b2 Inquiry (he wants it) → b3 Pending seller → b4 Send confirmation (the seller has answered)
- * → b5 Buyer's call (the offer was sent to him) → b6 Order confirmed (he said yes: sales order raised).
+ * → b5 Buyer's call (the offer was sent to him) → b6 Order confirmed (he said yes: sales order raised)
+ * → b7 Paid (Accounts confirmed payment in full: the purchase order went to the seller).
  * X_LEAKAGE = the buyer said no, or dropped the order before paying; Sales may reopen it (back to b2).
  */
 export const BUYER_STAGES = [
@@ -99,6 +101,7 @@ export const BUYER_STAGES = [
   'B4_SEND_CONFIRMATION',
   'B5_BUYERS_CALL',
   'B6_ORDER_CONFIRMED',
+  'B7_PAID',
   'X_LEAKAGE',
 ] as const;
 export type BuyerStage = (typeof BUYER_STAGES)[number];
@@ -107,9 +110,16 @@ export type BuyerStage = (typeof BUYER_STAGES)[number];
  * Where a trade stands on the seller side. s0 = Purchase must find a seller (the item is not listed);
  * s1 = waiting for the seller to confirm (or the seller has confirmed and the buyer is deciding);
  * s2 = the buyer said yes: the seller holds the stock until the buyer pays;
+ * s3 = the buyer paid in full: the purchase order is with the seller, who must dispatch;
  * S_RELEASED = the buyer did not take it: the seller may sell the stock to someone else.
  */
-export const SELLER_STAGES = ['S0_DEMAND', 'S1_CONFIRMATION', 'S2_HOLD', 'S_RELEASED'] as const;
+export const SELLER_STAGES = [
+  'S0_DEMAND',
+  'S1_CONFIRMATION',
+  'S2_HOLD',
+  'S3_PO',
+  'S_RELEASED',
+] as const;
 export type SellerStage = (typeof SELLER_STAGES)[number];
 
 /** LISTED = the buyer picked a listing on the rate board. NOT_LISTED = Sales asked for something not on the board. */
@@ -136,3 +146,49 @@ export type DeclineReason = (typeof DECLINE_REASONS)[number];
 /** A sales order waits for the buyer's payment, is paid, or was cancelled (the buyer dropped it). */
 export const SALES_ORDER_STATUSES = ['AWAITING_PAYMENT', 'PAID', 'CANCELLED'] as const;
 export type SalesOrderStatus = (typeof SALES_ORDER_STATUSES)[number];
+
+/**
+ * The 12 fixed ledger groups of the books (SRS-ACC-02, LOCK-41). Buyers sit under Sundry Debtors, sellers under
+ * Sundry Creditors, our bank accounts under Bank Accounts.
+ */
+export const LEDGER_GROUPS = [
+  'Sundry Debtors',
+  'Sundry Creditors',
+  'Bank Accounts',
+  'Sales',
+  'Purchase',
+  'Duties & Taxes',
+  'Direct Expenses',
+  'Indirect Expenses',
+  'Indirect Income',
+  'Capital',
+  'Loans',
+  'Cash',
+] as const;
+export type LedgerGroupName = (typeof LEDGER_GROUPS)[number];
+
+/** Kinds of voucher and their number series (SRS-ACC-01). Only RECEIPT (RV-26-0001) is posted so far. */
+export const VOUCHER_TYPES = [
+  'RECEIPT',
+  'SALES',
+  'PURCHASE',
+  'PAYMENT',
+  'JOURNAL',
+  'REVERSAL',
+] as const;
+export type VoucherType = (typeof VOUCHER_TYPES)[number];
+
+/** A bank ledger is a current account or a UPI collection account. */
+export const BANK_KINDS = ['CURRENT', 'UPI'] as const;
+export type BankKind = (typeof BANK_KINDS)[number];
+
+/**
+ * A payment a buyer says he made (an "Upcoming payment", SRS-PAY-01): LOGGED by Sales, then POSTED by Accounts
+ * (the RECEIPT voucher is written) or REJECTED (not found in the bank).
+ */
+export const RECEIPT_STATUSES = ['LOGGED', 'POSTED', 'REJECTED'] as const;
+export type ReceiptStatus = (typeof RECEIPT_STATUSES)[number];
+
+/** A purchase order is RAISED at Gate A. Dispatch, dock and billing states come with those steps. */
+export const PURCHASE_ORDER_STATUSES = ['RAISED'] as const;
+export type PurchaseOrderStatus = (typeof PURCHASE_ORDER_STATUSES)[number];

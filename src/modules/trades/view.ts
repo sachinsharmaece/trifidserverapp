@@ -2,6 +2,7 @@ import {
   BuyerModel,
   ListingModel,
   ProductModel,
+  PurchaseOrderModel,
   SalesOrderModel,
   SellerModel,
   SkuModel,
@@ -9,6 +10,7 @@ import {
   UserModel,
   type Trade,
 } from '../../models/index.js';
+import type { Types } from 'mongoose';
 import type { Role } from '../../shared/enums.js';
 import { BUYER_SIDE_ROLES, SELLER_SIDE_ROLES } from '../parties/permissions.js';
 import { computeBuyerRate, loadMargins, pricingTierOf } from '../pricing/pricing.js';
@@ -21,6 +23,7 @@ import {
   isAtStage,
 } from './actions.js';
 import type { TradeDoc } from './commands.js';
+import { paymentsOf } from '../payments/payments.js';
 
 /**
  * What the API sends about a trade. A trade holds both sides of the visibility wall, so the answer is built
@@ -46,6 +49,7 @@ function dueOf(trade: TradeDoc) {
   if (trade.buyerStage === 'B4_SEND_CONFIRMATION' || trade.buyerStage === 'B5_BUYERS_CALL')
     return { at: trade.dueAt, label: 'Seller holds the stock until' };
   if (trade.buyerStage === 'B6_ORDER_CONFIRMED') return { at: trade.dueAt, label: 'Payment due' };
+  if (trade.buyerStage === 'B7_PAID') return { at: trade.dueAt, label: 'Seller to dispatch by' };
   return { at: trade.dueAt, label: 'Due' };
 }
 
@@ -61,6 +65,20 @@ function actionsFor(trade: TradeDoc, role: Role) {
       ...(allowed ? {} : { reason: `${DESK_NAMES[rule.desk] ?? rule.desk} does this` }),
     };
   });
+}
+
+/** The order's payments, what is still due (total − confirmed) and what may still be entered (− waiting ones). */
+async function paymentsSummary(order: {
+  _id: Types.ObjectId;
+  totalPaise: number;
+  paidPaise: number;
+}) {
+  const payments = await paymentsOf(order._id);
+  const waiting = payments
+    .filter((payment) => payment.status === 'LOGGED')
+    .reduce((sum, payment) => sum + payment.amountPaise, 0);
+  const balanceDuePaise = order.totalPaise - order.paidPaise;
+  return { payments, balanceDuePaise, openPaise: balanceDuePaise - waiting };
 }
 
 async function historyFor(trade: TradeDoc, role: Role) {
@@ -135,6 +153,10 @@ export async function tradeView(trade: TradeDoc, role: Role) {
           }
         : null,
       // Why the trade was lost (Leakage): buyer side only.
+      // Payments entered for the order (buyer side only: an amount tells our selling price).
+      ...(order
+        ? await paymentsSummary(order)
+        : { payments: [], balanceDuePaise: null, openPaise: null }),
       leakage: trade.leakage
         ? {
             context: trade.leakage.context,
@@ -167,6 +189,9 @@ export async function tradeView(trade: TradeDoc, role: Role) {
   let sellerSide = {};
   if (seesSellerSide(role)) {
     const seller = trade.sellerId ? await SellerModel.findById(trade.sellerId) : null;
+    const purchaseOrder = trade.purchaseOrderId
+      ? await PurchaseOrderModel.findById(trade.purchaseOrderId)
+      : null;
     const answer = trade.sellerAnswer;
     sellerSide = {
       seller: seller ? { id: seller.id, number: seller.number, firmName: seller.firmName } : null,
@@ -180,6 +205,16 @@ export async function tradeView(trade: TradeDoc, role: Role) {
             expiryBand: listing.expiryBand,
             provenance: listing.provenance,
             status: listing.status,
+          }
+        : null,
+      // The purchase order (b7 / s3 onward): seller side only, it holds the seller's rate.
+      purchaseOrder: purchaseOrder
+        ? {
+            id: purchaseOrder.id,
+            number: purchaseOrder.number,
+            status: purchaseOrder.status,
+            totalPaise: purchaseOrder.totalPaise,
+            dispatchDueAt: purchaseOrder.dispatchDueAt,
           }
         : null,
       sellerAnswer: answer

@@ -16,6 +16,8 @@ import { conflict, invalidField } from '../../shared/errors.js';
 import { formatRupees } from '../../shared/money.js';
 import { objectId } from '../parties/common.js';
 import { computeBuyerRate, loadMargins, pricingTierOf } from '../pricing/pricing.js';
+import { confirmReceipt, logReceipt, rejectReceipt } from '../payments/payments.js';
+import { raisePurchaseOrder } from '../purchaseOrders/purchaseOrders.js';
 import { cancelSalesOrder, raiseSalesOrder } from '../salesOrders/salesOrders.js';
 import type { TradeActionName } from './actions.js';
 import { earliestExpiryMonth, monthsFromNow } from './stages.js';
@@ -23,8 +25,9 @@ import { earliestExpiryMonth, monthsFromNow } from './stages.js';
 /**
  * What each engine action does (SRS §6.4). A command checks its input and the business rules, then says what to
  * change; the engine (engine.ts) saves the trade, the history line and the audit line in one transaction.
- * A command never saves the trade itself. The only other writes are the sales order a step raises or cancels
- * (`buyerYes`, `leakAfterOrder`), done inside the same transaction (`session`).
+ * A command never saves the trade itself. The only other writes are the records a step makes for the trade, all
+ * inside the same transaction (`session`): the sales order (`buyerYes`, `leakAfterOrder`), the payment entry, its
+ * RECEIPT voucher and the purchase order (`enterPayment`, `confirmPayment`, `rejectPayment`).
  */
 
 /** A trade as loaded from the database. */
@@ -440,6 +443,81 @@ const reopen = command(z.object({}), () => ({
   sellerNote: '',
 }));
 
+// ---------------------------------------------------------------------------------------------------------------
+// Gate A: the buyer pays (FR-PAY, SRS-PAY-01..03; Q-ACC-01 = full payment before the PO)
+
+const paymentInput = z.object({
+  bankLedgerId: objectId,
+  // A bank reference: letters and digits, spaces and dashes removed, capitals.
+  utr: z
+    .string()
+    .transform((text) => text.replace(/[\s-]/g, '').toUpperCase())
+    .pipe(z.string().regex(/^[0-9A-Z]{6,30}$/, 'A UTR has 6 to 30 letters or digits.')),
+  amountPaise: z.number().int().min(1, 'Enter the amount.').max(100_000_000_000),
+  receivedOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter the date the money came in.'),
+});
+
+/**
+ * b6: Sales enters what the buyer says he paid (bank, UTR, amount, date). Not money yet: Accounts must find it in
+ * the bank. The trade stays at b6.
+ */
+const enterPayment = command(paymentInput, async (ctx, input) => {
+  const { receipt } = await logReceipt(ctx, input);
+  return {
+    set: {},
+    buyerNote: `Payment entered: ${formatRupees(receipt.amountPaise)}, UTR ${receipt.utr} (${receipt.number}). Waiting for Accounts`,
+    sellerNote: '',
+  };
+});
+
+/**
+ * Accounts found the money (never the person who entered it). Posts the RECEIPT voucher (Dr bank · Cr buyer).
+ * Paid in full → the order is PAID, the PO goes to the seller: b6 → b7, s2 → s3, the dispatch clock starts.
+ * Less → an advance: the order waits at b6 for the rest.
+ */
+const confirmPayment = command(z.object({ receiptId: objectId }), async (ctx, input) => {
+  const done = await confirmReceipt(ctx, input.receiptId);
+  const paid = `Payment confirmed: ${formatRupees(done.receipt.amountPaise)} (${done.voucher.number})`;
+  if (!done.paidInFull) {
+    return {
+      set: {},
+      buyerNote: `${paid}. Advance kept: ${formatRupees(done.stillDuePaise)} still due on ${done.order.number}`,
+      sellerNote: '',
+    };
+  }
+  const po = await raisePurchaseOrder(ctx, done.order);
+  return {
+    set: {
+      buyerStage: 'B7_PAID',
+      sellerStage: 'S3_PO',
+      purchaseOrderId: po._id,
+      dueAt: po.dispatchDueAt,
+    },
+    buyerNote: `${paid}. ${done.order.number} is paid in full`,
+    sellerNote: `${po.number} raised: the seller should dispatch`,
+  };
+});
+
+/** Accounts could not find the money: the entry is marked not received, with a note for Sales. */
+const rejectPayment = command(
+  z.object({
+    receiptId: objectId,
+    note: z
+      .string()
+      .trim()
+      .min(1, 'Say what was wrong, e.g. "No such UTR in the HDFC statement".')
+      .max(300),
+  }),
+  async (ctx, input) => {
+    const receipt = await rejectReceipt(ctx, input.receiptId, input.note);
+    return {
+      set: {},
+      buyerNote: `${receipt.number} (${formatRupees(receipt.amountPaise)}, UTR ${receipt.utr}) not found in the bank: ${input.note}`,
+      sellerNote: '',
+    };
+  },
+);
+
 /** Every action's command. The engine looks the action up here. */
 export const COMMANDS: Record<TradeActionName, Command> = {
   wantIt,
@@ -452,4 +530,7 @@ export const COMMANDS: Record<TradeActionName, Command> = {
   buyerNo,
   leakAfterOrder,
   reopen,
+  enterPayment,
+  confirmPayment,
+  rejectPayment,
 };

@@ -5,6 +5,7 @@ import {
   CompanyModel,
   HsnCodeModel,
   ProductModel,
+  ReceiptModel,
   SalesOrderModel,
   SellerModel,
   SkuModel,
@@ -13,6 +14,7 @@ import { writeAudit } from '../../shared/audit.js';
 import type { Role } from '../../shared/enums.js';
 import { conflict } from '../../shared/errors.js';
 import { splitGst } from '../../shared/money.js';
+import { paymentsOf } from '../payments/payments.js';
 import { requireRole } from '../auth/requireRole.js';
 import type { CommandContext } from '../trades/commands.js';
 
@@ -133,6 +135,16 @@ export async function cancelSalesOrder(
   reason: { reasonCodeId: unknown; reasonLabel: string; note?: string | undefined },
 ) {
   const order = await SalesOrderModel.findById(trade.salesOrderId).session(session).orFail();
+  const waiting = await ReceiptModel.countDocuments({
+    salesOrderId: order._id,
+    status: 'LOGGED',
+  }).session(session);
+  if (waiting > 0) {
+    throw conflict(
+      'A payment entered for this order is waiting for Accounts: ask them to confirm or reject it first.',
+      'PAYMENT_WAITING',
+    );
+  }
   if (order.status !== 'AWAITING_PAYMENT' || order.paidPaise > 0) {
     throw conflict(
       'Money was received for this order: refunds are not built yet.',
@@ -232,6 +244,8 @@ export async function salesOrderView(order: SalesOrderDoc, role: Role) {
     },
     paymentDueAt: order.paymentDueAt,
     paidPaise: order.paidPaise,
+    paidAt: order.paidAt ?? null,
+    payments: (await paymentsOf(order._id)).map(({ enteredById: _hidden, ...payment }) => payment),
     cancel: order.cancel
       ? {
           at: order.cancel.at,

@@ -48,6 +48,17 @@ export const TRADE_ACTIONS = {
     buyerFrom: ['B6_ORDER_CONFIRMED'],
   },
   reopen: { label: 'Reopen', desk: 'SALES', buyerFrom: ['X_LEAKAGE'] },
+  enterPayment: { label: 'Enter payment', desk: 'SALES', buyerFrom: ['B6_ORDER_CONFIRMED'] },
+  confirmPayment: {
+    label: 'Confirm payment',
+    desk: 'ACCOUNTS',
+    buyerFrom: ['B6_ORDER_CONFIRMED'],
+  },
+  rejectPayment: {
+    label: 'Payment not received',
+    desk: 'ACCOUNTS',
+    buyerFrom: ['B6_ORDER_CONFIRMED'],
+  },
 } as const satisfies Record<string, ActionRule>;
 
 export type TradeActionName = keyof typeof TRADE_ACTIONS;
@@ -77,7 +88,11 @@ export function canPress(role: Role, action: TradeActionName): boolean {
 }
 
 /** Names people see for the desks, as in "Purchase does this". */
-export const DESK_NAMES: Partial<Record<Role, string>> = { SALES: 'Sales', PURCHASE: 'Purchase' };
+export const DESK_NAMES: Partial<Record<Role, string>> = {
+  SALES: 'Sales',
+  PURCHASE: 'Purchase',
+  ACCOUNTS: 'Accounts',
+};
 
 /** Labels for the history: the actions above plus the two that create a trade. */
 export const HISTORY_LABELS: Record<string, string> = {

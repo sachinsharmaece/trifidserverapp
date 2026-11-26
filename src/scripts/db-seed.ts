@@ -3,14 +3,15 @@
  * so it is safe to re-run and never undoes an admin's edit.
  *   npm run db:seed
  *
- * Seeded now: settings (defaults from the SRS).
+ * Seeded now: settings (defaults from the SRS) and the 12 fixed ledger groups of the books (SRS-ACC-02).
  * Deliberately NOT seeded (real client data, to be imported or entered by Admin): company, HSN codes,
  * reason codes, margin cells, tehsils, products. The first staff user is created with `npm run create-founder`.
  */
 import { env } from '../config/env.js';
 import { connectToDatabase, disconnectFromDatabase } from '../db/connect.js';
 import { SETTINGS_SEED } from '../db/seed/settings.seed.js';
-import { SettingModel } from '../models/index.js';
+import { LedgerGroupModel, SettingModel } from '../models/index.js';
+import { LEDGER_GROUPS } from '../shared/enums.js';
 
 async function main(): Promise<void> {
   await connectToDatabase(env.mongodbUri);
@@ -25,6 +26,15 @@ async function main(): Promise<void> {
   );
   console.log(
     `settings: ${result.upsertedCount} added, ${SETTINGS_SEED.length - result.upsertedCount} already present`,
+  );
+
+  const groups = await LedgerGroupModel.bulkWrite(
+    LEDGER_GROUPS.map((name) => ({
+      updateOne: { filter: { name }, update: { $setOnInsert: { name } }, upsert: true },
+    })),
+  );
+  console.log(
+    `ledger groups: ${groups.upsertedCount} added, ${LEDGER_GROUPS.length - groups.upsertedCount} already present`,
   );
 }
 

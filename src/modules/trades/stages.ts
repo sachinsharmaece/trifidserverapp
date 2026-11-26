@@ -8,6 +8,7 @@ export const BUYER_STAGE_LABELS: Record<BuyerStage, string> = {
   B4_SEND_CONFIRMATION: 'b4 Send confirmation',
   B5_BUYERS_CALL: "b5 Buyer's call",
   B6_ORDER_CONFIRMED: 'b6 Order confirmed',
+  B7_PAID: 'b7 Paid',
   X_LEAKAGE: 'Leakage',
 };
 
@@ -15,6 +16,7 @@ export const SELLER_STAGE_LABELS: Record<SellerStage, string> = {
   S0_DEMAND: 's0 Find a seller',
   S1_CONFIRMATION: 's1 Seller confirmation',
   S2_HOLD: 's2 Hold for payment',
+  S3_PO: 's3 PO raised',
   S_RELEASED: 'Released',
 };
 

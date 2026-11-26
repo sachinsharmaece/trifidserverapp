@@ -108,6 +108,8 @@ const tradeSchema = new Schema(
 
     /** The sales order raised when the buyer said yes (b6). Cleared when a lost trade is reopened. */
     salesOrderId: refField('SalesOrder'),
+    /** The purchase order raised when the buyer paid in full (b7 / s3). */
+    purchaseOrderId: refField('PurchaseOrder'),
 
     /** Why the trade was lost (X_LEAKAGE): the buyer said no (BUYER_NO) or dropped the order (B6_LEAK). */
     leakage: {

@@ -1,0 +1,314 @@
+import { Types } from 'mongoose';
+import { nextDocumentNumber } from '../../db/documentNumbers.js';
+import {
+  BuyerModel,
+  LedgerModel,
+  ReceiptModel,
+  SalesOrderModel,
+  TradeModel,
+  UserModel,
+  VoucherModel,
+} from '../../models/index.js';
+import { writeAudit } from '../../shared/audit.js';
+import type { Role } from '../../shared/enums.js';
+import { conflict, forbidden, invalidField } from '../../shared/errors.js';
+import { formatRupees } from '../../shared/money.js';
+import { isDuplicateKeyError } from '../../shared/mongo.js';
+import { buyerLedger, postVoucher } from '../books/books.js';
+import type { CommandContext } from '../trades/commands.js';
+
+/**
+ * Payments (Gate A, LOCK-41 L41.8, SRS-PAY-01..03). Called ONLY from the trade engine's payment actions
+ * (enterPayment, confirmPayment, rejectPayment in modules/trades/commands.ts), inside the engine's transaction.
+ *
+ * The rule the client chose (Q-ACC-01): the PO goes to the seller only when the order is paid in full. A smaller
+ * payment is kept as an advance and the order waits. The books (Q-ACC-09): a confirmed payment posts one RECEIPT
+ * voucher, Dr our bank · Cr the buyer. Nothing else records money.
+ */
+
+export type ReceiptDoc = InstanceType<typeof ReceiptModel>;
+type OrderDoc = InstanceType<typeof SalesOrderModel>;
+
+/** Today's date in India, YYYY-MM-DD. */
+export function istDate(at: Date): string {
+  return new Date(at.getTime() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+async function openOrder({ trade, session }: CommandContext): Promise<OrderDoc> {
+  const order = await SalesOrderModel.findById(trade.salesOrderId).session(session).orFail();
+  if (order.status !== 'AWAITING_PAYMENT') {
+    throw conflict(`${order.number} is not waiting for payment.`, 'ORDER_NOT_OPEN');
+  }
+  return order;
+}
+
+/** Σ payments entered for the order and not yet confirmed or rejected. */
+async function waitingPaise(order: OrderDoc, ctx: CommandContext) {
+  const waiting = await ReceiptModel.find({ salesOrderId: order._id, status: 'LOGGED' }).session(
+    ctx.session,
+  );
+  return waiting.reduce((sum, receipt) => sum + receipt.amountPaise, 0);
+}
+
+export interface PaymentInput {
+  bankLedgerId: string;
+  utr: string;
+  amountPaise: number;
+  receivedOn: string;
+}
+
+/**
+ * Sales enters what the buyer says he paid (b6). Nothing is posted: this is not money until Accounts finds it in
+ * the bank. Refused: a turned-off or unknown bank account, a date in the future, a UTR already entered for that
+ * bank account (SRS-PAY-03), or more than is still open on the order (total − paid − already entered).
+ */
+export async function logReceipt(ctx: CommandContext, input: PaymentInput) {
+  const { req, trade, userId, now, session } = ctx;
+  const order = await openOrder(ctx);
+  const bank = await LedgerModel.findById(input.bankLedgerId).session(session);
+  if (!bank?.bank || !bank.active) {
+    throw invalidField('bankLedgerId', 'Choose one of our bank accounts.');
+  }
+  if (input.receivedOn > istDate(now)) {
+    throw invalidField('receivedOn', 'The date cannot be in the future.');
+  }
+  const same = await ReceiptModel.findOne({ bankLedgerId: bank._id, activeUtr: input.utr }).session(
+    session,
+  );
+  if (same)
+    throw conflict(`UTR ${input.utr} is already entered as ${same.number}.`, 'DUPLICATE_UTR');
+  const openPaise = order.totalPaise - order.paidPaise - (await waitingPaise(order, ctx));
+  if (input.amountPaise > openPaise) {
+    throw invalidField(
+      'amountPaise',
+      openPaise > 0
+        ? `Only ${formatRupees(openPaise)} is still to be paid on ${order.number} (payments already entered count too).`
+        : `${order.number} needs no more payments: the ones entered already cover it.`,
+    );
+  }
+  const receipt = await ReceiptModel.create(
+    [
+      {
+        number: await nextDocumentNumber('RCPT', { session, at: now }),
+        buyerId: trade.buyerId,
+        tradeId: trade._id,
+        salesOrderId: order._id,
+        bankLedgerId: bank._id,
+        utr: input.utr,
+        activeUtr: input.utr,
+        amountPaise: input.amountPaise,
+        receivedOn: input.receivedOn,
+        status: 'LOGGED',
+        enteredBy: userId,
+        enteredAt: now,
+      },
+    ],
+    { session },
+  )
+    .then(([created]) => created!)
+    .catch((error: unknown) => {
+      if (isDuplicateKeyError(error)) {
+        throw conflict(`UTR ${input.utr} is already entered.`, 'DUPLICATE_UTR');
+      }
+      throw error;
+    });
+  await writeAudit(req, {
+    action: 'receipt.log',
+    entityType: 'Receipt',
+    entityId: receipt.id,
+    after: { number: receipt.number, amountPaise: receipt.amountPaise, utr: receipt.utr },
+    session,
+  });
+  return { receipt, order };
+}
+
+/** The receipt, if it belongs to this trade and still waits for Accounts; and maker ≠ checker. */
+async function waitingReceipt({ trade, userId, session }: CommandContext, receiptId: string) {
+  const receipt = await ReceiptModel.findById(receiptId).session(session);
+  if (!receipt || !receipt.tradeId.equals(trade._id)) {
+    throw invalidField('receiptId', 'Choose a payment entered for this order.');
+  }
+  if (receipt.status !== 'LOGGED') {
+    throw conflict(`${receipt.number} was already handled.`, 'RECEIPT_NOT_WAITING');
+  }
+  if (receipt.enteredBy.equals(userId)) {
+    throw forbidden('You entered this payment: someone else must confirm or reject it.');
+  }
+  return receipt;
+}
+
+/**
+ * Accounts found the money in the bank (Gate A). Posts the RECEIPT voucher (Dr our bank · Cr the buyer), marks
+ * the payment POSTED and adds it to the order. `paidInFull` = the order is now PAID and the PO must be raised.
+ */
+export async function confirmReceipt(ctx: CommandContext, receiptId: string) {
+  const { req, userId, now, session } = ctx;
+  const receipt = await waitingReceipt(ctx, receiptId);
+  const order = await openOrder(ctx);
+  const duePaise = order.totalPaise - order.paidPaise;
+  if (receipt.amountPaise > duePaise) {
+    throw conflict(
+      `${receipt.number} is more than the ${formatRupees(duePaise)} still due on ${order.number}. Reject it and enter the right amount.`,
+      'OVERPAYMENT',
+    );
+  }
+  const bank = await LedgerModel.findById(receipt.bankLedgerId).session(session).orFail();
+  const buyer = await BuyerModel.findById(order.buyerId).session(session).orFail();
+  const buyerAccount = await buyerLedger(buyer, userId, session);
+  const voucher = await postVoucher(
+    req,
+    {
+      type: 'RECEIPT',
+      date: receipt.receivedOn,
+      narration: `Receipt from ${buyer.firmName} against ${order.number} · UTR ${receipt.utr}`,
+      source: { type: 'RECEIPT', id: receipt._id, number: receipt.number },
+      lines: [
+        { ledger: bank, drPaise: receipt.amountPaise },
+        { ledger: buyerAccount, crPaise: receipt.amountPaise },
+      ],
+      userId,
+      now,
+    },
+    session,
+  );
+
+  const posted = await ReceiptModel.updateOne(
+    { _id: receipt._id, status: 'LOGGED' },
+    { $set: { status: 'POSTED', postedBy: userId, postedAt: now, voucherId: voucher._id } },
+    { session },
+  );
+  if (posted.matchedCount !== 1) {
+    throw conflict(`${receipt.number} was already handled.`, 'RECEIPT_NOT_WAITING');
+  }
+
+  const paidPaise = order.paidPaise + receipt.amountPaise;
+  const paidInFull = paidPaise >= order.totalPaise;
+  const saved = await SalesOrderModel.updateOne(
+    { _id: order._id, version: order.version },
+    {
+      $set: { paidPaise, ...(paidInFull ? { status: 'PAID', paidAt: now } : {}) },
+      $inc: { version: 1 },
+    },
+    { session, runValidators: true },
+  );
+  if (saved.matchedCount !== 1) {
+    throw conflict('Someone else changed this order. Reload and try again.', 'STALE_ORDER');
+  }
+  await writeAudit(req, {
+    action: 'receipt.post',
+    entityType: 'Receipt',
+    entityId: receipt.id,
+    before: { status: 'LOGGED', orderPaidPaise: order.paidPaise },
+    after: { status: 'POSTED', voucher: voucher.number, orderPaidPaise: paidPaise },
+    session,
+  });
+  return {
+    receipt,
+    voucher,
+    order,
+    paidInFull,
+    stillDuePaise: order.totalPaise - paidPaise,
+  };
+}
+
+/** Accounts could not find the money: the entry is kept, marked REJECTED, and its UTR may be entered again. */
+export async function rejectReceipt(ctx: CommandContext, receiptId: string, note: string) {
+  const { req, userId, now, session } = ctx;
+  const receipt = await waitingReceipt(ctx, receiptId);
+  const result = await ReceiptModel.updateOne(
+    { _id: receipt._id, status: 'LOGGED' },
+    {
+      $set: { status: 'REJECTED', rejectedBy: userId, rejectedAt: now, rejectNote: note },
+      $unset: { activeUtr: 1 },
+    },
+    { session },
+  );
+  if (result.matchedCount !== 1) {
+    throw conflict(`${receipt.number} was already handled.`, 'RECEIPT_NOT_WAITING');
+  }
+  await writeAudit(req, {
+    action: 'receipt.reject',
+    entityType: 'Receipt',
+    entityId: receipt.id,
+    before: { status: 'LOGGED' },
+    after: { status: 'REJECTED', note },
+    session,
+  });
+  return receipt;
+}
+
+/** The payments of one order (oldest first), as the buyer side of the wall may see them. */
+export async function paymentsOf(salesOrderId: Types.ObjectId) {
+  const receipts = await ReceiptModel.find({ salesOrderId }).sort({ enteredAt: 1 });
+  const banks = await LedgerModel.find({ _id: { $in: receipts.map((r) => r.bankLedgerId) } });
+  const bankName = new Map(banks.map((bank) => [bank.id, bank.name]));
+  return receipts.map((receipt) => ({
+    id: receipt.id,
+    number: receipt.number,
+    status: receipt.status,
+    amountPaise: receipt.amountPaise,
+    utr: receipt.utr,
+    bankName: bankName.get(String(receipt.bankLedgerId)) ?? '',
+    receivedOn: receipt.receivedOn,
+    enteredById: String(receipt.enteredBy),
+    rejectNote: receipt.rejectNote ?? null,
+  }));
+}
+
+/** One row of the Accounts queue (Payments to confirm): the buyer side only, never the seller. */
+export async function paymentRows(receipts: ReceiptDoc[], meId: string, role: Role) {
+  const [buyers, orders, banks, users] = await Promise.all([
+    BuyerModel.find({ _id: { $in: receipts.map((r) => r.buyerId) } }),
+    SalesOrderModel.find({ _id: { $in: receipts.map((r) => r.salesOrderId) } }),
+    LedgerModel.find({ _id: { $in: receipts.map((r) => r.bankLedgerId) } }),
+    UserModel.find({ _id: { $in: receipts.map((r) => r.enteredBy) } }),
+  ]);
+  const [trades, vouchers] = await Promise.all([
+    TradeModel.find({ _id: { $in: receipts.map((r) => r.tradeId) } }),
+    VoucherModel.find({
+      _id: { $in: receipts.flatMap((r) => (r.voucherId ? [r.voucherId] : [])) },
+    }),
+  ]);
+  const byId = <T extends { id: string }>(list: T[]) => new Map(list.map((x) => [x.id, x]));
+  const [buyerById, orderById, bankById, userById, tradeById, voucherById] = [
+    byId(buyers),
+    byId(orders),
+    byId(banks),
+    byId(users),
+    byId(trades),
+    byId(vouchers),
+  ];
+  return receipts.map((receipt) => {
+    const order = orderById.get(String(receipt.salesOrderId));
+    const buyer = buyerById.get(String(receipt.buyerId));
+    return {
+      id: receipt.id,
+      number: receipt.number,
+      status: receipt.status,
+      amountPaise: receipt.amountPaise,
+      utr: receipt.utr,
+      receivedOn: receipt.receivedOn,
+      bankName: bankById.get(String(receipt.bankLedgerId))?.name ?? '',
+      buyer: { number: buyer?.number ?? '', firmName: buyer?.firmName ?? '' },
+      salesOrder: {
+        id: String(receipt.salesOrderId),
+        number: order?.number ?? '',
+        totalPaise: order?.totalPaise ?? 0,
+        paidPaise: order?.paidPaise ?? 0,
+      },
+      enteredBy: userById.get(String(receipt.enteredBy))?.name ?? '',
+      enteredAt: receipt.enteredAt,
+      /** Maker ≠ checker: the person who entered it may not confirm or reject it. */
+      enteredByMe: String(receipt.enteredBy) === meId,
+      tradeId: String(receipt.tradeId),
+      /** The engine needs the trade's version for every press. */
+      tradeVersion: tradeById.get(String(receipt.tradeId))?.version ?? 0,
+      voucherNumber: receipt.voucherId
+        ? (voucherById.get(String(receipt.voucherId))?.number ?? null)
+        : null,
+      rejectNote: receipt.rejectNote ?? null,
+      // Supervisors may also open the deal card from the queue.
+      canOpenTrade: role !== 'ACCOUNTS',
+    };
+  });
+}
