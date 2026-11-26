@@ -32,6 +32,36 @@ const lineSchema = new Schema(
 );
 
 /**
+ * The Marg invoice for this order (FR-ACC-04, LOCK-40 L40.9), keyed by Accounts after the dock check. Buyer side
+ * of the wall (it is our selling price), so it lives on the sales order, not the PO. `expectedPaise` = accepted
+ * boxes × units per box × the buyer's rate; the bill may not be higher (Q-ACC-02: a lower bill is allowed and
+ * the difference is kept).
+ */
+const margBillSchema = new Schema(
+  {
+    invoiceNumber: { ...textField(40), required: true },
+    ewayBillNumber: textField(40),
+    billDate: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
+    totalPaise: { ...intField(1, MAX_PAISE), required: true },
+    expectedPaise: { ...intField(1, MAX_PAISE), required: true },
+    /** Boxes billed per order line (never more than were accepted at the dock). */
+    lines: [
+      new Schema(
+        {
+          lineNo: { ...intField(1, 1000), required: true },
+          boxes: { ...intField(1, 1_000_000), required: true },
+        },
+        { _id: false },
+      ),
+    ],
+    voucherId: { ...refField('Voucher'), required: true },
+    at: { type: Date, required: true },
+    by: { ...refField('User'), required: true },
+  },
+  { _id: false },
+);
+
+/**
  * A sales order (SO-26-0001): what the buyer agreed to buy and must pay for (ARCH B3.4 `sales_orders`, simplified).
  * Raised ONLY by the trade engine when the buyer says yes (`buyerYes`, SRS-TRD-09), and cancelled only by the
  * engine when he drops it (`leakAfterOrder`). Never deleted.
@@ -98,6 +128,10 @@ const salesOrderSchema = new Schema(
     /** Money confirmed by Accounts against this order (Σ posted receipts). PAID once it reaches the total. */
     paidPaise: { ...intField(0, MAX_PAISE), required: true, default: 0 },
     paidAt: Date,
+    /** Build 4: the Marg bill (BILLED), the proof of dispatch on a trip (DISPATCHED), then delivery. */
+    margBill: { type: margBillSchema, default: undefined },
+    dispatchedAt: Date,
+    deliveredAt: Date,
     /** Set when the buyer drops the order before paying. */
     cancel: {
       type: new Schema(
@@ -123,6 +157,12 @@ salesOrderSchema.index({ number: 1 }, { unique: true });
 salesOrderSchema.index({ buyerId: 1, createdAt: -1 });
 salesOrderSchema.index({ status: 1, paymentDueAt: 1 });
 salesOrderSchema.index({ tradeId: 1 });
+// A Marg invoice number is used once.
+salesOrderSchema.index(
+  { 'margBill.invoiceNumber': 1 },
+  { unique: true, partialFilterExpression: { 'margBill.invoiceNumber': { $exists: true } } },
+);
+salesOrderSchema.index({ status: 1, 'margBill.at': -1 });
 
 export type SalesOrder = InferSchemaType<typeof salesOrderSchema>;
 export const SalesOrderModel = model('SalesOrder', salesOrderSchema);

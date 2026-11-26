@@ -14,8 +14,10 @@ import { writeAudit } from '../../shared/audit.js';
 import type { Role } from '../../shared/enums.js';
 import { conflict } from '../../shared/errors.js';
 import { HOME_STATE_CODE, splitGst } from '../../shared/money.js';
+import { margBillView } from '../billing/billing.js';
 import { refundsOf } from '../dock/dock.js';
 import { paymentsOf } from '../payments/payments.js';
+import { deliveryOf } from '../trips/trips.js';
 import { requireRole } from '../auth/requireRole.js';
 import type { CommandContext } from '../trades/commands.js';
 
@@ -181,6 +183,27 @@ export async function cancelSalesOrder(
   return order;
 }
 
+/** b9 → b10: the buyer has the goods (engine action `confirmDelivery`). The order becomes DELIVERED. */
+export async function markDelivered({ req, trade, now, session }: CommandContext) {
+  const order = await SalesOrderModel.findById(trade.salesOrderId).session(session).orFail();
+  const result = await SalesOrderModel.updateOne(
+    { _id: order._id, version: order.version },
+    { $set: { status: 'DELIVERED', deliveredAt: now }, $inc: { version: 1 } },
+    { session, runValidators: true },
+  );
+  if (result.matchedCount !== 1) {
+    throw conflict('Someone else changed this order. Reload and try again.', 'STALE_ORDER');
+  }
+  await writeAudit(req, {
+    action: 'salesOrder.deliver',
+    entityType: 'SalesOrder',
+    entityId: order.id,
+    before: { status: order.status },
+    after: { status: 'DELIVERED' },
+    session,
+  });
+}
+
 /** One row of the Sales orders list. */
 export function salesOrderRow(order: SalesOrderDoc) {
   const line = order.lines[0];
@@ -247,6 +270,9 @@ export async function salesOrderView(order: SalesOrderDoc, role: Role) {
     payments: (await paymentsOf(order._id)).map(({ enteredById: _hidden, ...payment }) => payment),
     // Money owed back to the buyer after the dock check (paid later, with payouts).
     refunds: await refundsOf(order._id),
+    // Build 4: the Marg bill, the trip and delivery.
+    margBill: margBillView(order),
+    delivery: await deliveryOf(order),
     cancel: order.cancel
       ? {
           at: order.cancel.at,

@@ -51,6 +51,10 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
 - The dock (`src/modules/dock/`): arrival and the check are engine commands; the check's records (inspection,
   PURCHASE voucher, return notes, refund due, seller strike) are written in the same transaction. Dock rows for
   Logistics never carry firm names or money. Refunds are buyer side; PO, inspection and return notes seller side.
+- Billing and trips (`src/modules/billing/`, `src/modules/trips/`): the Marg bill and the POD are engine commands
+  (`recordMargBill`, `recordPod`); the SALES voucher and the order's `margBill` are written in the same transaction.
+  A Marg bill may be lower than the accepted boxes at the buyer's rate, never higher (Q-ACC-02). Adding, removing and
+  checking out bills change only the trip (its own `version`). Trip rows never carry firm names or money.
 - Margins live in `src/modules/masters/marginCells.routes.ts`: reading needs `canSeeMargins` (the wall), writing adds
   `canEditMasters` and `requireStepUp` (`src/modules/auth/stepUp.ts`, 428 until the password was re-checked in the last 5
   minutes). Use `requireStepUp` after the role check on any route that should ask for the password again. A cell is

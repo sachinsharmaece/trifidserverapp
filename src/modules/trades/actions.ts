@@ -84,6 +84,10 @@ export const TRADE_ACTIONS = {
     buyerFrom: ['B7_PAID'],
     sellerFrom: ['S5_ARRIVED'],
   },
+  // Build 4: the Marg bill (Accounts, from To be billed), the POD (Logistics, from Trips), delivery (Sales).
+  recordMargBill: { label: 'Marg bill', desk: 'ACCOUNTS', buyerFrom: ['B8_BILLED'] },
+  recordPod: { label: 'Proof of dispatch', desk: 'LOGISTICS', buyerFrom: ['B8_BILLED'] },
+  confirmDelivery: { label: 'Delivered', desk: 'SALES', buyerFrom: ['B9_DISPATCH'] },
 } as const satisfies Record<string, ActionRule>;
 
 export type TradeActionName = keyof typeof TRADE_ACTIONS;

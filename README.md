@@ -59,7 +59,10 @@ deleted. Enums are in `src/shared/enums.ts`, GSTIN/IFSC/HSN/pincode checks in `s
 | Masters  | `company` (single document), `manufacturers`, `technicals`, `hsn_codes`, `products`, `skus`, `tehsils`, `reason_codes`, `margin_cells` |
 | Parties  | `sellers`, `buyers` (each party's dealerships are kept on the party itself)                                                            |
 | Listings | `listings` (a seller's offer of one pack)                                                                                              |
-| Not yet  | orders, trades, books (vouchers/ledgers), dock, trips (ARCH §B3.4–B3.7)                                                                |
+| Trades   | `trades`, `trade_events` (append-only), `sales_orders`, `receipts`, `purchase_orders`                                                  |
+| Books    | `ledger_groups`, `ledgers`, `vouchers` (append-only)                                                                                   |
+| Dock     | `inspections` (append-only), `return_notes`, `refunds`, `seller_strikes`                                                               |
+| Trips    | `trips` (one vehicle leaving the dock with its Marg bills and their PODs)                                                              |
 
 First time on a database (after `.env` points at it):
 
@@ -102,7 +105,7 @@ src/
   middleware/          requestId (more later: idempotency)
   routes/index.ts      the /api/v1 router — mount feature modules here
   modules/<feature>/   one folder per feature (health, auth, users, masters, parties, listings, pricing, trades,
-                       salesOrders, payments, purchaseOrders, books, dock today)
+                       salesOrders, payments, purchaseOrders, books, dock, billing, trips today)
   shared/              errors (HttpError + error envelope), audit (writeAudit), mongo (duplicate-key helper), logger,
                        shutdown, enums, validators
   types/               Express type additions (req.requestId, req.user)
@@ -347,8 +350,10 @@ b6 ─ Buyer drops the order ─▶ Leakage (order cancelled; seller Released)  
 b6 ─ Enter payment (Sales) ─▶ Confirm payment (Accounts) ─ paid in full ─▶ b7 Paid + s3 PO raised
                                                         └ less ─▶ stays b6 (an advance; enter the rest)
 s3 ─ Record dispatch (Purchase) ─▶ s5 On the way ─ Goods arrived (Logistics) ─▶ s5 At the dock
-   ─ Check the goods (Logistics) ─ some accepted ─▶ b8 To be billed + s6 Checked: to be paid
+   ─ Check the goods (Logistics) ─ some accepted ─▶ b8 Billing + s6 Checked: to be paid
                                   └ nothing accepted ─▶ Dock rejected + Closed ─ Reopen (Sales) ─▶ b2
+b8 ─ Marg bill (Accounts) ─▶ b8 (waiting for a trip) ─ Proof of dispatch (Logistics, trip out) ─▶ b9 Dispatched
+b9 ─ Delivered (Sales) ─▶ b10 Delivered
 ```
 
 | File               | What is in it                                                                                                                              |
@@ -392,6 +397,10 @@ payment makes the order paid in full: b6 → b7, s2 → s3, and the PO is raised
 After the PO (Build 3, next sections): `recordDispatch` and `recordSellerBill` (Purchase), `recordArrival` and
 `inspectLot` (Logistics, from the Dock screen).
 
+To the buyer (Build 4, sections "Marg bill" and "Trips"): `recordMargBill` (Accounts, b8, from To be billed),
+`recordPod {ref, date}` (Logistics, b8 → b9, from Trips) and `confirmDelivery {}` (Sales, b9 → b10: the order is
+DELIVERED).
+
 **Who presses.** Each action belongs to one desk (Sales, Purchase, Accounts or Logistics). Founder and Admin may press every button too,
 because they have every right (Q-ROL-01, `canPress` in `actions.ts`). The Controller sees both sides but presses nothing
 here; the history and `trade_events` record who pressed and with which role.
@@ -411,8 +420,9 @@ a buyer note and a seller note, and each person reads only his side's note.
 to confirm, `SELLER_HOLD_HOURS` (24) that the seller holds the stock after confirming (it keeps running at b5), and
 `PAYMENT_WINDOW_HOURS` (24) for the buyer to pay once his order is raised (b6), `SLA_S3_HOURS` (8) for the seller
 to dispatch once the PO is raised (b7 / s3), `TRANSIT_OVERDUE_DAYS` (4) for the goods to reach the dock, and
-`INSPECTION_HOURS` (24) for the dock to check them after arrival. Shown as "Next" on the lists; nothing happens
-automatically when one runs out yet.
+`INSPECTION_HOURS` (24) for the dock to check them after arrival, and `DELIVERY_WINDOW_DAYS` (7) from the proof of
+dispatch for Sales to confirm the delivery (b9, "Delivery window ends"). Shown as "Next" on the lists; nothing happens
+automatically when one runs out yet (no silent "delivered" after the window: Q-LOG-09).
 
 Kept simple on purpose: the ask and the seller's answer are stored inside the trade (no separate collections); decline
 reasons are a fixed list; the buyer rate is fixed at the seller's answer. There is no `Idempotency-Key` check yet (none of the API has
@@ -488,7 +498,8 @@ Double entry (LOCK-41; Q-ACC-09: **the vouchers are the only books**, no separat
   are sent.
 - **Vouchers**: one money event each: `RV-26-0001` for a receipt (Dr bank · Cr buyer), `PV-26-0001` for goods
   accepted at the dock (Dr Purchase (taxable) · Dr Input CGST + SGST, or IGST across states · Cr the seller; the
-  tax split is stored in `gst`). Two or more lines, each a debit or a credit, Σ Dr =
+  tax split is stored in `gst`), `SV-26-0001` for a Marg bill (Dr the buyer · Cr Sales (taxable) · Cr Output CGST +
+  SGST, or IGST). Two or more lines, each a debit or a credit, Σ Dr =
   Σ Cr (checked by `postVoucher` and the model), one voucher per source (unique index), append-only (a mistake will be
   undone by a mirror REVERSAL voucher, later). Only `books.ts` writes vouchers.
 - A ledger's balance is the sum of its voucher lines, worked out when asked (fine for TriFid's volume; a cached
@@ -502,7 +513,7 @@ Double entry (LOCK-41; Q-ACC-09: **the vouchers are the only books**, no separat
 | `GET /ledgers?q=`                | Accounts, Controller, Founder, Admin        | Every ledger with group, Dr and Cr totals and balance                          |
 | `GET /ledgers/:id/statement`     | the same                                    | Its voucher lines, oldest first, with the running balance                      |
 
-Not built yet: SALES (at the Marg bill) and PAYMENT (seller payouts, refunds) vouchers, journals with approval,
+Not built yet: PAYMENT (seller payouts, refunds) vouchers, journals with approval,
 reversals, opening balances, bank reconciliation (instead of day close), and the registers.
 
 ## Purchase orders (modules/purchaseOrders)
@@ -564,6 +575,62 @@ Refunds due are on the buyer side of the wall: the deal card (Sales) and `GET /s
 yet: photos (Q-ARC-02), check corrections, Lost in transit (O8, Controller), the overdue jobs, the return-freight debit
 to the seller, and paying refunds.
 
+## Marg bill (modules/billing)
+
+Accounts keys the invoice that Marg printed for the buyer (FR-ACC-04, SRS-ACC-04). Its desk queue is **To be billed**:
+orders the dock has checked (b8), oldest check first. "Enter Marg bill" presses the engine action **`recordMargBill`**
+`{ version, invoiceNumber, ewayBillNumber?, billDate, totalPaise, lines: [{ lineNo, boxes }] }`. The checks, in order:
+
+1. Already billed → 409 `ALREADY_BILLED`. A bill date in the future → 422.
+2. **Check 1**: the dock accepted something (409 `MARG_CHECK_1` if not).
+3. **Check 2**: per line, no more boxes than the dock accepted (422 on `lines.N.boxes`), and at least one box billed.
+4. **Check 3** (Q-ACC-02, decided 26 Nov 2026): the total may not be **higher** than the accepted boxes × units per box ×
+   the buyer's rate. A **lower** bill is allowed; the difference is shown (`shortByPaise`) and written in the history.
+5. **Check 4**: the buyer owes nothing on the order (409 `MARG_CHECK_4`).
+6. A Marg invoice number is used once (422 on `invoiceNumber`; a unique index too).
+
+Saved in the engine's transaction: the **SALES voucher** (`SV-…`: Dr the buyer · Cr Sales (taxable) · Cr Output CGST +
+SGST, or IGST across states; the tax is worked back out of the bill total with `splitGst`), the order's `margBill` and
+status BILLED, and the audit line `salesOrder.margBill`. The trade stays at b8 ("Waiting for a trip"). Not built: the
+"no open shortfall" check (O6 is not built), reading Marg directly (it is keyed by hand).
+
+| Call                                         | Who                                  | What it does                                                                                      |
+| -------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `GET /to-be-billed?state=TO_BILL\|BILLED&q=` | Accounts, Controller, Founder, Admin | Rows: order, buyer, tax kind, what was accepted at his rate (`accepted`), refunds due, `margBill` |
+| `POST /to-be-billed/:salesOrderId/marg-bill` | Accounts, Founder, Admin             | `recordMargBill` for that order's trade (`version` = the trade's version) → `{ row }`             |
+
+The Marg bill is on the buyer side of the wall: Sales sees it on the card and the order page; Purchase never does.
+
+## Trips (modules/trips)
+
+Logistics takes billed orders from the dock to the buyers (SRS-LOG-06..08). A **trip** (`T-26-0001`) is one vehicle
+on one day: the vehicle number (typed, upper-cased), the driver and his mobile. It is PLANNED, then OUT (checked out),
+then CLOSED (every bill has its POD). Each bill on it says how it goes on from our vehicle: `TRANSPORT` (a transport
+company, named), `BUS` (a bus parcel) or `DIRECT` (we deliver). A bill is on one trip at most (a unique index).
+
+- **Add / remove** bills only while the trip is PLANNED (409 `TRIP_NOT_PLANNED`); the trip has its own `version`
+  (409 `STALE_TRIP`). Only billed orders not on a trip may be added (409 `NOT_BILLED`, `ALREADY_ON_TRIP`).
+- **Check out** (needs at least one bill) keeps the **WhatsApp text** for the driver: the trip, vehicle, driver, then
+  one line per bill (Marg number, boxes, destination, how to book).
+- **POD** per bill, on an OUT trip: the engine action **`recordPod` `{ ref, date }`** (the LR or receipt number; not
+  in the future). The buyer side → b9 Dispatched, the order DISPATCHED, and the 7-day delivery clock starts. The
+  last POD closes the trip.
+- Then Sales presses **Delivered** (`confirmDelivery`, b9 → b10): the order is DELIVERED.
+
+| Call                                         | Who                                   | What it does                                                                           |
+| -------------------------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------- |
+| `GET /trips/billed?q=`                       | Logistics, Controller, Founder, Admin | Billed orders on no trip: Marg number, boxes, destination, items with batch and expiry |
+| `GET /trips?status=PLANNED\|OUT\|CLOSED&q=`  | the same                              | Trips with their bills, PODs and the WhatsApp text                                     |
+| `POST /trips`                                | Logistics, Founder, Admin             | `{ plannedDate, vehicleNumber, driverName, driverMobile }` → 201 `{ trip }`            |
+| `POST /trips/:id/bills`                      | the same                              | `{ version, salesOrderId, bookWith: { mode, transporter? } }` → `{ trip }`             |
+| `POST /trips/:id/bills/:salesOrderId/remove` | the same                              | `{ version }` → `{ trip }`                                                             |
+| `POST /trips/:id/check-out`                  | the same                              | `{ version }` → `{ trip }` (OUT, WhatsApp text kept)                                   |
+| `POST /trips/:id/bills/:salesOrderId/pod`    | the same                              | `{ version (the trade's), ref, date }` → `recordPod` → `{ trip }`                      |
+
+Trips show **no firm names and no money** (Logistics sees neither). Not built yet: a vehicle register and transporter
+master (typed per trip for now), photos of the POD (Q-ARC-02), the auto "delivered" after the window (Q-LOG-09),
+complaints (Q-SAL-05/08), and the delivery challan PDF.
+
 ## Left out for now
 
 MFA (step-up is a password re-check for now), a per-IP rate limit on login, a breached-password check, and "forgot
@@ -574,5 +641,5 @@ Parties not built yet: opening ledgers, seller KYC documents (Q-PUR-01), the bul
 (Q-DATA-01), placeholder parties, and automatic classification at the first order.
 Listings not built yet: a daily job to expire
 listings (the sweep inside the API does it for now), editing a listing, and a seller's own `/sellers/:id/listings` view.
-Trades not built yet: after b8 (the Marg bill, trips to the buyer, POD, delivery, complaints), seller payouts and refunds,
+Trades not built yet: complaints after delivery (Q-SAL-05/08), seller payouts and refunds,
 a job that closes b1 trades nobody touched, and anything that acts when a clock runs out.

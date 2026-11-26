@@ -3,7 +3,9 @@ import { authRouter } from '../modules/auth/auth.routes.js';
 import { listingsRouter } from '../modules/listings/listings.routes.js';
 import { boardRouter } from '../modules/pricing/board.routes.js';
 import { booksRouter } from '../modules/books/books.routes.js';
+import { billingRouter } from '../modules/billing/billing.routes.js';
 import { dockRouter } from '../modules/dock/dock.routes.js';
+import { tripsRouter } from '../modules/trips/trips.routes.js';
 import { paymentsRouter } from '../modules/payments/payments.routes.js';
 import { purchaseOrdersRouter } from '../modules/purchaseOrders/purchaseOrders.routes.js';
 import { salesOrdersRouter } from '../modules/salesOrders/salesOrders.routes.js';
@@ -67,3 +69,6 @@ apiRouter.use(purchaseOrdersRouter);
 apiRouter.use(booksRouter);
 // The Logistics dock (arrival and check: the same engine actions) and return notes. No firm names or money.
 apiRouter.use(dockRouter);
+// Build 4: To be billed (the Accounts queue: the Marg bill) and Trips (Logistics: POD). Same engine actions.
+apiRouter.use(billingRouter);
+apiRouter.use(tripsRouter);

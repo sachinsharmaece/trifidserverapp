@@ -66,6 +66,8 @@ export const COUNTER_PREFIXES = [
   'REF',
   'RV',
   'PV',
+  'SV',
+  'T',
 ] as const;
 export type CounterPrefix = (typeof COUNTER_PREFIXES)[number];
 
@@ -89,11 +91,13 @@ export const LISTING_STATUSES = ['ACTIVE', 'PAUSED', 'EXPIRED', 'WITHDRAWN'] as 
 export type ListingStatus = (typeof LISTING_STATUSES)[number];
 
 /**
- * Where a trade stands on the buyer side (SRS §3.7, ARCH B3.4). Built so far: b1 to b8, Leakage, Dock rejected.
+ * Where a trade stands on the buyer side (SRS §3.7, ARCH B3.4). Built so far: b1 to b10, Leakage, Dock rejected.
  * b1 Viewing → b2 Inquiry (he wants it) → b3 Pending seller → b4 Send confirmation (the seller has answered)
  * → b5 Buyer's call (the offer was sent to him) → b6 Order confirmed (he said yes: sales order raised)
  * → b7 Paid (Accounts confirmed payment in full: the purchase order went to the seller)
- * → b8 To be billed (B8_BILLED: the dock checked the goods; next comes the Marg bill).
+ * → b8 Billing (B8_BILLED: the dock checked the goods; Accounts keys the Marg bill, Logistics puts it on a trip)
+ * → b9 Dispatched (B9_DISPATCH: proof of dispatch recorded; the 7-day delivery window runs)
+ * → b10 Delivered (Sales confirmed delivery).
  * X_LEAKAGE = the buyer said no, or dropped the order before paying; Sales may reopen it (back to b2).
  * X_DOCK_REJECTED = the dock accepted none of the goods (LOCK-40 O4); the buyer is owed a refund; Sales may reopen.
  */
@@ -106,6 +110,8 @@ export const BUYER_STAGES = [
   'B6_ORDER_CONFIRMED',
   'B7_PAID',
   'B8_BILLED',
+  'B9_DISPATCH',
+  'B10_DELIVERED',
   'X_LEAKAGE',
   'X_DOCK_REJECTED',
 ] as const;
@@ -157,7 +163,18 @@ export const DECLINE_REASONS = ['NO_STOCK', 'RATE_CHANGED', 'EXPIRY_TOO_SHORT', 
 export type DeclineReason = (typeof DECLINE_REASONS)[number];
 
 /** A sales order waits for the buyer's payment, is paid, or was cancelled (the buyer dropped it). */
-export const SALES_ORDER_STATUSES = ['AWAITING_PAYMENT', 'PAID', 'CANCELLED'] as const;
+/**
+ * A sales order: AWAITING_PAYMENT → PAID (Gate A) → BILLED (Marg bill keyed) → DISPATCHED (proof of dispatch)
+ * → DELIVERED; or CANCELLED (the buyer dropped it before paying).
+ */
+export const SALES_ORDER_STATUSES = [
+  'AWAITING_PAYMENT',
+  'PAID',
+  'BILLED',
+  'DISPATCHED',
+  'DELIVERED',
+  'CANCELLED',
+] as const;
 export type SalesOrderStatus = (typeof SALES_ORDER_STATUSES)[number];
 
 /**
@@ -181,8 +198,8 @@ export const LEDGER_GROUPS = [
 export type LedgerGroupName = (typeof LEDGER_GROUPS)[number];
 
 /**
- * Kinds of voucher and their number series (SRS-ACC-01). Posted so far: RECEIPT (RV-26-0001, a buyer's payment)
- * and PURCHASE (PV-26-0001, goods accepted at the dock).
+ * Kinds of voucher and their number series (SRS-ACC-01). Posted so far: RECEIPT (RV-26-0001, a buyer's payment),
+ * PURCHASE (PV-26-0001, goods accepted at the dock) and SALES (SV-26-0001, the Marg bill to the buyer).
  */
 export const VOUCHER_TYPES = [
   'RECEIPT',
@@ -258,6 +275,17 @@ export type ReturnNoteType = (typeof RETURN_NOTE_TYPES)[number];
 /** How a return note was closed. It is never written off (L40.7). */
 export const RETURN_CLOSURES = ['PICKED_UP', 'SHIPPED_BACK', 'DISPOSED'] as const;
 export type ReturnClosure = (typeof RETURN_CLOSURES)[number];
+
+/** A trip (leg 2): PLANNED (bills being added) → OUT (checked out of the dock) → CLOSED (every bill has a POD). */
+export const TRIP_STATUSES = ['PLANNED', 'OUT', 'CLOSED'] as const;
+export type TripStatus = (typeof TRIP_STATUSES)[number];
+
+/**
+ * How a bill on a trip goes on from our vehicle: booked with a TRANSPORT company, sent as a BUS parcel, or taken
+ * DIRECT to the buyer by our vehicle.
+ */
+export const BOOK_WITH_MODES = ['TRANSPORT', 'BUS', 'DIRECT'] as const;
+export type BookWithMode = (typeof BOOK_WITH_MODES)[number];
 
 /** A refund owed to a buyer. Paying it (PAYMENT voucher) comes with payouts (Q-ACC-11/12). */
 export const REFUND_STATUSES = ['DUE'] as const;

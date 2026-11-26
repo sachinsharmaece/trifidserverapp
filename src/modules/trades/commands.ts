@@ -23,6 +23,7 @@ import {
   inspectLot as runInspection,
   recordArrival as saveArrival,
 } from '../dock/dock.js';
+import { margBillInput, recordMargBill as saveMargBill } from '../billing/billing.js';
 import { confirmReceipt, logReceipt, rejectReceipt } from '../payments/payments.js';
 import {
   dispatchInput,
@@ -32,6 +33,8 @@ import {
   sellerBillInput,
 } from '../purchaseOrders/dispatch.js';
 import { raisePurchaseOrder } from '../purchaseOrders/purchaseOrders.js';
+import { markDelivered } from '../salesOrders/salesOrders.js';
+import { podInput, recordPod as savePod } from '../trips/trips.js';
 import { cancelSalesOrder, raiseSalesOrder } from '../salesOrders/salesOrders.js';
 import type { TradeActionName } from './actions.js';
 import { earliestExpiryMonth, monthsFromNow } from './stages.js';
@@ -607,6 +610,37 @@ const inspectLot = command(inspectionInput, async (ctx, input) => {
   };
 });
 
+// ---------------------------------------------------------------------------------------------------------------
+// Build 4: the Marg bill (Accounts), the proof of dispatch on a trip (Logistics), delivery (Sales)
+
+/** b8: Accounts keys the Marg invoice; the checks pass, the SALES voucher is posted. The stage stays b8. */
+const recordMargBill = command(margBillInput, async (ctx, input) => {
+  const { note } = await saveMargBill(ctx, input);
+  return { set: {}, buyerNote: note, sellerNote: '' };
+});
+
+/** b8 → b9 Dispatched: the POD for this bill on a trip that is out. The delivery window starts. */
+const recordPod = command(podInput, async (ctx, input) => {
+  const { tripCode, via } = await savePod(ctx, input);
+  const days = await numberSetting('DELIVERY_WINDOW_DAYS', 7);
+  return {
+    set: { buyerStage: 'B9_DISPATCH', dueAt: new Date(ctx.now.getTime() + days * DAY_MS) },
+    buyerNote: `Dispatched to the buyer on trip ${tripCode}: ${via}`,
+    sellerNote: '',
+  };
+});
+
+/** b9 → b10 Delivered: Sales confirms the buyer has the goods. */
+const confirmDelivery = command(z.object({}), async (ctx) => {
+  await markDelivered(ctx);
+  return {
+    set: { buyerStage: 'B10_DELIVERED' },
+    unset: ['dueAt'],
+    buyerNote: 'Delivered: the buyer has the goods',
+    sellerNote: '',
+  };
+});
+
 export const COMMANDS: Record<TradeActionName, Command> = {
   wantIt,
   sendToSeller,
@@ -625,4 +659,7 @@ export const COMMANDS: Record<TradeActionName, Command> = {
   recordSellerBill,
   recordArrival,
   inspectLot,
+  recordMargBill,
+  recordPod,
+  confirmDelivery,
 };

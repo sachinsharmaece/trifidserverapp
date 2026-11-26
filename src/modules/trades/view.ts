@@ -23,9 +23,11 @@ import {
   isAtStage,
 } from './actions.js';
 import type { TradeDoc } from './commands.js';
+import { acceptedLines, margBillView } from '../billing/billing.js';
 import { refundsOf } from '../dock/dock.js';
 import { paymentsOf } from '../payments/payments.js';
 import { purchaseOrderSummary } from '../purchaseOrders/purchaseOrders.js';
+import { deliveryOf } from '../trips/trips.js';
 
 /**
  * What the API sends about a trade. A trade holds both sides of the visibility wall, so the answer is built
@@ -55,6 +57,7 @@ function dueOf(trade: TradeDoc) {
   if (trade.sellerStage === 'S5_DISPATCHED')
     return { at: trade.dueAt, label: 'Arrives at the dock by' };
   if (trade.sellerStage === 'S5_ARRIVED') return { at: trade.dueAt, label: 'Dock check by' };
+  if (trade.buyerStage === 'B9_DISPATCH') return { at: trade.dueAt, label: 'Delivery window ends' };
   return { at: trade.dueAt, label: 'Due' };
 }
 
@@ -164,6 +167,15 @@ export async function tradeView(trade: TradeDoc, role: Role) {
         : { payments: [], balanceDuePaise: null, openPaise: null }),
       // Money owed back to the buyer after the dock check (paid later, with payouts).
       refunds: order ? await refundsOf(order._id) : [],
+      // From the dock check on (b8): what was accepted at the buyer's rate, the Marg bill, the trip, delivery.
+      billing:
+        order && ['B8_BILLED', 'B9_DISPATCH', 'B10_DELIVERED'].includes(trade.buyerStage)
+          ? {
+              accepted: await acceptedLines(order),
+              margBill: margBillView(order),
+              ...(await deliveryOf(order)),
+            }
+          : null,
       leakage: trade.leakage
         ? {
             context: trade.leakage.context,
