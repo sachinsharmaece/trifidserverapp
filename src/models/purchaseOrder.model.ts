@@ -1,5 +1,11 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
-import { LISTING_RATE_TYPES, PURCHASE_ORDER_STATUSES } from '../shared/enums.js';
+import {
+  FREIGHT_TERMS,
+  INSPECTION_OUTCOMES,
+  LEG1_MODES,
+  LISTING_RATE_TYPES,
+  PURCHASE_ORDER_STATUSES,
+} from '../shared/enums.js';
 import { intField, refField, textField } from './_fields.js';
 
 const MAX_PAISE = 100_000_000_000; // ₹100 crore
@@ -23,6 +29,71 @@ const lineSchema = new Schema(
     colPaisePerBox: intField(0, MAX_PAISE),
     /** landed × units per box × boxes. */
     lineTotalPaise: { ...intField(1, MAX_PAISE), required: true },
+  },
+  { _id: false },
+);
+
+const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Leg 1: how the seller sent the goods to the Indore dock (SRS §6.4 `recordLeg1`). Recorded by Purchase.
+ * TRANSPORT needs the transporter and LR number; BUS the bus details and the driver's mobile; DEPOT a note.
+ * `lines` = what the seller says he packed, per PO line (batch and expiry), and whether Purchase agreed to a short
+ * expiry in the deal (then the dock does not even note it).
+ */
+const leg1Schema = new Schema(
+  {
+    mode: { type: String, enum: LEG1_MODES, required: true },
+    transporter: textField(120),
+    lrNumber: textField(60),
+    lrDate: { type: String, match: DAY },
+    busDetails: textField(200),
+    driverName: textField(100),
+    driverMobile: { type: String, match: /^\d{10}$/ },
+    note: textField(300),
+    freightTerms: { type: String, enum: FREIGHT_TERMS, required: true },
+    /** Only when the freight is TO_PAY at Indore: it will be taken off the seller's payout. */
+    freightPaise: intField(1, MAX_PAISE),
+    dispatchedOn: { type: String, required: true, match: DAY },
+    lines: [
+      new Schema(
+        {
+          lineNo: { ...intField(1, 1000), required: true },
+          batchDeclared: textField(60),
+          expiryDeclared: { type: String, match: MONTH },
+          shortExpiryAgreed: { type: Boolean, required: true, default: false },
+        },
+        { _id: false },
+      ),
+    ],
+    at: { type: Date, required: true },
+    by: { ...refField('User'), required: true },
+  },
+  { _id: false },
+);
+
+/** The seller's tax invoice for this PO (needed before he is paid). Entering it again replaces it (audited). */
+const sellerBillSchema = new Schema(
+  {
+    number: { ...textField(40), required: true },
+    amountPaise: { ...intField(1, MAX_PAISE), required: true },
+    billDate: { type: String, required: true, match: DAY },
+    at: { type: Date, required: true },
+    by: { ...refField('User'), required: true },
+  },
+  { _id: false },
+);
+
+/** The goods reached the Indore dock (Logistics). Starts the inspection clock. */
+const arrivalSchema = new Schema(
+  {
+    arrivedAt: { type: Date, required: true },
+    boxesCounted: { ...intField(1, 1_000_000), required: true },
+    /** Did the seller's bill come with the goods? */
+    billWithGoods: { type: Boolean, required: true },
+    at: { type: Date, required: true },
+    by: { ...refField('User'), required: true },
   },
   { _id: false },
 );
@@ -63,8 +134,21 @@ const purchaseOrderSchema = new Schema(
       },
     },
     totalPaise: { ...intField(1, MAX_PAISE), required: true },
-    /** The seller should dispatch by then (SLA_S3_HOURS after the PO). Dispatch itself is the next step. */
+    /** The seller should dispatch by then (SLA_S3_HOURS after the PO). */
     dispatchDueAt: { type: Date, required: true },
+    /** Leg 1, the seller's bill and the dock's arrival (Build 3). */
+    leg1: { type: leg1Schema, default: undefined },
+    sellerBill: { type: sellerBillSchema, default: undefined },
+    arrival: { type: arrivalSchema, default: undefined },
+    /** The dock should check the goods by then (INSPECTION_HOURS after arrival). */
+    inspectBy: Date,
+    /** The dock check (the full record is in `inspections`): Gate B when acceptedBoxes > 0. */
+    latestInspectionId: refField('Inspection'),
+    outcome: { type: String, enum: INSPECTION_OUTCOMES },
+    acceptedBoxes: intField(0, 1_000_000),
+    /** accepted boxes × units per box × landed rate: what the seller is owed (the PURCHASE voucher). */
+    acceptedValuePaise: intField(0, MAX_PAISE),
+    inspectedAt: Date,
     createdBy: { ...refField('User'), required: true },
     version: { ...intField(0), required: true, default: 0 },
   },
@@ -75,6 +159,10 @@ purchaseOrderSchema.index({ number: 1 }, { unique: true });
 purchaseOrderSchema.index({ salesOrderId: 1 }, { unique: true }); // one PO per SO (A-10)
 purchaseOrderSchema.index({ sellerId: 1, createdAt: -1 });
 purchaseOrderSchema.index({ status: 1, dispatchDueAt: 1 });
+// The dock's lanes: Coming (DISPATCHED, oldest dispatch first), Arrived, Checked.
+purchaseOrderSchema.index({ status: 1, 'leg1.at': 1 });
+purchaseOrderSchema.index({ status: 1, 'arrival.arrivedAt': 1 });
+purchaseOrderSchema.index({ status: 1, inspectedAt: -1 });
 
 export type PurchaseOrder = InferSchemaType<typeof purchaseOrderSchema>;
 export const PurchaseOrderModel = model('PurchaseOrder', purchaseOrderSchema);

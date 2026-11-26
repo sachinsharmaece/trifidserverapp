@@ -57,5 +57,5 @@ purchaseOrdersRouter.get('/purchase-orders/:id', async (req, res) => {
     ? await PurchaseOrderModel.findById(req.params.id)
     : null;
   if (!po) throw notFound('Purchase order not found.');
-  res.json({ purchaseOrder: purchaseOrderView(po) });
+  res.json({ purchaseOrder: await purchaseOrderView(po) });
 });

@@ -47,7 +47,7 @@ export const TRADE_ACTIONS = {
     desk: 'SALES',
     buyerFrom: ['B6_ORDER_CONFIRMED'],
   },
-  reopen: { label: 'Reopen', desk: 'SALES', buyerFrom: ['X_LEAKAGE'] },
+  reopen: { label: 'Reopen', desk: 'SALES', buyerFrom: ['X_LEAKAGE', 'X_DOCK_REJECTED'] },
   enterPayment: { label: 'Enter payment', desk: 'SALES', buyerFrom: ['B6_ORDER_CONFIRMED'] },
   confirmPayment: {
     label: 'Confirm payment',
@@ -58,6 +58,31 @@ export const TRADE_ACTIONS = {
     label: 'Payment not received',
     desk: 'ACCOUNTS',
     buyerFrom: ['B6_ORDER_CONFIRMED'],
+  },
+  // Build 3: leg 1 and the dock (LOCK-40). Logistics presses its two from the Dock screen.
+  recordDispatch: {
+    label: 'Record dispatch',
+    desk: 'PURCHASE',
+    buyerFrom: ['B7_PAID'],
+    sellerFrom: ['S3_PO'],
+  },
+  recordSellerBill: {
+    label: 'Seller bill',
+    desk: 'PURCHASE',
+    buyerFrom: ['B7_PAID', 'B8_BILLED'],
+    sellerFrom: ['S3_PO', 'S5_DISPATCHED', 'S5_ARRIVED', 'S6_PAYMENT'],
+  },
+  recordArrival: {
+    label: 'Goods arrived',
+    desk: 'LOGISTICS',
+    buyerFrom: ['B7_PAID'],
+    sellerFrom: ['S5_DISPATCHED'],
+  },
+  inspectLot: {
+    label: 'Check the goods',
+    desk: 'LOGISTICS',
+    buyerFrom: ['B7_PAID'],
+    sellerFrom: ['S5_ARRIVED'],
   },
 } as const satisfies Record<string, ActionRule>;
 
@@ -92,6 +117,7 @@ export const DESK_NAMES: Partial<Record<Role, string>> = {
   SALES: 'Sales',
   PURCHASE: 'Purchase',
   ACCOUNTS: 'Accounts',
+  LOGISTICS: 'Logistics',
 };
 
 /** Labels for the history: the actions above plus the two that create a trade. */

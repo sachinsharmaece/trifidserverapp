@@ -2,9 +2,12 @@
  * Adds MADE-UP test data so the screens have something to show. For development only.
  *   npm run db:seed-demo
  *
- * Added now: 12 margin cells (class A/B/C × Trader/Distributor/Dealer/Retailer), 1 Jan 2026 onwards, in the
- * Founder's name. A pair that already has a margin is skipped, so it is safe to re-run.
- * It refuses to run when NODE_ENV=production.
+ * Added now:
+ *   - 12 margin cells (class A/B/C × Trader/Distributor/Dealer/Retailer), 1 Jan 2026 onwards, in the Founder's
+ *     name. A pair that already has a margin is skipped.
+ *   - One Rate board row to practise a deal on: Demo Seller Agency's listing of "Demo Insecticide 500 ML" at
+ *     ₹500.00 per unit, and the buyer Demo Krishi Kendra (see db/seed/demoBoard.seed.ts).
+ * Anything already there is skipped, so it is safe to re-run. It refuses to run when NODE_ENV=production.
  *
  * To replace a made-up margin: enter the real one on the Margin matrix screen (it starts today and takes over).
  * Margins can never be edited or deleted in the app. To remove the made-up ones completely, delete the documents
@@ -12,6 +15,7 @@
  */
 import { env } from '../config/env.js';
 import { connectToDatabase, disconnectFromDatabase } from '../db/connect.js';
+import { addDemoBoard } from '../db/seed/demoBoard.seed.js';
 import { addDemoMargins } from '../db/seed/demoMargins.seed.js';
 import { UserModel } from '../models/index.js';
 
@@ -28,6 +32,11 @@ async function main(): Promise<void> {
 
   const { added, skipped } = await addDemoMargins(founder._id);
   console.log(`margin cells: ${added} added, ${skipped} already present`);
+
+  for (const line of await addDemoBoard(founder._id)) console.log(line);
+  console.log(
+    'Open the Rate board, pick "Demo Krishi Kendra" and press Open on "Demo Insecticide".',
+  );
 }
 
 main()

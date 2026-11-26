@@ -13,18 +13,18 @@ npm run dev                 # http://localhost:4000  (restarts on file changes)
 
 Check: http://localhost:4000/health → `{"status":"ok"}` and http://localhost:4000/ready → `ready` once MongoDB is connected.
 
-| Script                   | What it does                      |
-| ------------------------ | --------------------------------- |
-| `npm run dev`            | Start with auto-reload (tsx)      |
-| `npm run typecheck`      | TypeScript check, no output files |
-| `npm run build`          | Compile to `dist/`                |
-| `npm start`              | Run the compiled build            |
-| `npm run lint`           | ESLint (`lint:fix` fixes some)    |
-| `npm run db:sync`        | Create collections + indexes      |
-| `npm run db:seed`        | Add default settings (safe rerun) |
-| `npm run db:seed-demo`   | Add made-up margins (dev only)    |
-| `npm run create-founder` | Create the first Founder account  |
-| `npm run format`         | Prettier (`format:check` reports) |
+| Script                   | What it does                                          |
+| ------------------------ | ----------------------------------------------------- |
+| `npm run dev`            | Start with auto-reload (tsx)                          |
+| `npm run typecheck`      | TypeScript check, no output files                     |
+| `npm run build`          | Compile to `dist/`                                    |
+| `npm start`              | Run the compiled build                                |
+| `npm run lint`           | ESLint (`lint:fix` fixes some)                        |
+| `npm run db:sync`        | Create collections + indexes                          |
+| `npm run db:seed`        | Add default settings (safe rerun)                     |
+| `npm run db:seed-demo`   | Add made-up margins and one demo board row (dev only) |
+| `npm run create-founder` | Create the first Founder account                      |
+| `npm run format`         | Prettier (`format:check` reports)                     |
 
 ## Code quality
 
@@ -81,6 +81,12 @@ To try the Margin matrix screen before the client sends the real margins, `npm r
 margin cells (needs the Founder account from the step above; it refuses to run when `NODE_ENV=production`). It skips any
 class × tier that already has a cell, so it is safe to re-run and never touches a real value.
 
+It also adds one Rate board row to practise a deal on (`db/seed/demoBoard.seed.ts`): the seller **Demo Seller
+Agency** lists **Demo Insecticide 500 ML** (class A, 20 per box) at ₹500.00 per unit, and the buyer **Demo Krishi
+Kendra** is a classified Dealer, so the board shows him ₹550.00 per unit (10% demo margin). It adds the masters it
+needs (tehsil Mhow, Demo Crop Care, HSN 3808) only if missing, and skips anything already there. Turn the demo seller,
+buyer and product off in the app when you no longer want them.
+
 ## Layout
 
 ```
@@ -96,7 +102,7 @@ src/
   middleware/          requestId (more later: idempotency)
   routes/index.ts      the /api/v1 router — mount feature modules here
   modules/<feature>/   one folder per feature (health, auth, users, masters, parties, listings, pricing, trades,
-                       salesOrders, payments, purchaseOrders, books today)
+                       salesOrders, payments, purchaseOrders, books, dock today)
   shared/              errors (HttpError + error envelope), audit (writeAudit), mongo (duplicate-key helper), logger,
                        shutdown, enums, validators
   types/               Express type additions (req.requestId, req.user)
@@ -340,6 +346,9 @@ b4 ─ Send to buyer ─▶ b5 Buyer's call ─ Buyer says yes ─▶ b6 Order c
 b6 ─ Buyer drops the order ─▶ Leakage (order cancelled; seller Released)      Leakage ─ Reopen ─▶ b2 Inquiry
 b6 ─ Enter payment (Sales) ─▶ Confirm payment (Accounts) ─ paid in full ─▶ b7 Paid + s3 PO raised
                                                         └ less ─▶ stays b6 (an advance; enter the rest)
+s3 ─ Record dispatch (Purchase) ─▶ s5 On the way ─ Goods arrived (Logistics) ─▶ s5 At the dock
+   ─ Check the goods (Logistics) ─ some accepted ─▶ b8 To be billed + s6 Checked: to be paid
+                                  └ nothing accepted ─▶ Dock rejected + Closed ─ Reopen (Sales) ─▶ b2
 ```
 
 | File               | What is in it                                                                                                                              |
@@ -380,7 +389,10 @@ At b6 (Gate A, next sections): `enterPayment {bankLedgerId, utr, amountPaise, re
 `confirmPayment {receiptId}` / `rejectPayment {receiptId, note}` (Accounts). The trade moves only when a confirmed
 payment makes the order paid in full: b6 → b7, s2 → s3, and the PO is raised.
 
-**Who presses.** Each action belongs to one desk (Sales, Purchase or Accounts). Founder and Admin may press every button too,
+After the PO (Build 3, next sections): `recordDispatch` and `recordSellerBill` (Purchase), `recordArrival` and
+`inspectLot` (Logistics, from the Dock screen).
+
+**Who presses.** Each action belongs to one desk (Sales, Purchase, Accounts or Logistics). Founder and Admin may press every button too,
 because they have every right (Q-ROL-01, `canPress` in `actions.ts`). The Controller sees both sides but presses nothing
 here; the history and `trade_events` record who pressed and with which role.
 
@@ -397,9 +409,10 @@ a buyer note and a seller note, and each person reads only his side's note.
 
 **Clocks** (`dueAt`, from settings): `SLA_S0_HOURS` (7) for Purchase to find a seller, `SLA_S1_HOURS` (12) for the seller
 to confirm, `SELLER_HOLD_HOURS` (24) that the seller holds the stock after confirming (it keeps running at b5), and
-`PAYMENT_WINDOW_HOURS` (24) for the buyer to pay once his order is raised (b6), and `SLA_S3_HOURS` (8) for the seller
-to dispatch once the PO is raised (b7 / s3). Shown as "Next" on the lists; nothing happens automatically when one runs
-out yet.
+`PAYMENT_WINDOW_HOURS` (24) for the buyer to pay once his order is raised (b6), `SLA_S3_HOURS` (8) for the seller
+to dispatch once the PO is raised (b7 / s3), `TRANSIT_OVERDUE_DAYS` (4) for the goods to reach the dock, and
+`INSPECTION_HOURS` (24) for the dock to check them after arrival. Shown as "Next" on the lists; nothing happens
+automatically when one runs out yet.
 
 Kept simple on purpose: the ask and the seller's answer are stored inside the trade (no separate collections); decline
 reasons are a fixed list; the buyer rate is fixed at the seller's answer. There is no `Idempotency-Key` check yet (none of the API has
@@ -469,9 +482,13 @@ Double entry (LOCK-41; Q-ACC-09: **the vouchers are the only books**, no separat
 - **Ledger groups**: the fixed 12 (Sundry Debtors, Sundry Creditors, Bank Accounts, Sales, Purchase, Duties & Taxes,
   …). `npm run db:seed` adds them; `ledgerGroupId()` also makes one the first time it is needed.
 - **Ledgers**: one per buyer (Sundry Debtors; made the first time money moves for him), one per seller (Sundry
-  Creditors, later), one per bank account (Bank Accounts). A bank account IS its ledger (one bank master): the
-  number is encrypted, only the last 4 digits are sent.
-- **Vouchers**: one money event each, `RV-26-0001` for a receipt. Two or more lines, each a debit or a credit, Σ Dr =
+  Creditors; made the first time the dock accepts his goods), one per bank account (Bank Accounts), and the system
+  ledgers automatic postings find by key (`system`: Purchase, Input CGST/SGST/IGST, …; `systemLedger()` makes each
+  the first time). A bank account IS its ledger (one bank master): the number is encrypted, only the last 4 digits
+  are sent.
+- **Vouchers**: one money event each: `RV-26-0001` for a receipt (Dr bank · Cr buyer), `PV-26-0001` for goods
+  accepted at the dock (Dr Purchase (taxable) · Dr Input CGST + SGST, or IGST across states · Cr the seller; the
+  tax split is stored in `gst`). Two or more lines, each a debit or a credit, Σ Dr =
   Σ Cr (checked by `postVoucher` and the model), one voucher per source (unique index), append-only (a mistake will be
   undone by a mirror REVERSAL voucher, later). Only `books.ts` writes vouchers.
 - A ledger's balance is the sum of its voucher lines, worked out when asked (fine for TriFid's volume; a cached
@@ -485,8 +502,8 @@ Double entry (LOCK-41; Q-ACC-09: **the vouchers are the only books**, no separat
 | `GET /ledgers?q=`                | Accounts, Controller, Founder, Admin        | Every ledger with group, Dr and Cr totals and balance                          |
 | `GET /ledgers/:id/statement`     | the same                                    | Its voucher lines, oldest first, with the running balance                      |
 
-Not built yet: SALES (at the Marg bill), PURCHASE (at the dock) and PAYMENT (seller payouts) vouchers, journals with
-approval, reversals, opening balances, bank reconciliation (instead of day close), and the registers.
+Not built yet: SALES (at the Marg bill) and PAYMENT (seller payouts, refunds) vouchers, journals with approval,
+reversals, opening balances, bank reconciliation (instead of day close), and the registers.
 
 ## Purchase orders (modules/purchaseOrders)
 
@@ -500,7 +517,52 @@ seller's landed rate (and, for an Ex listing, the Ex rate and carriage per box),
 | `GET /purchase-orders?q=&page=&pageSize=` | Purchase, Accounts, Controller, Founder, Admin | Newest first; `q` = PO no. or seller |
 | `GET /purchase-orders/:id`                | the same                                       | `{ purchaseOrder }`                  |
 
-Not built yet: dispatch (leg 1), arrival and inspection at the dock, the seller's bill, payouts.
+After Gate A, Purchase presses two engine actions on the deal card (`modules/purchaseOrders/dispatch.ts`):
+
+- **`recordDispatch`** (s3 → s5 On the way; PO `DISPATCHED`): leg 1 to Indore. `mode` TRANSPORT (transporter + LR
+  number, LR date), BUS (bus details + the driver's 10-digit mobile, name) or DEPOT (a note); `freightTerms` PAID or
+  TO_PAY with `freightPaise` (taken off the seller's payout later); `dispatchedOn`; and per PO line what the seller says
+  he packed (`batchDeclared`, `expiryDeclared`) and `shortExpiryAgreed`. The arrival clock starts
+  (`TRANSIT_OVERDUE_DAYS`, 4). No photos yet (file storage waits on Q-ARC-02).
+- **`recordSellerBill`** (any time from s3 to s6; the stage does not move): `{ number, amountPaise, billDate }`. A bill
+  that differs from the PO total is saved with "please check" in the history, never refused. Entering it again
+  replaces it (the audit keeps the old one).
+
+`GET /purchase-orders/:id` now also returns `leg1`, `sellerBill`, `arrival`, the latest `inspection` (per line) and the
+PO's `returnNotes`. Not built yet: payouts (Q-ACC-11/12).
+
+## The dock (modules/dock)
+
+The Indore dock (LOCK-40 Part A, SRS-LOG-01..05). Logistics works from **Dock**: three lanes, and two engine actions
+pressed with the trade's `version` (the same buttons are on the deal card for Founder and Admin):
+
+1. **`recordArrival`** `{ arrivedAt, boxesCounted, billWithGoods }` (s5 On the way → s5 At the dock; PO `ARRIVED`):
+   not in the future, not before the dispatch date. The dock should check within `INSPECTION_HOURS` (24).
+2. **`inspectLot`** `{ lines: [{ lineNo, batchFound?, expiryFound?, damagedBoxes, leakingBoxes, excessBoxes }], note? }`
+   (Gate B). **Short boxes are never typed**: ordered − counted, taken from the lines in PO order. Accepted = on the PO
+   − short − damaged − leaking; extra boxes must add up to counted − ordered. A different batch or expiry, or less than
+   `SHELF_LIFE_FLOOR_MONTHS` (6) left, is only **noted**, never a rejection (unless the short expiry was agreed). The
+   outcome is the first that applies of O4 (nothing accepted), O2 (damaged/leaking), O3 (short), O5 (extra), else O1.
+
+What the check writes, in the engine's transaction: the inspection (`inspections`, append-only: a saved check is never
+changed; corrections come later, with voucher reversal); accepted > 0 → the **PURCHASE voucher** (accepted × the
+seller's landed rate) and b7 → b8 To be billed, s5 → s6 Checked; damaged or leaking boxes → a REJECTED **return note**;
+extra boxes → an EXCESS return note (`RTN-26-0001`, due in `RETURN_NOTE_DAYS`, 30); short, damaged and leaking boxes →
+a **refund due** to the buyer (`refunds`, `REF-26-0001`, at his order's rate; paying it comes with payouts); nothing
+accepted (O4) → no voucher, a **seller strike** (`seller_strikes`), the buyer side → Dock rejected (Sales may Reopen) and
+the seller side → Closed.
+
+| Call                                         | Who                                             | What it does                                                                                                                     |
+| -------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /dock?lane=COMING\|ARRIVED\|CHECKED&q=` | Logistics, Controller, Founder, Admin           | Rows: PO number, from (the seller's tehsil), lines, boxes, leg 1, days on the road, arrival, result. **No firm names, no money** |
+| `POST /dock/:purchaseOrderId/arrival`        | Logistics, Founder, Admin                       | `recordArrival` for that PO's trade → `{ row }`                                                                                  |
+| `POST /dock/:purchaseOrderId/inspection`     | the same                                        | `inspectLot` → `{ row }`                                                                                                         |
+| `GET /return-notes?state=OPEN\|CLOSED&q=`    | Purchase, Logistics, Controller, Founder, Admin | Open ones due soonest first; each with the PO number and item                                                                    |
+| `POST /return-notes/:id/close`               | Purchase, Logistics, Founder, Admin             | `{ version, how: PICKED_UP\|SHIPPED_BACK\|DISPOSED, freightPaise?, note? }`. Never written off                                   |
+
+Refunds due are on the buyer side of the wall: the deal card (Sales) and `GET /sales-orders/:id` list them. Not built
+yet: photos (Q-ARC-02), check corrections, Lost in transit (O8, Controller), the overdue jobs, the return-freight debit
+to the seller, and paying refunds.
 
 ## Left out for now
 
@@ -512,5 +574,5 @@ Parties not built yet: opening ledgers, seller KYC documents (Q-PUR-01), the bul
 (Q-DATA-01), placeholder parties, and automatic classification at the first order.
 Listings not built yet: a daily job to expire
 listings (the sweep inside the API does it for now), editing a listing, and a seller's own `/sellers/:id/listings` view.
-Trades not built yet: after b7 (dispatch, dock, Marg bill, dispatch to the buyer, delivery), the Logistics desk queue,
+Trades not built yet: after b8 (the Marg bill, trips to the buyer, POD, delivery, complaints), seller payouts and refunds,
 a job that closes b1 trades nobody touched, and anything that acts when a clock runs out.

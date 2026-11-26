@@ -13,7 +13,8 @@ import {
 import { writeAudit } from '../../shared/audit.js';
 import type { Role } from '../../shared/enums.js';
 import { conflict } from '../../shared/errors.js';
-import { splitGst } from '../../shared/money.js';
+import { HOME_STATE_CODE, splitGst } from '../../shared/money.js';
+import { refundsOf } from '../dock/dock.js';
 import { paymentsOf } from '../payments/payments.js';
 import { requireRole } from '../auth/requireRole.js';
 import type { CommandContext } from '../trades/commands.js';
@@ -39,8 +40,6 @@ export const canReadSalesOrders = requireRole(...ORDER_READER_ROLES);
 /** Who also sees the seller and his rate on an order: the supervisors (never Sales or Accounts). */
 const SEES_SELLER: readonly Role[] = ['CONTROLLER', 'FOUNDER', 'ADMIN'];
 
-/** Our GST state when the company profile has no GSTIN yet: Madhya Pradesh (23), where TriFid is (SRS A-8). */
-const HOME_STATE_CODE = '23';
 const DEFAULT_PAYMENT_WINDOW_HOURS = 24;
 
 /**
@@ -246,6 +245,8 @@ export async function salesOrderView(order: SalesOrderDoc, role: Role) {
     paidPaise: order.paidPaise,
     paidAt: order.paidAt ?? null,
     payments: (await paymentsOf(order._id)).map(({ enteredById: _hidden, ...payment }) => payment),
+    // Money owed back to the buyer after the dock check (paid later, with payouts).
+    refunds: await refundsOf(order._id),
     cancel: order.cancel
       ? {
           at: order.cancel.at,

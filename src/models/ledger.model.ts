@@ -1,5 +1,5 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
-import { BANK_KINDS } from '../shared/enums.js';
+import { BANK_KINDS, LEDGER_SYSTEM_KEYS } from '../shared/enums.js';
 import { IFSC_PATTERN } from '../shared/validators.js';
 import { intField, refField, textField } from './_fields.js';
 
@@ -30,6 +30,8 @@ const ledgerSchema = new Schema(
       ),
       default: undefined,
     },
+    /** Set on the ledgers automatic postings use (Purchase, Input CGST, …): found by this key, not by name. */
+    system: { type: String, enum: LEDGER_SYSTEM_KEYS },
     gstin: { type: String, match: /^[0-9A-Z]{15}$/ },
     stateCode: { type: String, match: /^\d{2}$/ },
     /** Set on bank ledgers only. */
@@ -68,6 +70,11 @@ ledgerSchema.index(
 ledgerSchema.index(
   { 'party.sellerId': 1 },
   { unique: true, partialFilterExpression: { 'party.side': 'SELLER' } },
+);
+// One ledger per system key (Purchase, Input CGST, …).
+ledgerSchema.index(
+  { system: 1 },
+  { unique: true, partialFilterExpression: { system: { $exists: true } } },
 );
 
 export type Ledger = InferSchemaType<typeof ledgerSchema>;

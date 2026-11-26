@@ -19,7 +19,9 @@ const lineSchema = new Schema(
 /**
  * A voucher: one money event in the double-entry books (SRS-ACC-01, ARCH B3.5). It has two or more lines; each
  * line is a debit or a credit (never both, never zero), and the debits equal the credits to the paisa.
- * Example, a buyer's payment (RECEIPT RV-26-0001): Dr our bank ₹1,27,600 · Cr the buyer ₹1,27,600.
+ * Examples: a buyer's payment (RECEIPT RV-26-0001): Dr our bank ₹1,27,600 · Cr the buyer ₹1,27,600.
+ * Goods accepted at the dock (PURCHASE PV-26-0001), ₹27,000 at 18% GST within MP: Dr Purchase ₹22,881.36 ·
+ * Dr Input CGST ₹2,059.32 · Dr Input SGST ₹2,059.32 · Cr the seller ₹27,000.
  *
  * Posted vouchers are never changed or deleted (append-only, like audit_events). A mistake is undone later by a
  * mirror REVERSAL voucher. Only modules/books/books.ts writes vouchers (`postVoucher`).
@@ -31,11 +33,14 @@ const voucherSchema = new Schema(
     /** The business date, Indian time (YYYY-MM-DD): for a receipt, the day the money reached the bank. */
     date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
     narration: { ...textField(300), required: true },
-    /** What the voucher was posted for, e.g. { type: 'RECEIPT', id, number: 'RCPT-26-0001' }. */
+    /**
+     * What the voucher was posted for: { type: 'RECEIPT', id, number: 'RCPT-26-0001' } or, for goods accepted at
+     * the dock, { type: 'INSPECTION', id: the inspection, number: 'PO-26-0001' }.
+     */
     source: {
       type: new Schema(
         {
-          type: { type: String, enum: ['RECEIPT'], required: true },
+          type: { type: String, enum: ['RECEIPT', 'INSPECTION'], required: true },
           id: { type: Schema.Types.ObjectId, required: true },
           number: { type: String, required: true },
         },
@@ -54,6 +59,20 @@ const voucherSchema = new Schema(
         message:
           'A voucher needs two or more lines, each a debit or a credit, and debits = credits',
       },
+    },
+    /** SALES and PURCHASE vouchers: the tax inside the total, for the registers and the GST summary. */
+    gst: {
+      type: new Schema(
+        {
+          taxablePaise: { ...intField(0, MAX_PAISE), required: true },
+          cgstPaise: { ...intField(0, MAX_PAISE), required: true },
+          sgstPaise: { ...intField(0, MAX_PAISE), required: true },
+          igstPaise: { ...intField(0, MAX_PAISE), required: true },
+          taxBp: { ...intField(0, 10_000), required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
     },
     /** Σ debits = Σ credits. */
     totalPaise: { ...intField(1, MAX_PAISE), required: true },

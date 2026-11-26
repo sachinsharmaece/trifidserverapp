@@ -7,7 +7,7 @@ Full commands and folder layout: `README.md`.
 
 `npm run dev` (port 4000) · `npm run typecheck` · `npm run lint` · `npm run format:check` · `npm run build`
 `npm run db:sync` (collections + indexes) · `npm run db:seed` (default settings; never overwrites) ·
-`npm run db:seed-demo` (made-up margins for development; refuses production) ·
+`npm run db:seed-demo` (made-up margins and a demo board row for development; refuses production) ·
 `npm run create-founder` (first Founder account; asks for the password, shows nothing while typing).
 MongoDB must be a replica set (transactions). `.env` holds secrets: never print, commit or edit it.
 
@@ -48,6 +48,9 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
 - Money and the books: payments (`src/modules/payments/`) and POs (`src/modules/purchaseOrders/`) are written only from
   inside engine commands. Vouchers are written only by `postVoucher()` in `src/modules/books/books.ts` (balanced,
   append-only). Maker ≠ checker: the person who enters a payment never confirms it. A PO never holds buyer data.
+- The dock (`src/modules/dock/`): arrival and the check are engine commands; the check's records (inspection,
+  PURCHASE voucher, return notes, refund due, seller strike) are written in the same transaction. Dock rows for
+  Logistics never carry firm names or money. Refunds are buyer side; PO, inspection and return notes seller side.
 - Margins live in `src/modules/masters/marginCells.routes.ts`: reading needs `canSeeMargins` (the wall), writing adds
   `canEditMasters` and `requireStepUp` (`src/modules/auth/stepUp.ts`, 428 until the password was re-checked in the last 5
   minutes). Use `requireStepUp` after the role check on any route that should ask for the password again. A cell is
@@ -55,7 +58,8 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
 - Throw `HttpError` helpers; never `res.status(...).json({ error })` by hand. Zod errors become 422 automatically.
 - Validate every request with Zod. Never trust ids, money or roles from the client.
 - Money writes and the audit/voucher entries that go with them happen in ONE MongoDB transaction.
-- `margin_cells`, `audit_events`, `trade_events` and `vouchers` cannot be changed after insert (append-only). Other collections use Mongoose
+- `margin_cells`, `audit_events`, `trade_events`, `vouchers` and `inspections` cannot be changed after insert
+  (append-only). Other collections use Mongoose
   defaults; add optimistic locking (`version`) only to documents several people edit at once (orders, trades).
 - `select: false` and a `toJSON` transform for secrets (`passwordHash`, encrypted bank numbers). Bank numbers are locked
   with `encryptText()` (`src/shared/encryption.ts`); return only `accountLast4`, never the number or the locked text.

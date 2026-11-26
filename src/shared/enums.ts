@@ -65,6 +65,7 @@ export const COUNTER_PREFIXES = [
   'CMP',
   'REF',
   'RV',
+  'PV',
 ] as const;
 export type CounterPrefix = (typeof COUNTER_PREFIXES)[number];
 
@@ -88,11 +89,13 @@ export const LISTING_STATUSES = ['ACTIVE', 'PAUSED', 'EXPIRED', 'WITHDRAWN'] as 
 export type ListingStatus = (typeof LISTING_STATUSES)[number];
 
 /**
- * Where a trade stands on the buyer side (SRS §3.7, ARCH B3.4). Built so far: b1 to b7, and Leakage.
+ * Where a trade stands on the buyer side (SRS §3.7, ARCH B3.4). Built so far: b1 to b8, Leakage, Dock rejected.
  * b1 Viewing → b2 Inquiry (he wants it) → b3 Pending seller → b4 Send confirmation (the seller has answered)
  * → b5 Buyer's call (the offer was sent to him) → b6 Order confirmed (he said yes: sales order raised)
- * → b7 Paid (Accounts confirmed payment in full: the purchase order went to the seller).
+ * → b7 Paid (Accounts confirmed payment in full: the purchase order went to the seller)
+ * → b8 To be billed (B8_BILLED: the dock checked the goods; next comes the Marg bill).
  * X_LEAKAGE = the buyer said no, or dropped the order before paying; Sales may reopen it (back to b2).
+ * X_DOCK_REJECTED = the dock accepted none of the goods (LOCK-40 O4); the buyer is owed a refund; Sales may reopen.
  */
 export const BUYER_STAGES = [
   'B1_VIEWING',
@@ -102,7 +105,9 @@ export const BUYER_STAGES = [
   'B5_BUYERS_CALL',
   'B6_ORDER_CONFIRMED',
   'B7_PAID',
+  'B8_BILLED',
   'X_LEAKAGE',
+  'X_DOCK_REJECTED',
 ] as const;
 export type BuyerStage = (typeof BUYER_STAGES)[number];
 
@@ -111,14 +116,22 @@ export type BuyerStage = (typeof BUYER_STAGES)[number];
  * s1 = waiting for the seller to confirm (or the seller has confirmed and the buyer is deciding);
  * s2 = the buyer said yes: the seller holds the stock until the buyer pays;
  * s3 = the buyer paid in full: the purchase order is with the seller, who must dispatch;
- * S_RELEASED = the buyer did not take it: the seller may sell the stock to someone else.
+ * s5 = dispatched: on the way to the Indore dock (S5_DISPATCHED), then at the dock waiting to be checked
+ *      (S5_ARRIVED; the design has one s5, split here so the dock's two steps are clear);
+ * s6 = the dock checked the goods: the seller is to be paid for what was accepted (payouts come later);
+ * S_RELEASED = the buyer did not take it: the seller may sell the stock to someone else;
+ * S_CLOSED = the dock accepted nothing (LOCK-40 O4): the seller side is over.
  */
 export const SELLER_STAGES = [
   'S0_DEMAND',
   'S1_CONFIRMATION',
   'S2_HOLD',
   'S3_PO',
+  'S5_DISPATCHED',
+  'S5_ARRIVED',
+  'S6_PAYMENT',
   'S_RELEASED',
+  'S_CLOSED',
 ] as const;
 export type SellerStage = (typeof SELLER_STAGES)[number];
 
@@ -167,7 +180,10 @@ export const LEDGER_GROUPS = [
 ] as const;
 export type LedgerGroupName = (typeof LEDGER_GROUPS)[number];
 
-/** Kinds of voucher and their number series (SRS-ACC-01). Only RECEIPT (RV-26-0001) is posted so far. */
+/**
+ * Kinds of voucher and their number series (SRS-ACC-01). Posted so far: RECEIPT (RV-26-0001, a buyer's payment)
+ * and PURCHASE (PV-26-0001, goods accepted at the dock).
+ */
 export const VOUCHER_TYPES = [
   'RECEIPT',
   'SALES',
@@ -177,6 +193,24 @@ export const VOUCHER_TYPES = [
   'REVERSAL',
 ] as const;
 export type VoucherType = (typeof VOUCHER_TYPES)[number];
+
+/**
+ * Ledgers that automatic postings find by key, not by name (ARCH B3.5). Each is made the first time it is needed
+ * (modules/books/books.ts `systemLedger`). Used so far: PURCHASE and the three INPUT GST ledgers.
+ */
+export const LEDGER_SYSTEM_KEYS = [
+  'SALES',
+  'PURCHASE',
+  'OUTPUT_CGST',
+  'OUTPUT_SGST',
+  'OUTPUT_IGST',
+  'INPUT_CGST',
+  'INPUT_SGST',
+  'INPUT_IGST',
+  'FREIGHT',
+  'ROUND_OFF',
+] as const;
+export type LedgerSystemKey = (typeof LEDGER_SYSTEM_KEYS)[number];
 
 /** A bank ledger is a current account or a UPI collection account. */
 export const BANK_KINDS = ['CURRENT', 'UPI'] as const;
@@ -189,6 +223,42 @@ export type BankKind = (typeof BANK_KINDS)[number];
 export const RECEIPT_STATUSES = ['LOGGED', 'POSTED', 'REJECTED'] as const;
 export type ReceiptStatus = (typeof RECEIPT_STATUSES)[number];
 
-/** A purchase order is RAISED at Gate A. Dispatch, dock and billing states come with those steps. */
-export const PURCHASE_ORDER_STATUSES = ['RAISED'] as const;
+/**
+ * A purchase order: RAISED at Gate A → DISPATCHED (Purchase recorded leg 1) → ARRIVED (at the Indore dock)
+ * → CHECKED (the dock accepted some or all of it: Gate B) or REJECTED (the dock accepted nothing, O4).
+ */
+export const PURCHASE_ORDER_STATUSES = [
+  'RAISED',
+  'DISPATCHED',
+  'ARRIVED',
+  'CHECKED',
+  'REJECTED',
+] as const;
 export type PurchaseOrderStatus = (typeof PURCHASE_ORDER_STATUSES)[number];
+
+/** How the seller sent the goods to Indore (leg 1): by a transport company, by bus parcel, or from a depot. */
+export const LEG1_MODES = ['TRANSPORT', 'BUS', 'DEPOT'] as const;
+export type Leg1Mode = (typeof LEG1_MODES)[number];
+
+/** Freight on leg 1: the seller PAID it, or it is TO_PAY at Indore (later taken off the seller's payout). */
+export const FREIGHT_TERMS = ['PAID', 'TO_PAY'] as const;
+export type FreightTerms = (typeof FREIGHT_TERMS)[number];
+
+/**
+ * The result of a dock check (LOCK-40 A2). O1 all accepted · O2 some damaged or leaking · O3 some boxes short ·
+ * O4 nothing accepted · O5 extra boxes came. When several apply, the first of O4, O2, O3, O5 is the outcome.
+ */
+export const INSPECTION_OUTCOMES = ['O1', 'O2', 'O3', 'O4', 'O5'] as const;
+export type InspectionOutcome = (typeof INSPECTION_OUTCOMES)[number];
+
+/** A return note sends boxes back to the seller: REJECTED (damaged or leaking) or EXCESS (more than ordered). */
+export const RETURN_NOTE_TYPES = ['REJECTED', 'EXCESS'] as const;
+export type ReturnNoteType = (typeof RETURN_NOTE_TYPES)[number];
+
+/** How a return note was closed. It is never written off (L40.7). */
+export const RETURN_CLOSURES = ['PICKED_UP', 'SHIPPED_BACK', 'DISPOSED'] as const;
+export type ReturnClosure = (typeof RETURN_CLOSURES)[number];
+
+/** A refund owed to a buyer. Paying it (PAYMENT voucher) comes with payouts (Q-ACC-11/12). */
+export const REFUND_STATUSES = ['DUE'] as const;
+export type RefundStatus = (typeof REFUND_STATUSES)[number];

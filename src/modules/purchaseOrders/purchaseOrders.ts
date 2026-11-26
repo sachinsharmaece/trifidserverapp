@@ -1,8 +1,10 @@
 import { numberSetting } from '../../db/settings.js';
 import { nextDocumentNumber } from '../../db/documentNumbers.js';
 import {
+  InspectionModel,
   ListingModel,
   PurchaseOrderModel,
+  ReturnNoteModel,
   type SalesOrderModel,
   SellerModel,
 } from '../../models/index.js';
@@ -16,7 +18,8 @@ import type { CommandContext } from '../trades/commands.js';
  * paid his order in full), inside the engine's transaction. One PO per sales order, one seller (A-10).
  *
  * The seller side of the wall: a PO names the seller and his rate, never the buyer or our selling rate. Purchase,
- * Accounts (seller identity on PO records) and the supervisors read POs; Sales and Logistics do not (yet).
+ * Accounts (seller identity on PO records) and the supervisors read POs; Sales does not. Logistics works from the
+ * Dock screen, which shows the PO without firm names or money (modules/dock/dock.routes.ts).
  */
 
 export type PurchaseOrderDoc = InstanceType<typeof PurchaseOrderModel>;
@@ -118,10 +121,117 @@ export function purchaseOrderRow(po: PurchaseOrderDoc) {
   };
 }
 
+/** Leg 1, the seller's bill, the arrival and the dock's result: for the deal card and the PO page. */
+function dockFacts(po: PurchaseOrderDoc) {
+  const leg1 = po.leg1;
+  return {
+    leg1: leg1
+      ? {
+          mode: leg1.mode,
+          transporter: leg1.transporter ?? null,
+          lrNumber: leg1.lrNumber ?? null,
+          lrDate: leg1.lrDate ?? null,
+          busDetails: leg1.busDetails ?? null,
+          driverName: leg1.driverName ?? null,
+          driverMobile: leg1.driverMobile ?? null,
+          note: leg1.note ?? null,
+          freightTerms: leg1.freightTerms,
+          freightPaise: leg1.freightPaise ?? null,
+          dispatchedOn: leg1.dispatchedOn,
+          lines: leg1.lines.map((line) => ({
+            lineNo: line.lineNo,
+            batchDeclared: line.batchDeclared ?? null,
+            expiryDeclared: line.expiryDeclared ?? null,
+            shortExpiryAgreed: line.shortExpiryAgreed,
+          })),
+          at: leg1.at,
+        }
+      : null,
+    sellerBill: po.sellerBill
+      ? {
+          number: po.sellerBill.number,
+          amountPaise: po.sellerBill.amountPaise,
+          billDate: po.sellerBill.billDate,
+          at: po.sellerBill.at,
+        }
+      : null,
+    arrival: po.arrival
+      ? {
+          arrivedAt: po.arrival.arrivedAt,
+          boxesCounted: po.arrival.boxesCounted,
+          billWithGoods: po.arrival.billWithGoods,
+        }
+      : null,
+    inspectBy: po.inspectBy ?? null,
+    outcome: po.outcome ?? null,
+    acceptedBoxes: po.acceptedBoxes ?? null,
+    acceptedValuePaise: po.acceptedValuePaise ?? null,
+    inspectedAt: po.inspectedAt ?? null,
+  };
+}
+
+/** The PO on the deal card's seller side: its lines (for the dispatch and dock forms) and the dock facts. */
+export function purchaseOrderSummary(po: PurchaseOrderDoc) {
+  return {
+    id: po.id,
+    number: po.number,
+    status: po.status,
+    totalPaise: po.totalPaise,
+    dispatchDueAt: po.dispatchDueAt,
+    lines: po.lines.map((line) => ({
+      lineNo: line.lineNo,
+      productName: line.productName,
+      packLabel: line.packLabel,
+      unitsPerBox: line.unitsPerBox,
+      boxes: line.boxes,
+      expiryMonth: line.expiryMonth,
+      batchNumber: line.batchNumber ?? null,
+    })),
+    ...dockFacts(po),
+  };
+}
+
 /** The full PO. The same for every reader: it holds nothing from the buyer side. */
-export function purchaseOrderView(po: PurchaseOrderDoc) {
+export async function purchaseOrderView(po: PurchaseOrderDoc) {
+  const inspection = po.latestInspectionId
+    ? await InspectionModel.findById(po.latestInspectionId)
+    : null;
+  const returnNotes = await ReturnNoteModel.find({ purchaseOrderId: po._id }).sort({ number: 1 });
   return {
     ...purchaseOrderRow(po),
+    ...dockFacts(po),
+    inspection: inspection
+      ? {
+          outcome: inspection.outcome,
+          boxesCounted: inspection.boxesCounted,
+          note: inspection.note ?? null,
+          savedAt: inspection.savedAt,
+          lines: inspection.lines.map((line) => ({
+            lineNo: line.lineNo,
+            boxesOnPo: line.boxesOnPo,
+            boxesShort: line.boxesShort,
+            boxesDamaged: line.boxesDamaged,
+            boxesLeaking: line.boxesLeaking,
+            boxesAccepted: line.boxesAccepted,
+            boxesExcess: line.boxesExcess,
+            batchFound: line.batchFound ?? null,
+            expiryFound: line.expiryFound ?? null,
+            batchDiffers: line.batchDiffers,
+            expiryDiffers: line.expiryDiffers,
+            belowShelfLife: line.belowShelfLife,
+            shortExpiryAgreed: line.shortExpiryAgreed,
+          })),
+        }
+      : null,
+    returnNotes: returnNotes.map((note) => ({
+      id: note.id,
+      number: note.number,
+      type: note.type,
+      boxes: note.boxes,
+      reason: note.reason,
+      state: note.state,
+      dueAt: note.dueAt,
+    })),
     tradeId: String(po.tradeId),
     seller: {
       id: String(po.sellerId),

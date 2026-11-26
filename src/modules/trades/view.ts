@@ -23,7 +23,9 @@ import {
   isAtStage,
 } from './actions.js';
 import type { TradeDoc } from './commands.js';
+import { refundsOf } from '../dock/dock.js';
 import { paymentsOf } from '../payments/payments.js';
+import { purchaseOrderSummary } from '../purchaseOrders/purchaseOrders.js';
 
 /**
  * What the API sends about a trade. A trade holds both sides of the visibility wall, so the answer is built
@@ -49,7 +51,10 @@ function dueOf(trade: TradeDoc) {
   if (trade.buyerStage === 'B4_SEND_CONFIRMATION' || trade.buyerStage === 'B5_BUYERS_CALL')
     return { at: trade.dueAt, label: 'Seller holds the stock until' };
   if (trade.buyerStage === 'B6_ORDER_CONFIRMED') return { at: trade.dueAt, label: 'Payment due' };
-  if (trade.buyerStage === 'B7_PAID') return { at: trade.dueAt, label: 'Seller to dispatch by' };
+  if (trade.sellerStage === 'S3_PO') return { at: trade.dueAt, label: 'Seller to dispatch by' };
+  if (trade.sellerStage === 'S5_DISPATCHED')
+    return { at: trade.dueAt, label: 'Arrives at the dock by' };
+  if (trade.sellerStage === 'S5_ARRIVED') return { at: trade.dueAt, label: 'Dock check by' };
   return { at: trade.dueAt, label: 'Due' };
 }
 
@@ -157,6 +162,8 @@ export async function tradeView(trade: TradeDoc, role: Role) {
       ...(order
         ? await paymentsSummary(order)
         : { payments: [], balanceDuePaise: null, openPaise: null }),
+      // Money owed back to the buyer after the dock check (paid later, with payouts).
+      refunds: order ? await refundsOf(order._id) : [],
       leakage: trade.leakage
         ? {
             context: trade.leakage.context,
@@ -208,15 +215,7 @@ export async function tradeView(trade: TradeDoc, role: Role) {
           }
         : null,
       // The purchase order (b7 / s3 onward): seller side only, it holds the seller's rate.
-      purchaseOrder: purchaseOrder
-        ? {
-            id: purchaseOrder.id,
-            number: purchaseOrder.number,
-            status: purchaseOrder.status,
-            totalPaise: purchaseOrder.totalPaise,
-            dispatchDueAt: purchaseOrder.dispatchDueAt,
-          }
-        : null,
+      purchaseOrder: purchaseOrder ? purchaseOrderSummary(purchaseOrder) : null,
       sellerAnswer: answer
         ? {
             kind: answer.kind,

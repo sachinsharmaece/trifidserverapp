@@ -1,9 +1,16 @@
 import type { Request } from 'express';
 import type { ClientSession, Types } from 'mongoose';
 import { nextDocumentNumber } from '../../db/documentNumbers.js';
-import { type Buyer, LedgerGroupModel, LedgerModel, VoucherModel } from '../../models/index.js';
+import {
+  type Buyer,
+  LedgerGroupModel,
+  LedgerModel,
+  type Seller,
+  VoucherModel,
+} from '../../models/index.js';
 import { writeAudit } from '../../shared/audit.js';
-import type { LedgerGroupName, VoucherType } from '../../shared/enums.js';
+import type { LedgerGroupName, LedgerSystemKey, VoucherType } from '../../shared/enums.js';
+import type { GstSplit } from '../../shared/money.js';
 
 /**
  * The books (double entry, LOCK-41, SRS-ACC-01..03). This file is the ONLY code that writes ledgers for
@@ -11,6 +18,8 @@ import type { LedgerGroupName, VoucherType } from '../../shared/enums.js';
  *
  *   ledgerGroupId('Sundry Debtors')       the group's id (made the first time it is needed)
  *   buyerLedger(buyer, ...)               the buyer's ledger (made the first time money moves for him)
+ *   sellerLedger(seller, ...)             the seller's ledger (made the first time goods are accepted from him)
+ *   systemLedger('PURCHASE', ...)         a ledger automatic postings use (Purchase, Input CGST, …)
  *   postVoucher(req, {...}, session)      write one balanced voucher, with its audit line
  */
 
@@ -54,14 +63,85 @@ export async function buyerLedger(
   return ledger;
 }
 
+/** The seller's ledger under Sundry Creditors, made the first time goods are accepted from him (SRS-ACC-02). */
+export async function sellerLedger(
+  seller: Pick<Seller, 'number' | 'firmName' | 'gstin'> & { _id: Types.ObjectId },
+  userId: Types.ObjectId,
+  session: ClientSession,
+) {
+  const found = await LedgerModel.findOne({
+    'party.side': 'SELLER',
+    'party.sellerId': seller._id,
+  }).session(session);
+  if (found) return found;
+  const name = `${seller.firmName} (${seller.number})`;
+  const [ledger] = await LedgerModel.create(
+    [
+      {
+        name,
+        nameKey: name.toLowerCase(),
+        groupId: await ledgerGroupId('Sundry Creditors', session),
+        party: { side: 'SELLER', sellerId: seller._id },
+        gstin: seller.gstin,
+        stateCode: seller.gstin.slice(0, 2),
+        createdBy: userId,
+      },
+    ],
+    { session },
+  );
+  if (!ledger) throw new Error('The seller ledger was not created');
+  return ledger;
+}
+
+/** The ledgers automatic postings use: their name and group. */
+const SYSTEM_LEDGERS: Record<LedgerSystemKey, { name: string; group: LedgerGroupName }> = {
+  SALES: { name: 'Sales', group: 'Sales' },
+  PURCHASE: { name: 'Purchase', group: 'Purchase' },
+  OUTPUT_CGST: { name: 'Output CGST', group: 'Duties & Taxes' },
+  OUTPUT_SGST: { name: 'Output SGST', group: 'Duties & Taxes' },
+  OUTPUT_IGST: { name: 'Output IGST', group: 'Duties & Taxes' },
+  INPUT_CGST: { name: 'Input CGST', group: 'Duties & Taxes' },
+  INPUT_SGST: { name: 'Input SGST', group: 'Duties & Taxes' },
+  INPUT_IGST: { name: 'Input IGST', group: 'Duties & Taxes' },
+  FREIGHT: { name: 'Freight', group: 'Direct Expenses' },
+  ROUND_OFF: { name: 'Round off', group: 'Indirect Expenses' },
+};
+
+/** A system ledger by its key (made the first time it is needed). */
+export async function systemLedger(
+  key: LedgerSystemKey,
+  userId: Types.ObjectId,
+  session: ClientSession,
+) {
+  const found = await LedgerModel.findOne({ system: key }).session(session);
+  if (found) return found;
+  const { name, group } = SYSTEM_LEDGERS[key];
+  const [ledger] = await LedgerModel.create(
+    [
+      {
+        name,
+        nameKey: name.toLowerCase(),
+        groupId: await ledgerGroupId(group, session),
+        system: key,
+        createdBy: userId,
+      },
+    ],
+    { session },
+  );
+  if (!ledger) throw new Error('The system ledger was not created');
+  return ledger;
+}
+
 export interface VoucherLineInput {
   ledger: { _id: Types.ObjectId; name: string };
   drPaise?: number;
   crPaise?: number;
 }
 
-/** The number series for each voucher type (SRS-ACC-01). Only RECEIPT is posted so far. */
-const SERIES = { RECEIPT: 'RV' } as const satisfies Partial<Record<VoucherType, 'RV'>>;
+/** The number series for each voucher type (SRS-ACC-01). RECEIPT and PURCHASE are posted so far. */
+const SERIES = { RECEIPT: 'RV', PURCHASE: 'PV' } as const satisfies Partial<
+  Record<VoucherType, 'RV' | 'PV'>
+>;
 
 /**
  * Write one voucher: two or more lines, each a debit or a credit, debits = credits (the model checks it too).
@@ -73,8 +153,10 @@ export async function postVoucher(
     type: keyof typeof SERIES;
     date: string;
     narration: string;
-    source: { type: 'RECEIPT'; id: Types.ObjectId; number: string };
+    source: { type: 'RECEIPT' | 'INSPECTION'; id: Types.ObjectId; number: string };
     lines: VoucherLineInput[];
+    /** PURCHASE (and later SALES) vouchers: the tax inside the total. */
+    gst?: GstSplit & { taxBp: number };
     userId: Types.ObjectId;
     now: Date;
   },
@@ -96,6 +178,7 @@ export async function postVoucher(
         narration: input.narration,
         source: input.source,
         lines,
+        ...(input.gst ? { gst: input.gst } : {}),
         totalPaise,
         createdBy: input.userId,
         postedAt: input.now,

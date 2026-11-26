@@ -16,7 +16,21 @@ import { conflict, invalidField } from '../../shared/errors.js';
 import { formatRupees } from '../../shared/money.js';
 import { objectId } from '../parties/common.js';
 import { computeBuyerRate, loadMargins, pricingTierOf } from '../pricing/pricing.js';
+import {
+  arrivalInput,
+  inspectionInput,
+  inspectionNotes,
+  inspectLot as runInspection,
+  recordArrival as saveArrival,
+} from '../dock/dock.js';
 import { confirmReceipt, logReceipt, rejectReceipt } from '../payments/payments.js';
+import {
+  dispatchInput,
+  leg1Summary,
+  recordDispatch as saveDispatch,
+  recordSellerBill as saveSellerBill,
+  sellerBillInput,
+} from '../purchaseOrders/dispatch.js';
 import { raisePurchaseOrder } from '../purchaseOrders/purchaseOrders.js';
 import { cancelSalesOrder, raiseSalesOrder } from '../salesOrders/salesOrders.js';
 import type { TradeActionName } from './actions.js';
@@ -27,7 +41,8 @@ import { earliestExpiryMonth, monthsFromNow } from './stages.js';
  * change; the engine (engine.ts) saves the trade, the history line and the audit line in one transaction.
  * A command never saves the trade itself. The only other writes are the records a step makes for the trade, all
  * inside the same transaction (`session`): the sales order (`buyerYes`, `leakAfterOrder`), the payment entry, its
- * RECEIPT voucher and the purchase order (`enterPayment`, `confirmPayment`, `rejectPayment`).
+ * RECEIPT voucher and the purchase order (`enterPayment`, `confirmPayment`, `rejectPayment`), and the PO's dispatch,
+ * seller bill, arrival and dock check with what the check writes (`recordDispatch` … `inspectLot`).
  */
 
 /** A trade as loaded from the database. */
@@ -433,12 +448,21 @@ const leakAfterOrder = command(reasonInput, async (ctx, input) => {
 });
 
 /**
- * Leakage → b2: the buyer is interested again. The old seller answer, offer and order link are cleared (a
- * cancelled order stays on record), so "Send to seller" starts the seller side afresh.
+ * Leakage or Dock rejected → b2: the buyer is interested again. The old seller answer, offer and order links are
+ * cleared (the old order, PO and any refund due stay on record), so "Send to seller" starts the seller side afresh.
  */
 const reopen = command(z.object({}), () => ({
   set: { buyerStage: 'B2_INQUIRY' },
-  unset: ['leakage', 'sellerStage', 'sellerId', 'sellerAnswer', 'offer', 'salesOrderId', 'dueAt'],
+  unset: [
+    'leakage',
+    'sellerStage',
+    'sellerId',
+    'sellerAnswer',
+    'offer',
+    'salesOrderId',
+    'purchaseOrderId',
+    'dueAt',
+  ],
   buyerNote: 'Reopened: send it to the seller again when the buyer is ready',
   sellerNote: '',
 }));
@@ -519,6 +543,70 @@ const rejectPayment = command(
 );
 
 /** Every action's command. The engine looks the action up here. */
+// ---------------------------------------------------------------------------------------------------------------
+// Build 3: leg 1 (Purchase) and the Indore dock (Logistics), LOCK-40
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** s3 → s5 On the way: Purchase records how the seller sent the goods. The arrival clock starts. */
+const recordDispatch = command(dispatchInput, async (ctx, input) => {
+  const { leg1 } = await saveDispatch(ctx, input);
+  const days = await numberSetting('TRANSIT_OVERDUE_DAYS', 4);
+  const freight =
+    input.freightTerms === 'TO_PAY' && input.freightPaise
+      ? `, freight ${formatRupees(input.freightPaise)} to pay at Indore`
+      : ', freight paid by the seller';
+  return {
+    set: { sellerStage: 'S5_DISPATCHED', dueAt: new Date(ctx.now.getTime() + days * DAY_MS) },
+    buyerNote: 'Goods on the way to the Indore dock',
+    sellerNote: `Dispatched on ${input.dispatchedOn} ${leg1Summary(leg1)}${freight}`,
+  };
+});
+
+/** The seller's tax invoice (any time from the PO until he is paid). The stage does not move. */
+const recordSellerBill = command(sellerBillInput, async (ctx, input) => {
+  const { note, replaced } = await saveSellerBill(ctx, input);
+  return {
+    set: {},
+    buyerNote: '',
+    sellerNote: replaced ? `${note} (replaces the earlier bill)` : note,
+  };
+});
+
+/** s5 On the way → s5 At the dock: Logistics records the arrival. The dock must check within a day. */
+const recordArrival = command(arrivalInput, async (ctx, input) => {
+  const { inspectBy, ordered } = await saveArrival(ctx, input);
+  const bill = input.billWithGoods
+    ? 'seller bill came with the goods'
+    : 'no seller bill with the goods';
+  return {
+    set: { sellerStage: 'S5_ARRIVED', dueAt: inspectBy },
+    buyerNote: 'Goods arrived at the Indore dock',
+    sellerNote: `Arrived: ${input.boxesCounted} boxes counted for ${ordered} ordered; ${bill}`,
+  };
+});
+
+/**
+ * Gate B: the dock checks the goods line by line. Some accepted → b8 To be billed / s6 (the PURCHASE voucher is
+ * posted). Nothing accepted (O4) → Dock rejected / Closed: the buyer is owed a full refund; Sales may reopen.
+ */
+const inspectLot = command(inspectionInput, async (ctx, input) => {
+  const result = await runInspection(ctx, input);
+  const notes = inspectionNotes(result);
+  if (result.outcome === 'O4') {
+    return {
+      set: { buyerStage: 'X_DOCK_REJECTED', sellerStage: 'S_CLOSED' },
+      unset: ['dueAt'],
+      ...notes,
+    };
+  }
+  return {
+    set: { buyerStage: 'B8_BILLED', sellerStage: 'S6_PAYMENT' },
+    unset: ['dueAt'],
+    ...notes,
+  };
+});
+
 export const COMMANDS: Record<TradeActionName, Command> = {
   wantIt,
   sendToSeller,
@@ -533,4 +621,8 @@ export const COMMANDS: Record<TradeActionName, Command> = {
   enterPayment,
   confirmPayment,
   rejectPayment,
+  recordDispatch,
+  recordSellerBill,
+  recordArrival,
+  inspectLot,
 };
