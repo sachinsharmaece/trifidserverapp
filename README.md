@@ -422,7 +422,7 @@ each with its own audit line (`salesOrder.raise`, `salesOrder.cancel`). The rout
 | `GET /sales-orders/:id`                        | the same                                    | `{ salesOrder }`. Controller, Founder and Admin also get `seller` and each line's `landedPaisePerUnit` |
 
 Purchase and Logistics get 403: an order names the buyer. The margin is never sent. Not built yet: insurance on the order
-(Q-SAL-04, open), payments and the PO at Gate A (Q-ACC-01 and Q-ACC-09 first), the proforma PDF, cancelling an overdue
+(Q-SAL-04, open), payments and the PO at Gate A (next: Q-ACC-01 and Q-ACC-09 are decided), the proforma PDF, cancelling an overdue
 order from the order page (the deal card's "Buyer drops the order" does it), and one order for several trades or sellers
 (Q-PUR-05: one trade = one order = one seller for now).
 
