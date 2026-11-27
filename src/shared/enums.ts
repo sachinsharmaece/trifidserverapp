@@ -476,3 +476,19 @@ export type SellerTier = (typeof SELLER_TIERS)[number];
 /** A Stock PO (reference-copy branch): waits for the Controller, then is issued to the seller. */
 export const STOCK_PO_STATUSES = ['PENDING_APPROVAL', 'ISSUED'] as const;
 export type StockPoStatus = (typeof STOCK_PO_STATUSES)[number];
+
+/** What happened on a call (reference-copy branch, the reference Call screen's outcomes). */
+export const CALL_OUTCOMES = [
+  'QUOTED',
+  'NO_STOCK',
+  'PRICE_OBJECTION',
+  'ASKED_FOR_RATE',
+  'WANTS_IT',
+  'CALLBACK_LATER',
+  'NOT_INTERESTED',
+  'ALREADY_HOLDS_STOCK',
+  'BUYS_DIRECT',
+  'NO_ANSWER',
+  'WRONG_NUMBER',
+] as const;
+export type CallOutcome = (typeof CALL_OUTCOMES)[number];

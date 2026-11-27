@@ -81,6 +81,7 @@ boardRouter.get('/buyers/:id/board', requireAuth, canUseBuyers, async (req, res)
     return [
       {
         id: listing.id,
+        skuId: sku.id,
         productName: product.name,
         manufacturerName:
           manufacturers.find((m) => m.id === String(product.manufacturerId))?.name ?? '',

@@ -130,6 +130,14 @@ const salesOrderSchema = new Schema(
     paidAt: Date,
     /** Build 4: the Marg bill (BILLED), the proof of dispatch on a trip (DISPATCHED), then delivery. */
     margBill: { type: margBillSchema, default: undefined },
+    /** Reference-copy branch: did the buyer take transit insurance? Declining needs a reason. */
+    insurance: {
+      type: new Schema(
+        { elected: { type: Boolean, required: true }, declineReason: textField(300) },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     dispatchedAt: Date,
     deliveredAt: Date,
     /** Set when the buyer drops the order before paying. */

@@ -326,6 +326,9 @@ export async function tradeRows(trades: TradeDoc[], side: 'buyer' | 'seller') {
       /** For screens that act straight from a list row (the reference Confirmations screen). */
       version: trade.version,
       source: trade.source,
+      /** Boxes the seller confirmed (the reference's "confirmed take"), once he has answered. */
+      confirmedBoxes:
+        trade.sellerAnswer?.kind === 'CONFIRMED' ? (trade.sellerAnswer.boxes ?? null) : null,
     };
   });
 }

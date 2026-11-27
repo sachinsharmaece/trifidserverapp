@@ -6,6 +6,7 @@ import {
   BuyerModel,
   ListingModel,
   SellerModel,
+  SalesOrderModel,
   SkuModel,
   type Trade,
   type TradeModel,
@@ -385,8 +386,34 @@ const sendToBuyer = command(z.object({}), async ({ trade, now }) => {
  * b5 → b6, seller s1 → s2: the buyer says yes. The engine raises his sales order (SO-26-0001) with the fixed
  * rate and GST, and the payment clock starts (PAYMENT_WINDOW_HOURS). The seller holds the stock until payment.
  */
-const buyerYes = command(z.object({}), async (ctx) => {
+/** Reference-copy branch: the reference's "Insurance elected" box; declining needs a reason. Default: elected. */
+const buyerYesInput = z
+  .object({
+    insuranceElected: z.boolean().optional(),
+    insuranceDeclineReason: optionalText(300),
+  })
+  .refine((value) => value.insuranceElected !== false || value.insuranceDeclineReason, {
+    path: ['insuranceDeclineReason'],
+    message: 'A reason is required when insurance is declined',
+  });
+
+const buyerYes = command(buyerYesInput, async (ctx, input) => {
   const order = await raiseSalesOrder(ctx);
+  const elected = input.insuranceElected !== false;
+  await SalesOrderModel.updateOne(
+    { _id: order._id },
+    {
+      $set: {
+        insurance: {
+          elected,
+          ...(elected || !input.insuranceDeclineReason
+            ? {}
+            : { declineReason: input.insuranceDeclineReason }),
+        },
+      },
+    },
+    { session: ctx.session ?? null },
+  );
   const boxes = ctx.trade.sellerAnswer?.boxes ?? 0;
   return {
     set: {

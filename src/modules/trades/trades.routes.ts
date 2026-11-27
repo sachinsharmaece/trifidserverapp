@@ -59,8 +59,12 @@ async function funnelList(side: 'buyer' | 'seller', query: unknown, stages: read
     const products = await ProductModel.find({ nameLower: pattern }).select('_id');
     const parties =
       side === 'buyer'
-        ? await BuyerModel.find({ firmKey: pattern }).select('_id')
-        : await SellerModel.find({ firmKey: pattern }).select('_id');
+        ? await BuyerModel.find({
+            $or: [{ firmKey: pattern }, { number: q.toUpperCase() }],
+          }).select('_id')
+        : await SellerModel.find({
+            $or: [{ firmKey: pattern }, { number: q.toUpperCase() }],
+          }).select('_id');
     base.$or = [
       { number: { $regex: escapeRegex(q.toUpperCase()) } },
       { productId: { $in: products.map((p) => p._id) } },

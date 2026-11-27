@@ -1,6 +1,8 @@
+import type { Types } from 'mongoose';
 import { numberSetting } from '../../db/settings.js';
 import { nextDocumentNumber } from '../../db/documentNumbers.js';
 import {
+  PurchaseOrderModel,
   BuyerModel,
   CompanyModel,
   HsnCodeModel,
@@ -206,6 +208,22 @@ export async function markDelivered({ req, trade, now, session }: CommandContext
 }
 
 /** One row of the Sales orders list. */
+/** The PO behind a sales order, without the seller: its number and the leg-1 gates. */
+async function poSummaryOf(salesOrderId: Types.ObjectId) {
+  const po = await PurchaseOrderModel.findOne(
+    { salesOrderId },
+    { number: 1, arrival: 1, latestInspectionId: 1, sellerBill: 1 },
+  );
+  return po
+    ? {
+        number: po.number,
+        arrived: Boolean(po.arrival),
+        inspected: Boolean(po.latestInspectionId),
+        billed: Boolean(po.sellerBill),
+      }
+    : null;
+}
+
 export function salesOrderRow(order: SalesOrderDoc) {
   const line = order.lines[0];
   return {
@@ -283,6 +301,11 @@ export async function salesOrderView(order: SalesOrderDoc, role: Role) {
         }
       : null,
     createdAt: order.createdAt,
+    // Reference-copy branch: insurance, and where the PO is (for the chain strip). No seller details.
+    insurance: order.insurance
+      ? { elected: order.insurance.elected, declineReason: order.insurance.declineReason ?? null }
+      : null,
+    purchaseOrder: await poSummaryOf(order._id),
     ...(seesSeller
       ? {
           seller: seller

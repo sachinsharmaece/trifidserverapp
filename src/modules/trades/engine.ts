@@ -301,24 +301,20 @@ export async function openViewing(req: Request, body: unknown) {
   }
 }
 
-export const askBody = z
-  .object({
-    buyerId: objectId,
-    productId: objectId,
-    skuId: objectId.optional(),
-    boxes: z.number().int().min(1, 'Enter at least 1 box').max(1_000_000),
-    reason: z.enum(ASK_REASONS, 'Choose why the buyer is asking'),
-    note: z
-      .string()
-      .trim()
-      .max(500)
-      .optional()
-      .transform((text) => text || undefined),
-  })
-  .refine((value) => value.reason !== 'OTHER' || value.note, {
-    path: ['note'],
-    message: 'Write a short note for "Other"',
-  });
+export const askBody = z.object({
+  buyerId: objectId,
+  productId: objectId,
+  skuId: objectId.optional(),
+  boxes: z.number().int().min(1, 'Enter at least 1 box').max(1_000_000),
+  reason: z.enum(ASK_REASONS, 'Choose why the buyer is asking'),
+  note: z
+    .string()
+    .trim()
+    .max(500)
+    .optional()
+    .transform((text) => text || undefined),
+});
+// Reference-copy branch: "Other" needs no note (the reference's condition note is optional).
 
 /**
  * Sales records an ask for something not on the board → a trade at b2 (Inquiry), source NOT_LISTED.

@@ -85,6 +85,7 @@ function toBuyer(buyer: BuyerDoc, tehsil: TehsilSummary | null) {
     classified: Boolean(buyer.classifiedAt),
     manufacturerIds: buyer.manufacturerIds.map(String),
     active: buyer.active,
+    createdAt: buyer.createdAt,
   };
 }
 

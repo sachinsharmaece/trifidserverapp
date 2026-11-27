@@ -10,6 +10,7 @@
  */
 export { AuditEventModel, type AuditEvent } from './auditEvent.model.js';
 export { BankReconciliationModel, type BankReconciliation } from './bankReconciliation.model.js';
+export { CallLogModel, type CallLog } from './callLog.model.js';
 export { BuyerModel, type Buyer } from './buyer.model.js';
 export { CompanyModel, type Company } from './company.model.js';
 export { ComplaintModel, type Complaint } from './complaint.model.js';
