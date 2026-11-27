@@ -12,15 +12,18 @@ import { connectToDatabase, disconnectFromDatabase } from '../db/connect.js';
 import { SETTINGS_SEED } from '../db/seed/settings.seed.js';
 import { LedgerGroupModel, SettingModel } from '../models/index.js';
 import { LEDGER_GROUPS } from '../shared/enums.js';
+import { settingKeyOf } from '../modules/settings/catalogue.js';
 
 async function main(): Promise<void> {
   await connectToDatabase(env.mongodbUri);
 
   // Validate every seed row against the schema before writing anything.
-  for (const row of SETTINGS_SEED) await new SettingModel(row).validate();
+  // Old key names are stored under the reference key that replaced them (modules/settings/catalogue.ts).
+  const rows = SETTINGS_SEED.map((row) => ({ ...row, key: settingKeyOf(row.key) }));
+  for (const row of rows) await new SettingModel(row).validate();
 
   const result = await SettingModel.bulkWrite(
-    SETTINGS_SEED.map((row) => ({
+    rows.map((row) => ({
       updateOne: { filter: { key: row.key }, update: { $setOnInsert: row }, upsert: true },
     })),
   );

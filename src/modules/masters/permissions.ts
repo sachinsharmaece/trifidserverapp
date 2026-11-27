@@ -2,13 +2,14 @@ import { requireRole } from '../auth/requireRole.js';
 
 /**
  * Anyone signed in may READ the masters (every desk needs them for dropdowns).
- * Only these roles may CHANGE them. Use it after requireAuth:
+ * Only these roles may CHANGE them (reference-copy branch: Admin, Controller and Founder, as the reference's
+ * MASTERS_EDIT_ROLES). Use it after requireAuth:
  *   router.post('/manufacturers', requireAuth, canEditMasters, handler);
  */
-export const canEditMasters = requireRole('FOUNDER', 'ADMIN');
+export const canEditMasters = requireRole('ADMIN', 'CONTROLLER', 'FOUNDER');
 
 /**
- * The margin matrix is TriFid's own margin: Sales and Purchase must never see it, and neither may Accounts or
- * Logistics. Only these roles may read it (changing it needs canEditMasters and a step-up as well).
+ * The margin matrix is buyer-pricing information. As in the reference (BUYER_VISIBLE_ROLES), Admin, Sales,
+ * Controller and Founder may read it; Purchase, Accounts and Logistics never. Changing it needs canEditMasters.
  */
-export const canSeeMargins = requireRole('CONTROLLER', 'FOUNDER', 'ADMIN');
+export const canSeeMargins = requireRole('ADMIN', 'SALES', 'CONTROLLER', 'FOUNDER');

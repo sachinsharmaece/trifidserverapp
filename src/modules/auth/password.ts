@@ -3,7 +3,7 @@ import argon2 from 'argon2';
 import { z } from 'zod';
 
 /** Rule for choosing a password (SRS: at least 10 characters). */
-export const PASSWORD_MIN_LENGTH = 10;
+export const PASSWORD_MIN_LENGTH = 8; // reference-copy branch: 8, as the reference
 export const newPasswordSchema = z
   .string()
   .min(PASSWORD_MIN_LENGTH, `Use at least ${PASSWORD_MIN_LENGTH} characters.`)

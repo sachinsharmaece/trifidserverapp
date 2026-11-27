@@ -25,6 +25,41 @@ export type SessionState = (typeof SESSION_STATES)[number];
 export const IDEMPOTENCY_STATUSES = ['IN_FLIGHT', 'DONE'] as const;
 export type IdempotencyStatus = (typeof IDEMPOTENCY_STATUSES)[number];
 
+/** LOCK-37 staff positions, one ladder per department (reference: lib/staffHierarchy/positions.ts). */
+export const STAFF_POSITIONS = [
+  'JR_SALES_EXECUTIVE',
+  'SR_SALES_EXECUTIVE',
+  'TM',
+  'JR_PURCHASE_EXECUTIVE',
+  'SR_PURCHASE_EXECUTIVE',
+  'TM_PURCHASE',
+  'JR_ACCOUNTANT',
+  'ACCOUNTANT',
+  'FIELD_EXECUTIVE',
+  'LOGISTICS_HEAD',
+] as const;
+export type StaffPosition = (typeof STAFF_POSITIONS)[number];
+
+/** Which department a position belongs to, and its tier on that department's ladder. */
+export const POSITION_INFO: Record<
+  StaffPosition,
+  { department: 'SALES' | 'PURCHASE' | 'ACCOUNTS' | 'LOGISTICS'; tier: 'junior' | 'senior' | 'top' }
+> = {
+  JR_SALES_EXECUTIVE: { department: 'SALES', tier: 'junior' },
+  SR_SALES_EXECUTIVE: { department: 'SALES', tier: 'senior' },
+  TM: { department: 'SALES', tier: 'top' },
+  JR_PURCHASE_EXECUTIVE: { department: 'PURCHASE', tier: 'junior' },
+  SR_PURCHASE_EXECUTIVE: { department: 'PURCHASE', tier: 'senior' },
+  TM_PURCHASE: { department: 'PURCHASE', tier: 'top' },
+  JR_ACCOUNTANT: { department: 'ACCOUNTS', tier: 'junior' },
+  ACCOUNTANT: { department: 'ACCOUNTS', tier: 'top' },
+  FIELD_EXECUTIVE: { department: 'LOGISTICS', tier: 'junior' },
+  LOGISTICS_HEAD: { department: 'LOGISTICS', tier: 'top' },
+};
+
+/** Units for the reference's "Pack sizes produced" list (display only). */
+export const BASE_UNITS = ['LTR', 'KG', 'PC', 'GM', 'ML'] as const;
+
 export const PRODUCT_CATEGORIES = ['PESTICIDE', 'FERTILIZER', 'SEED', 'OTHER'] as const;
 export type ProductCategory = (typeof PRODUCT_CATEGORIES)[number];
 

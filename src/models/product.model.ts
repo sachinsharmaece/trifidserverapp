@@ -1,5 +1,5 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
-import { PRODUCT_CATEGORIES } from '../shared/enums.js';
+import { BASE_UNITS, PRODUCT_CATEGORIES } from '../shared/enums.js';
 import { normaliseKey } from '../shared/validators.js';
 import { bpField, refField, textField } from './_fields.js';
 
@@ -16,6 +16,23 @@ const productSchema = new Schema(
     /** GST rate in basis points (1800 = 18%). Starts as the HSN code's rate; Admin may change it. */
     taxBp: { ...bpField(), required: true },
     active: { type: Boolean, required: true, default: true },
+    /**
+     * Reference-copy branch: "Pack sizes produced", a plain reference list of the sizes this product is made in
+     * (label, base unit, size). It is not a pack (SKU) and nothing prices from it.
+     */
+    packSizes: {
+      type: [
+        new Schema(
+          {
+            label: { ...textField(40), required: true },
+            baseUnit: { type: String, enum: BASE_UNITS, required: true },
+            size: { type: Number, required: true, min: 0 },
+          },
+          { _id: true },
+        ),
+      ],
+      default: [],
+    },
     createdBy: refField('User'),
   },
   { collection: 'products', timestamps: true },

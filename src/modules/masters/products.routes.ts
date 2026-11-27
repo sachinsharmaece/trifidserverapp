@@ -9,8 +9,8 @@ import {
   TechnicalModel,
 } from '../../models/index.js';
 import { onlyChanged, writeAudit } from '../../shared/audit.js';
-import { PRODUCT_CATEGORIES, type ProductCategory } from '../../shared/enums.js';
-import { badRequest, notFound } from '../../shared/errors.js';
+import { BASE_UNITS, PRODUCT_CATEGORIES, type ProductCategory } from '../../shared/enums.js';
+import { badRequest, conflict, notFound } from '../../shared/errors.js';
 import { escapeRegex, failIfDuplicate } from '../../shared/mongo.js';
 import { normaliseKey } from '../../shared/validators.js';
 import { currentUserOf, requireAuth } from '../auth/requireAuth.js';
@@ -66,6 +66,8 @@ function toProduct(product: {
   hsnCodeId: unknown;
   taxBp: number;
   active: boolean;
+  packSizes?:
+    { id?: string; _id?: unknown; label: string; baseUnit: string; size: number }[] | null;
 }) {
   return {
     id: product.id,
@@ -76,6 +78,12 @@ function toProduct(product: {
     hsnCodeId: String(product.hsnCodeId),
     taxBp: product.taxBp,
     active: product.active,
+    packSizes: (product.packSizes ?? []).map((size) => ({
+      id: size.id as string,
+      label: size.label,
+      baseUnit: size.baseUnit,
+      size: size.size,
+    })),
   };
 }
 
@@ -245,4 +253,32 @@ productsRouter.patch('/products/:id', canEditMasters, async (req, res) => {
   }
   const skus = await SkuModel.find({ productId: product._id }).sort({ packLabelLower: 1 });
   res.json({ product: { ...toProduct(product), skus: skus.map(toSku) } });
+});
+
+const packSizeBody = z.object({
+  label: z.string().trim().min(1, 'Pack label is required').max(40),
+  baseUnit: z.enum(BASE_UNITS),
+  size: z.number().positive('Size must be greater than zero'),
+});
+
+/**
+ * POST /products/:id/pack-sizes  { label, baseUnit, size }  ->  201 { product }.
+ * Reference-copy branch: adds one entry to "Pack sizes produced" (reference: /api/masters/pack-sizes).
+ */
+productsRouter.post('/products/:id/pack-sizes', canEditMasters, async (req, res) => {
+  const body = packSizeBody.parse(req.body);
+  const product = await findProduct(req.params.id);
+  if (product.packSizes.some((size) => normaliseKey(size.label) === normaliseKey(body.label))) {
+    throw conflict(`This product already has a pack size "${body.label}"`, 'NAME_TAKEN');
+  }
+  product.packSizes.push(body);
+  await product.save();
+  await writeAudit(req, {
+    action: 'product.pack_size',
+    entityType: 'Product',
+    entityId: product.id,
+    before: {},
+    after: body,
+  });
+  res.status(201).json({ product: toProduct(product) });
 });

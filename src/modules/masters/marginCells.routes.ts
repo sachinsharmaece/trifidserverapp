@@ -6,7 +6,6 @@ import { BUYER_TIERS, SKU_CLASSES, type BuyerTier, type SkuClass } from '../../s
 import { badRequest, conflict } from '../../shared/errors.js';
 import { failIfDuplicate } from '../../shared/mongo.js';
 import { currentUserOf, requireAuth } from '../auth/requireAuth.js';
-import { requireStepUp } from '../auth/stepUp.js';
 import { canEditMasters, canSeeMargins } from './permissions.js';
 
 /**
@@ -58,7 +57,7 @@ function toCell(
   };
 }
 
-// Nobody outside Controller, Founder and Admin may even read the matrix.
+// Only Admin, Sales, Controller and Founder may read the matrix (the reference's BUYER_VISIBLE_ROLES).
 marginCellsRouter.use('/margin-cells', requireAuth, canSeeMargins);
 
 /**
@@ -100,10 +99,10 @@ marginCellsRouter.get('/margin-cells', async (_req, res) => {
 
 /**
  * POST /margin-cells  { skuClass, buyerTier, marginBp, effectiveFrom? }  ->  201 { cell }
- * Founder and Admin, after a password check (428 STEP_UP_REQUIRED otherwise). The start cannot be in the past, and
+ * Admin, Controller and Founder (no password check, as in the reference). The start cannot be in the past, and
  * must be later than every cell already set for this class and tier, so the newest cell is always the one that wins.
  */
-marginCellsRouter.post('/margin-cells', canEditMasters, requireStepUp, async (req, res) => {
+marginCellsRouter.post('/margin-cells', canEditMasters, async (req, res) => {
   const body = createBody.parse(req.body);
   const me = currentUserOf(req);
 
