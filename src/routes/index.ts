@@ -3,6 +3,8 @@ import { authRouter } from '../modules/auth/auth.routes.js';
 import { listingsRouter } from '../modules/listings/listings.routes.js';
 import { boardRouter } from '../modules/pricing/board.routes.js';
 import { booksRouter } from '../modules/books/books.routes.js';
+import { bankReconciliationRouter } from '../modules/books/bankReconciliation.routes.js';
+import { journalsRouter } from '../modules/books/journals.routes.js';
 import { billingRouter } from '../modules/billing/billing.routes.js';
 import { clocksRouter } from '../modules/clocks/clocks.routes.js';
 import { complaintsRouter } from '../modules/complaints/complaints.routes.js';
@@ -73,6 +75,10 @@ apiRouter.use(salesOrdersRouter);
 apiRouter.use(paymentsRouter);
 apiRouter.use(purchaseOrdersRouter);
 apiRouter.use(booksRouter);
+// Build 9: hand-made journals and opening balances (a different person approves), the vouchers list and reversals.
+apiRouter.use(journalsRouter);
+// Build 9: bank reconciliation: the statement balance against the books, and the lock on reconciled days.
+apiRouter.use(bankReconciliationRouter);
 // The Logistics dock (arrival and check: the same engine actions) and return notes. No firm names or money.
 apiRouter.use(dockRouter);
 // Build 4: To be billed (the Accounts queue: the Marg bill) and Trips (Logistics: POD). Same engine actions.

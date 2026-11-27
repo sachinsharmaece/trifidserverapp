@@ -73,6 +73,8 @@ export const COUNTER_PREFIXES = [
   'SV',
   'PY',
   'JV',
+  'RX',
+  'JNL',
   'T',
 ] as const;
 export type CounterPrefix = (typeof COUNTER_PREFIXES)[number];
@@ -211,9 +213,10 @@ export const LEDGER_GROUPS = [
 export type LedgerGroupName = (typeof LEDGER_GROUPS)[number];
 
 /**
- * Kinds of voucher and their number series (SRS-ACC-01). Posted so far: RECEIPT (RV-26-0001, a buyer's payment),
- * PURCHASE (PV-26-0001, goods accepted at the dock), SALES (SV-26-0001, the Marg bill to the buyer), PAYMENT
- * (PY-26-0001, a seller or a refund paid) and JOURNAL (JV-26-0001, a complaint's credit note).
+ * Kinds of voucher and their number series (SRS-ACC-01): RECEIPT (RV-26-0001, a buyer's payment), PURCHASE
+ * (PV-26-0001, goods accepted at the dock), SALES (SV-26-0001, the Marg bill to the buyer), PAYMENT (PY-26-0001, a
+ * seller or a refund paid), JOURNAL (JV-26-0001, a complaint's credit note or an approved journal / opening balance)
+ * and REVERSAL (RX-26-0001, the exact mirror of a voucher it undoes).
  */
 export const VOUCHER_TYPES = [
   'RECEIPT',
@@ -232,6 +235,10 @@ export const VOUCHER_SOURCE_TYPES = [
   'MARG_BILL',
   'PAYOUT_LINE',
   'COMPLAINT',
+  /** A hand-made journal or an opening balance, after a different person approved it (Build 9). */
+  'JOURNAL',
+  /** A REVERSAL voucher: the source is the voucher it undoes (Build 9). */
+  'VOUCHER',
 ] as const;
 export type VoucherSourceType = (typeof VOUCHER_SOURCE_TYPES)[number];
 
@@ -261,8 +268,47 @@ export type BankKind = (typeof BANK_KINDS)[number];
  * A payment a buyer says he made (an "Upcoming payment", SRS-PAY-01): LOGGED by Sales, then POSTED by Accounts
  * (the RECEIPT voucher is written) or REJECTED (not found in the bank).
  */
-export const RECEIPT_STATUSES = ['LOGGED', 'POSTED', 'REJECTED'] as const;
+export const RECEIPT_STATUSES = ['LOGGED', 'POSTED', 'REJECTED', 'REVERSED'] as const;
 export type ReceiptStatus = (typeof RECEIPT_STATUSES)[number];
+
+/**
+ * Where a payment came from (SRS-PAY-01): SALES_ENTRY = Sales entered it against an order at b6; HAND_ADDED = Accounts
+ * added money that reached the bank with no order (an advance on the buyer's account, Build 9). A POSTED payment can
+ * also be REVERSED (a wrong hand-added one, by the Controller, Founder or Admin).
+ */
+export const RECEIPT_SOURCES = ['SALES_ENTRY', 'HAND_ADDED'] as const;
+export type ReceiptSource = (typeof RECEIPT_SOURCES)[number];
+
+/**
+ * A journal (JNL-26-0001): lines typed by hand. Accounts types it (PENDING_APPROVAL), a different person approves it
+ * (POSTED: the JV voucher is written) or rejects it (REJECTED), the maker may CANCEL it while it waits, and a posted
+ * one can be REVERSED by the Controller, Founder or Admin. `kind` OPENING is a set of opening balances (SRS-ACC-05).
+ */
+export const JOURNAL_KINDS = ['JOURNAL', 'OPENING'] as const;
+export type JournalKind = (typeof JOURNAL_KINDS)[number];
+export const JOURNAL_STATUSES = [
+  'PENDING_APPROVAL',
+  'POSTED',
+  'REJECTED',
+  'CANCELLED',
+  'REVERSED',
+] as const;
+export type JournalStatus = (typeof JOURNAL_STATUSES)[number];
+
+/** Groups a person may add ledgers to by hand. Buyers, sellers and bank accounts get theirs from their own screens. */
+export const HAND_LEDGER_GROUPS = [
+  'Direct Expenses',
+  'Indirect Expenses',
+  'Indirect Income',
+  'Duties & Taxes',
+  'Capital',
+  'Loans',
+  'Cash',
+] as const satisfies readonly LedgerGroupName[];
+
+/** Bank reconciliation of one bank ledger on one day (SRS-PAY-05): OPEN while it differs, RECONCILED when it matches. */
+export const BANK_RECONCILIATION_STATUSES = ['OPEN', 'RECONCILED'] as const;
+export type BankReconciliationStatus = (typeof BANK_RECONCILIATION_STATUSES)[number];
 
 /**
  * A purchase order: RAISED at Gate A → DISPATCHED (Purchase recorded leg 1) → ARRIVED (at the Indore dock)
@@ -298,6 +344,10 @@ export type InspectionOutcome = (typeof INSPECTION_OUTCOMES)[number];
 export const RETURN_NOTE_TYPES = ['REJECTED', 'EXCESS'] as const;
 export type ReturnNoteType = (typeof RETURN_NOTE_TYPES)[number];
 
+/** A return note is OPEN until closed; a dock correction before it was closed makes it CANCELLED (Build 9). */
+export const RETURN_NOTE_STATES = ['OPEN', 'CLOSED', 'CANCELLED'] as const;
+export type ReturnNoteState = (typeof RETURN_NOTE_STATES)[number];
+
 /** How a return note was closed. It is never written off (L40.7). */
 export const RETURN_CLOSURES = ['PICKED_UP', 'SHIPPED_BACK', 'DISPOSED'] as const;
 export type ReturnClosure = (typeof RETURN_CLOSURES)[number];
@@ -313,8 +363,11 @@ export type TripStatus = (typeof TRIP_STATUSES)[number];
 export const BOOK_WITH_MODES = ['TRANSPORT', 'BUS', 'DIRECT'] as const;
 export type BookWithMode = (typeof BOOK_WITH_MODES)[number];
 
-/** A refund owed to a buyer: DUE, then PAID when its payout line gets the bank proof (Build 5). */
-export const REFUND_STATUSES = ['DUE', 'PAID'] as const;
+/**
+ * A refund owed to a buyer: DUE, then PAID when its payout line gets the bank proof (Build 5). CANCELLED = a dock
+ * correction replaced it before it was paid (Build 9).
+ */
+export const REFUND_STATUSES = ['DUE', 'PAID', 'CANCELLED'] as const;
 export type RefundStatus = (typeof REFUND_STATUSES)[number];
 
 /**

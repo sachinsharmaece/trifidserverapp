@@ -94,6 +94,16 @@ function gstOf(voucher: { gst?: Partial<GstSums> | null }) {
   };
 }
 
+/**
+ * Vouchers a REVERSAL has undone do not stand, so they are left out of the registers and their totals (the
+ * reversal itself is no SALES or PURCHASE voucher, so it never shows). After a dock correction the purchase
+ * register therefore holds only the corrected voucher (Build 9).
+ */
+async function notReversed() {
+  const reversals = await VoucherModel.find({ type: 'REVERSAL' }, { source: 1 }).lean();
+  return reversals.length > 0 ? { _id: { $nin: reversals.map((item) => item.source.id) } } : {};
+}
+
 /** Which vouchers and how many of them: one page for the screen, or all of them for a download. */
 function pageOptions(query: RegisterQuery) {
   if (query.format === 'csv') return { skip: 0, limit: CSV_ROW_LIMIT };
@@ -104,7 +114,11 @@ function pageOptions(query: RegisterQuery) {
 // Sales register
 
 export async function salesRegister(query: RegisterQuery) {
-  const match: Record<string, unknown> = { type: 'SALES', ...dateFilter(query) };
+  const match: Record<string, unknown> = {
+    type: 'SALES',
+    ...dateFilter(query),
+    ...(await notReversed()),
+  };
   if (query.q) {
     const words = new RegExp(escapeRegex(query.q), 'i');
     const orders = await SalesOrderModel.find(
@@ -190,7 +204,11 @@ export function salesRegisterCsv(rows: SalesRegister['rows']): string {
 // Purchase register
 
 export async function purchaseRegister(query: RegisterQuery) {
-  const match: Record<string, unknown> = { type: 'PURCHASE', ...dateFilter(query) };
+  const match: Record<string, unknown> = {
+    type: 'PURCHASE',
+    ...dateFilter(query),
+    ...(await notReversed()),
+  };
   if (query.q) {
     const words = new RegExp(escapeRegex(query.q), 'i');
     const orders = await PurchaseOrderModel.find(

@@ -1,5 +1,5 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
-import { RETURN_CLOSURES, RETURN_NOTE_TYPES } from '../shared/enums.js';
+import { RETURN_CLOSURES, RETURN_NOTE_STATES, RETURN_NOTE_TYPES } from '../shared/enums.js';
 import { intField, refField, textField } from './_fields.js';
 
 const MAX_PAISE = 100_000_000_000; // ₹100 crore
@@ -24,7 +24,9 @@ const returnNoteSchema = new Schema(
     /** e.g. "2 damaged, 1 leaking" or "3 more than ordered". */
     reason: { ...textField(200), required: true },
     dueAt: { type: Date, required: true },
-    state: { type: String, enum: ['OPEN', 'CLOSED'], required: true, default: 'OPEN' },
+    state: { type: String, enum: RETURN_NOTE_STATES, required: true, default: 'OPEN' },
+    /** A dock correction replaced it before it was closed (Build 9). */
+    cancelledAt: Date,
     closure: {
       type: new Schema(
         {

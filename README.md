@@ -504,7 +504,8 @@ engine lets a desk act on a trade it may press even though it cannot open the ca
 | `POST /payments/:id/reject { version, note }` | the same                             | `rejectPayment` → `{ payment }`                                                                                |
 
 Payments are on the buyer side of the wall: Sales sees them on the card and the order; Purchase never sees an amount.
-Not built yet: hand-added receipts (money with no order: FIFO / on account), refunds, payment reminders.
+Money that came with no order (a hand-added payment) and the buyer's advance are Build 9: see "The rest of the books".
+Not built yet: payment reminders.
 
 ## The books (modules/books)
 
@@ -522,8 +523,8 @@ Double entry (LOCK-41; Q-ACC-09: **the vouchers are the only books**, no separat
   tax split is stored in `gst`), `SV-26-0001` for a Marg bill (Dr the buyer · Cr Sales (taxable) · Cr Output CGST +
   SGST, or IGST), `PY-26-0001` for a payout (Dr the seller · Cr bank (what he is paid) · Cr Freight (what we paid
   at Indore), or Dr the buyer · Cr bank for a refund). Two or more lines, each a debit or a credit, Σ Dr =
-  Σ Cr (checked by `postVoucher` and the model), one voucher per source (unique index), append-only (a mistake will be
-  undone by a mirror REVERSAL voucher, later). Only `books.ts` writes vouchers.
+  Σ Cr (checked by `postVoucher` and the model), one voucher per source (unique index), append-only (a mistake is
+  undone by a mirror REVERSAL voucher `RX-26-0001`, Build 9). Only `books.ts` writes vouchers.
 - A ledger's balance is the sum of its voucher lines, worked out when asked (fine for TriFid's volume; a cached
   balance can come later). A bank ledger's statement is the bank book.
 
@@ -535,8 +536,8 @@ Double entry (LOCK-41; Q-ACC-09: **the vouchers are the only books**, no separat
 | `GET /ledgers?q=`                | Accounts, Controller, Founder, Admin        | Every ledger with group, Dr and Cr totals and balance                          |
 | `GET /ledgers/:id/statement`     | the same                                    | Its voucher lines, oldest first, with the running balance                      |
 
-Not built yet: journals with approval, reversals, opening balances, bank reconciliation (instead of day close), and
-the registers. The Freight ledger is credited when a seller is paid (we took the freight off his money), but the
+Journals, opening balances, reversals, the ledger master and bank reconciliation are Build 9 ("The rest of the books"
+below); the registers are Build 8. The Freight ledger is credited when a seller is paid (we took the freight off his money), but the
 matching debit, our own payment to the transporter, is not booked yet, so it shows a credit balance for now.
 
 ## Purchase orders (modules/purchaseOrders)
@@ -871,14 +872,92 @@ on one only. The goal is zero findings.
 Not built yet: a ledger statement with a date range and a CSV (SRS-RPT-04: the existing statement lists every line), the
 delivery challan, and e-invoicing.
 
+## The rest of the books (Build 9)
+
+The client questions were open, so these are our defaults (root `CLAUDE.md`, "Build 9"). Every money write below runs in
+one transaction with its voucher and audit event, through `postVoucher` (`modules/books/books.ts`).
+
+**Ledger master** (`books.routes.ts`). Accounts, Founder and Admin add the ledgers journals need, in one of the
+`HAND_LEDGER_GROUPS` (Direct Expenses, Indirect Expenses, Indirect Income, Duties & Taxes, Capital, Loans, Cash; Accounts
+may add Capital and Loans, Q-ACC-13 default). Only a hand ledger can be renamed or turned off (409 `MANAGED_LEDGER` for
+buyer, seller, bank and system ledgers), with its `version` (409 `STALE_LEDGER`); one with a balance cannot be turned
+off (409 `LEDGER_HAS_BALANCE`). A ledger is never deleted. The Controller reads.
+
+**Journals and opening balances** (`modules/books/journals.ts`, collection `journals`, `kind` JOURNAL or OPENING). Typed
+by Accounts, Founder or Admin, status PENDING_APPROVAL; nothing is in the books yet. A **different** person (Accounts,
+Founder or Admin; 403 for the maker) approves it, which posts a JOURNAL voucher (`JV-`, source `JOURNAL`), or rejects it
+with a note; the maker may cancel it while it waits; a posted one becomes REVERSED when its voucher is reversed. Rules:
+two or more lines, each a debit or a credit above zero, Σ Dr = Σ Cr, at least two different ledgers, a narration of at
+most 280 characters, a date not in the future, active ledgers (checked again at approval: 409 `LEDGER_OFF`). A line names
+`{ ledgerId }` or `{ party: { side, id } }` for a buyer or seller with no ledger yet (his ledger is made when the entry is
+typed). An opening balance balances by itself, has one line per ledger, a ledger has one opening at most among the
+pending and posted ones (409 `OPENING_EXISTS`), and it is dated on or before the first real entry (422 naming that
+day); both are checked again at approval.
+
+**Reversals** (`modules/books/reversals.ts`). `POST /vouchers/:id/reverse { reason }`: Controller, Founder or Admin, after
+the password check (`requireStepUp`, 428 `STEP_UP_REQUIRED`). The REVERSAL voucher (`RX-`) mirrors every line, is dated
+today, and points at the original (source `VOUCHER`); one per voucher (409 `ALREADY_REVERSED`), and a reversal cannot be
+reversed (409 `NOT_REVERSIBLE`). Only hand-made vouchers are reversible here: a posted journal or opening, and a
+hand-added payment not yet spent; every other voucher returns 409 `NOT_REVERSIBLE` with a plain reason (it is corrected
+at its document). Registers leave reversed vouchers out; the trial balance counts both.
+
+**Hand-added payments and advances** (`modules/payments/advances.ts`, `allocations.ts`). `POST /payments/hand` saves money
+that came with no order as a LOGGED receipt (`source: HAND_ADDED`, no order). A different person confirms it (RECEIPT
+voucher: Dr bank · Cr the buyer, "on account") or rejects it (the UTR is free again). A POSTED payment is spent on orders
+through its `allocations`; what is left is the buyer's **advance**. The engine action `useAdvance` (desk ACCOUNTS, b6
+only; Founder and Admin may press it on the card, Sales sees it greyed) spends it oldest payment first, never more than
+the order total − paid − payments still waiting (409 `NOTHING_DUE`, `NO_ADVANCE`); paid in full raises the PO exactly as
+`confirmPayment` does. A payment posted before Build 9 has no allocations list and counts as spent on its order.
+
+**Bank reconciliation** (`modules/books/bankReconciliation.ts`, collection `bank_reconciliations`). Accounts, Founder or
+Admin type the statement's closing balance for a bank account and a day (not in the future, later than the last
+reconciled day: 409 `ALREADY_RECONCILED`); it is saved OPEN with the books' figure and the difference. Marking it
+RECONCILED works the books' figure out again and needs a difference of zero (409 `NOT_BALANCED`). After that, no voucher
+line for that bank may be dated on or before that day (409 `DAY_RECONCILED`, checked in `postVoucher` and early in each
+form); a reversal is dated today, so it still works. There is no un-reconcile. The Controller reads.
+
+**Dock correction** (`modules/dock/dock.ts`). The engine action `correctInspection` (desk LOGISTICS, not on the card;
+Logistics, Founder, Admin) replaces a saved check: the new `inspections` row points back with `correctsId`; the old
+PURCHASE voucher is reversed and a new one posted; open return notes and an unpaid refund are CANCELLED and made again.
+`correctionBlock(po)` refuses (409 `CORRECTION_NOT_ALLOWED`) a rejected lot, a started payout, a saved Marg bill, a closed
+return note or a refund already in a payout. At least one box stays accepted (422 on `lines`). The arrival count is kept.
+
+| Call                                                                       | Who                                  | What it does                                                                |
+| -------------------------------------------------------------------------- | ------------------------------------ | --------------------------------------------------------------------------- |
+| `POST /ledgers { name, group }`                                            | Accounts, Founder, Admin             | Add a hand ledger → 201 `{ ledger }`. Name unique, any capitals (409)       |
+| `PATCH /ledgers/:id { version, name?, active? }`                           | the same                             | Rename or turn off a hand ledger → `{ ledger }`                             |
+| `GET /ledger-choices?q=`                                                   | Accounts, Controller, Founder, Admin | The journal line picker: ledgers, and buyers / sellers with no ledger yet   |
+| `GET /journals?status=&kind=&q=&page=&pageSize=`                           | the same                             | `{ journals, total, page, pageSize }`; each says `typedByMe`                |
+| `POST /journals { kind, date, narration, lines[] }`                        | Accounts, Founder, Admin             | Type an entry → 201 `{ journal }` (PENDING_APPROVAL)                        |
+| `POST /journals/:id/approve { version }`                                   | the same, not the maker              | Post it (JV voucher)                                                        |
+| `POST /journals/:id/reject { version, note }`, `…/cancel { version }`      | a checker / the maker                | Say no with a note / withdraw it                                            |
+| `GET /vouchers?type=&from=&to=&q=&page=`, `GET /vouchers/:id`              | Accounts, Controller, Founder, Admin | Vouchers with `canReverse` and `cannotReverseBecause`; one adds its `lines` |
+| `POST /vouchers/:id/reverse { reason }`                                    | Controller, Founder, Admin + step-up | 201 `{ reversal, voucher }`                                                 |
+| `POST /payments/hand { bankLedgerId, buyerId, utr, amountPaise, … }`       | Accounts, Founder, Admin             | Money with no order → 201 `{ payment }` (LOGGED)                            |
+| `GET /payments/buyers?q=`                                                  | Accounts, Controller, Founder, Admin | The buyer picker for it: `{ id, number, firmName }` only, 2 letters or more |
+| `GET /payments/advances`                                                   | the same                             | Buyers holding an advance, their payments and their orders waiting at b6    |
+| `POST /payments/advances/use { tradeId, version }`                         | Accounts, Founder, Admin             | The engine action `useAdvance` for that trade                               |
+| `GET /bank-reconciliations?bankLedgerId=`                                  | Accounts, Controller, Founder, Admin | `{ banks, history }`: last reconciled day, entries since, the books' figure |
+| `POST /bank-reconciliations { bankLedgerId, date, statementClosingPaise }` | Accounts, Founder, Admin             | Save the statement figure (OPEN) → 201 `{ reconciliation }`                 |
+| `POST /bank-reconciliations/:id/mark { version }`                          | the same                             | Mark it RECONCILED (difference must be zero)                                |
+| `POST /dock/:purchaseOrderId/correction { version, lines[], note? }`       | Logistics, Founder, Admin            | The engine action `correctInspection`; dock rows carry `correctionBlock`    |
+
+New Accounts dashboard tiles: `journalsToApprove`, `advancesUnused`, `banksToReconcile`. The integrity check also looks
+at journals and their vouchers, advance allocations (never more than the payment), reversals (an exact mirror) and
+reconciled days (the books still agree with the statement figure).
+
+**Run `npm run db:sync`** after pulling Build 9: it creates the `journals` and `bank_reconciliations` collections and
+their indexes. No new dependency or setting.
+
 ## Left out for now
 
 MFA (step-up is a password re-check for now), a per-IP rate limit on login, a breached-password check, and "forgot
 password" by email (an Admin resets it instead). Masters not built yet: the SKU ₹/unit matrix (P2, Q-PRC-02). Bank number: no
 "reveal" action and no key rotation yet. Not enforced yet: pack label vs unit family (SRS-MST-01), making `unitsPerBox` read-only once
 listings or orders use a pack, and blocking the turn-off of a tehsil or manufacturer that buyers or sellers use (parties exist now; the check is not written yet).
-Parties not built yet: opening ledgers, seller KYC documents (Q-PUR-01), the bulk import of existing parties
+Parties not built yet: seller KYC documents (Q-PUR-01), the bulk import of existing parties
 (Q-DATA-01), placeholder parties, and automatic classification at the first order.
 Listings not built yet: a daily job to expire
 listings (the sweep inside the API does it for now), editing a listing, and a seller's own `/sellers/:id/listings` view.
-Trades not built yet: hand-added receipts, journals, opening balances and bank reconciliation (Build 9).
+Books not built yet (Build 9 defaults): refunding an advance the buyer never uses, a ledger's "days pending",
+un-reconciling a day, rejecting a whole lot through a dock correction, and correcting the arrival count.

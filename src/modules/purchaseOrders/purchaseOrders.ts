@@ -214,6 +214,8 @@ export async function purchaseOrderView(po: PurchaseOrderDoc) {
     inspection: inspection
       ? {
           outcome: inspection.outcome,
+          /** This check replaced an earlier one (a dock correction, Build 9). */
+          corrected: Boolean(inspection.correctsId),
           boxesCounted: inspection.boxesCounted,
           note: inspection.note ?? null,
           savedAt: inspection.savedAt,

@@ -10,12 +10,15 @@ import {
   VoucherModel,
 } from '../../models/index.js';
 import { writeAudit } from '../../shared/audit.js';
+import { istDate } from '../../shared/dates.js';
 import type { Role } from '../../shared/enums.js';
 import { conflict, forbidden, invalidField } from '../../shared/errors.js';
 import { formatRupees } from '../../shared/money.js';
 import { isDuplicateKeyError } from '../../shared/mongo.js';
 import { buyerLedger, postVoucher } from '../books/books.js';
+import { assertBankDayOpen } from '../books/reconciliation.js';
 import type { CommandContext } from '../trades/commands.js';
+import { unspentPaise } from './allocations.js';
 
 /**
  * Payments (Gate A, LOCK-41 L41.8, SRS-PAY-01..03). Called ONLY from the trade engine's payment actions
@@ -29,12 +32,10 @@ import type { CommandContext } from '../trades/commands.js';
 export type ReceiptDoc = InstanceType<typeof ReceiptModel>;
 type OrderDoc = InstanceType<typeof SalesOrderModel>;
 
-/** Today's date in India, YYYY-MM-DD. */
-export function istDate(at: Date): string {
-  return new Date(at.getTime() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
+// Moved to shared/dates.ts so the books can use it too; other modules still import it from here.
+export { istDate };
 
-async function openOrder({ trade, session }: CommandContext): Promise<OrderDoc> {
+export async function openOrder({ trade, session }: CommandContext): Promise<OrderDoc> {
   const order = await SalesOrderModel.findById(trade.salesOrderId).session(session).orFail();
   if (order.status !== 'AWAITING_PAYMENT') {
     throw conflict(`${order.number} is not waiting for payment.`, 'ORDER_NOT_OPEN');
@@ -43,7 +44,7 @@ async function openOrder({ trade, session }: CommandContext): Promise<OrderDoc> 
 }
 
 /** Σ payments entered for the order and not yet confirmed or rejected. */
-async function waitingPaise(order: OrderDoc, ctx: CommandContext) {
+export async function waitingPaise(order: OrderDoc, ctx: CommandContext) {
   const waiting = await ReceiptModel.find({ salesOrderId: order._id, status: 'LOGGED' }).session(
     ctx.session,
   );
@@ -72,6 +73,11 @@ export async function logReceipt(ctx: CommandContext, input: PaymentInput) {
   if (input.receivedOn > istDate(now)) {
     throw invalidField('receivedOn', 'The date cannot be in the future.');
   }
+  await assertBankDayOpen(
+    [{ ledgerId: bank._id, ledgerName: bank.name }],
+    input.receivedOn,
+    session,
+  );
   const same = await ReceiptModel.findOne({ bankLedgerId: bank._id, activeUtr: input.utr }).session(
     session,
   );
@@ -125,7 +131,7 @@ export async function logReceipt(ctx: CommandContext, input: PaymentInput) {
 /** The receipt, if it belongs to this trade and still waits for Accounts; and maker ≠ checker. */
 async function waitingReceipt({ trade, userId, session }: CommandContext, receiptId: string) {
   const receipt = await ReceiptModel.findById(receiptId).session(session);
-  if (!receipt || !receipt.tradeId.equals(trade._id)) {
+  if (!receipt?.tradeId?.equals(trade._id)) {
     throw invalidField('receiptId', 'Choose a payment entered for this order.');
   }
   if (receipt.status !== 'LOGGED') {
@@ -142,7 +148,7 @@ async function waitingReceipt({ trade, userId, session }: CommandContext, receip
  * the payment POSTED and adds it to the order. `paidInFull` = the order is now PAID and the PO must be raised.
  */
 export async function confirmReceipt(ctx: CommandContext, receiptId: string) {
-  const { req, userId, now, session } = ctx;
+  const { req, trade, userId, now, session } = ctx;
   const receipt = await waitingReceipt(ctx, receiptId);
   const order = await openOrder(ctx);
   const duePaise = order.totalPaise - order.paidPaise;
@@ -174,7 +180,24 @@ export async function confirmReceipt(ctx: CommandContext, receiptId: string) {
 
   const posted = await ReceiptModel.updateOne(
     { _id: receipt._id, status: 'LOGGED' },
-    { $set: { status: 'POSTED', postedBy: userId, postedAt: now, voucherId: voucher._id } },
+    {
+      $set: {
+        status: 'POSTED',
+        postedBy: userId,
+        postedAt: now,
+        voucherId: voucher._id,
+        // It is spent on this order in full (a bigger payment than the due is refused above).
+        allocations: [
+          {
+            salesOrderId: order._id,
+            tradeId: trade._id,
+            amountPaise: receipt.amountPaise,
+            at: now,
+            by: userId,
+          },
+        ],
+      },
+    },
     { session },
   );
   if (posted.matchedCount !== 1) {
@@ -237,34 +260,49 @@ export async function rejectReceipt(ctx: CommandContext, receiptId: string, note
   return receipt;
 }
 
-/** The payments of one order (oldest first), as the buyer side of the wall may see them. */
+/**
+ * The payments of one order (oldest first), as the buyer side of the wall may see them: the ones entered for it, and
+ * the buyer's advances spent on it. `amountPaise` is what counts for THIS order (an advance may be bigger).
+ */
 export async function paymentsOf(salesOrderId: Types.ObjectId) {
-  const receipts = await ReceiptModel.find({ salesOrderId }).sort({ enteredAt: 1 });
+  const receipts = await ReceiptModel.find({
+    $or: [{ salesOrderId }, { 'allocations.salesOrderId': salesOrderId }],
+  }).sort({ enteredAt: 1 });
   const banks = await LedgerModel.find({ _id: { $in: receipts.map((r) => r.bankLedgerId) } });
   const bankName = new Map(banks.map((bank) => [bank.id, bank.name]));
-  return receipts.map((receipt) => ({
-    id: receipt.id,
-    number: receipt.number,
-    status: receipt.status,
-    amountPaise: receipt.amountPaise,
-    utr: receipt.utr,
-    bankName: bankName.get(String(receipt.bankLedgerId)) ?? '',
-    receivedOn: receipt.receivedOn,
-    enteredById: String(receipt.enteredBy),
-    rejectNote: receipt.rejectNote ?? null,
-  }));
+  return receipts.map((receipt) => {
+    const spentHere = receipt.allocations
+      .filter((item) => item.salesOrderId.equals(salesOrderId))
+      .reduce((sum, item) => sum + item.amountPaise, 0);
+    return {
+      id: receipt.id,
+      number: receipt.number,
+      status: receipt.status,
+      amountPaise: spentHere > 0 ? spentHere : receipt.amountPaise,
+      /** The payment's full amount: more than `amountPaise` when only part of an advance went to this order. */
+      receiptPaise: receipt.amountPaise,
+      isAdvance: receipt.source === 'HAND_ADDED',
+      utr: receipt.utr,
+      bankName: bankName.get(String(receipt.bankLedgerId)) ?? '',
+      receivedOn: receipt.receivedOn,
+      enteredById: String(receipt.enteredBy),
+      rejectNote: receipt.rejectNote ?? null,
+    };
+  });
 }
 
 /** One row of the Accounts queue (Payments to confirm): the buyer side only, never the seller. */
 export async function paymentRows(receipts: ReceiptDoc[], meId: string, role: Role) {
   const [buyers, orders, banks, users] = await Promise.all([
     BuyerModel.find({ _id: { $in: receipts.map((r) => r.buyerId) } }),
-    SalesOrderModel.find({ _id: { $in: receipts.map((r) => r.salesOrderId) } }),
+    SalesOrderModel.find({
+      _id: { $in: receipts.flatMap((r) => (r.salesOrderId ? [r.salesOrderId] : [])) },
+    }),
     LedgerModel.find({ _id: { $in: receipts.map((r) => r.bankLedgerId) } }),
     UserModel.find({ _id: { $in: receipts.map((r) => r.enteredBy) } }),
   ]);
   const [trades, vouchers] = await Promise.all([
-    TradeModel.find({ _id: { $in: receipts.map((r) => r.tradeId) } }),
+    TradeModel.find({ _id: { $in: receipts.flatMap((r) => (r.tradeId ? [r.tradeId] : [])) } }),
     VoucherModel.find({
       _id: { $in: receipts.flatMap((r) => (r.voucherId ? [r.voucherId] : [])) },
     }),
@@ -285,30 +323,37 @@ export async function paymentRows(receipts: ReceiptDoc[], meId: string, role: Ro
       id: receipt.id,
       number: receipt.number,
       status: receipt.status,
+      /** SALES_ENTRY: entered by Sales against an order. HAND_ADDED: added by Accounts, an advance until spent. */
+      source: receipt.source,
+      note: receipt.note ?? null,
       amountPaise: receipt.amountPaise,
+      /** A posted payment's advance still unspent (hand-added ones; Sales-entered ones are spent in full). */
+      unspentPaise: unspentPaise(receipt),
       utr: receipt.utr,
       receivedOn: receipt.receivedOn,
       bankName: bankById.get(String(receipt.bankLedgerId))?.name ?? '',
       buyer: { number: buyer?.number ?? '', firmName: buyer?.firmName ?? '' },
-      salesOrder: {
-        id: String(receipt.salesOrderId),
-        number: order?.number ?? '',
-        totalPaise: order?.totalPaise ?? 0,
-        paidPaise: order?.paidPaise ?? 0,
-      },
+      salesOrder: order
+        ? {
+            id: String(receipt.salesOrderId),
+            number: order.number,
+            totalPaise: order.totalPaise,
+            paidPaise: order.paidPaise,
+          }
+        : null,
       enteredBy: userById.get(String(receipt.enteredBy))?.name ?? '',
       enteredAt: receipt.enteredAt,
       /** Maker ≠ checker: the person who entered it may not confirm or reject it. */
       enteredByMe: String(receipt.enteredBy) === meId,
-      tradeId: String(receipt.tradeId),
-      /** The engine needs the trade's version for every press. */
-      tradeVersion: tradeById.get(String(receipt.tradeId))?.version ?? 0,
+      tradeId: receipt.tradeId ? String(receipt.tradeId) : null,
+      /** The engine needs the trade's version for every press. Not used for a hand-added payment. */
+      tradeVersion: receipt.tradeId ? (tradeById.get(String(receipt.tradeId))?.version ?? 0) : null,
       voucherNumber: receipt.voucherId
         ? (voucherById.get(String(receipt.voucherId))?.number ?? null)
         : null,
       rejectNote: receipt.rejectNote ?? null,
-      // Supervisors may also open the deal card from the queue.
-      canOpenTrade: role !== 'ACCOUNTS',
+      // Supervisors may also open the deal card from the queue (a hand-added payment has none).
+      canOpenTrade: role !== 'ACCOUNTS' && Boolean(receipt.tradeId),
     };
   });
 }

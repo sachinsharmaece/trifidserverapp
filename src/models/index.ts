@@ -6,9 +6,10 @@
  * their history, sales and purchase orders (§B3.4, stages b1–b8 / s0–s6) + the books: ledger groups, ledgers,
  * vouchers and receipts (§B3.5) + the dock: inspections, return notes, seller strikes and refunds due (§B3.7).
  * + the Marg bill (on the sales order) and trips with POD (Build 4) + payout batches (Build 5) + complaints (Build 6)
- * + the log of system jobs, `job_runs` (Build 8).
+ * + the log of system jobs, `job_runs` (Build 8) + hand-typed journals and bank reconciliations (Build 9).
  */
 export { AuditEventModel, type AuditEvent } from './auditEvent.model.js';
+export { BankReconciliationModel, type BankReconciliation } from './bankReconciliation.model.js';
 export { BuyerModel, type Buyer } from './buyer.model.js';
 export { CompanyModel, type Company } from './company.model.js';
 export { ComplaintModel, type Complaint } from './complaint.model.js';
@@ -16,6 +17,7 @@ export { CounterModel, type Counter } from './counter.model.js';
 export { HsnCodeModel, type HsnCode } from './hsnCode.model.js';
 export { IdempotencyKeyModel, type IdempotencyKey } from './idempotencyKey.model.js';
 export { InspectionModel, type Inspection } from './inspection.model.js';
+export { JournalModel, type Journal } from './journal.model.js';
 export { JobRunModel, type JobRun } from './jobRun.model.js';
 export { LedgerGroupModel, type LedgerGroup } from './ledgerGroup.model.js';
 export { LedgerModel, type Ledger } from './ledger.model.js';

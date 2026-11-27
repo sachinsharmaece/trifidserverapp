@@ -9,6 +9,8 @@ import {
   VoucherModel,
 } from '../../models/index.js';
 import { writeAudit } from '../../shared/audit.js';
+import { istDate } from '../../shared/dates.js';
+import { conflict } from '../../shared/errors.js';
 import type {
   LedgerGroupName,
   LedgerSystemKey,
@@ -16,6 +18,7 @@ import type {
   VoucherType,
 } from '../../shared/enums.js';
 import type { GstSplit } from '../../shared/money.js';
+import { assertBankDayOpen } from './reconciliation.js';
 
 /**
  * The books (double entry, LOCK-41, SRS-ACC-01..03). This file is the ONLY code that writes ledgers for
@@ -26,6 +29,7 @@ import type { GstSplit } from '../../shared/money.js';
  *   sellerLedger(seller, ...)             the seller's ledger (made the first time goods are accepted from him)
  *   systemLedger('PURCHASE', ...)         a ledger automatic postings use (Purchase, Input CGST, …)
  *   postVoucher(req, {...}, session)      write one balanced voucher, with its audit line
+ *   postReversal(req, voucher, {...})     write the mirror voucher that undoes one (Build 9)
  */
 
 /** The group's id. Groups are a fixed list (LEDGER_GROUPS); one is created the first time it is needed. */
@@ -144,8 +148,8 @@ export interface VoucherLineInput {
 }
 
 /**
- * The number series for each voucher type (SRS-ACC-01). RECEIPT, PURCHASE, SALES and PAYMENT are posted so far, and
- * JOURNAL for the credit note a complaint's outcome posts (Build 6; hand-typed journals come with a later build).
+ * The number series for each voucher type (SRS-ACC-01): receipts RV, purchases PV, sales SV, payments PY, journals JV
+ * (hand-typed journals and opening balances, and the credit note a complaint's outcome posts) and reversals RX.
  */
 const SERIES = {
   RECEIPT: 'RV',
@@ -153,11 +157,13 @@ const SERIES = {
   SALES: 'SV',
   PAYMENT: 'PY',
   JOURNAL: 'JV',
-} as const satisfies Partial<Record<VoucherType, 'RV' | 'PV' | 'SV' | 'PY' | 'JV'>>;
+  REVERSAL: 'RX',
+} as const satisfies Record<VoucherType, 'RV' | 'PV' | 'SV' | 'PY' | 'JV' | 'RX'>;
 
 /**
  * Write one voucher: two or more lines, each a debit or a credit, debits = credits (the model checks it too).
  * One automatic voucher per source (a receipt can never be posted twice: unique index). Inside `session`.
+ * Refused (409 DAY_RECONCILED) when a line is on a bank ledger on or before a day already reconciled for it.
  */
 export async function postVoucher(
   req: Request,
@@ -185,6 +191,7 @@ export async function postVoucher(
     crPaise: line.crPaise ?? 0,
   }));
   const totalPaise = lines.reduce((sum, line) => sum + line.drPaise, 0);
+  await assertBankDayOpen(lines, input.date, session);
   const [voucher] = await VoucherModel.create(
     [
       {
@@ -211,6 +218,46 @@ export async function postVoucher(
     session,
   });
   return voucher;
+}
+
+type VoucherDoc = InstanceType<typeof VoucherModel>;
+
+/**
+ * Undo a voucher the way books do it: write a REVERSAL voucher (RX-26-0001) with every line mirrored (what was a
+ * debit is a credit and the other way round), dated today. The old voucher is never touched (append-only), and the
+ * unique index on the source allows ONE reversal per voucher. A reversal itself cannot be reversed: post the entry
+ * again instead. WHICH vouchers a person may reverse is decided by the callers (modules/books/reversals.ts and the
+ * dock correction); this function only writes the mirror.
+ */
+export async function postReversal(
+  req: Request,
+  original: Pick<VoucherDoc, '_id' | 'number' | 'type' | 'lines'>,
+  input: { reason: string; userId: Types.ObjectId; now: Date },
+  session: ClientSession,
+) {
+  if (original.type === 'REVERSAL') {
+    throw conflict(
+      `${original.number} is itself a reversal. Post the entry again instead.`,
+      'NOT_REVERSIBLE',
+    );
+  }
+  return postVoucher(
+    req,
+    {
+      type: 'REVERSAL',
+      date: istDate(input.now),
+      narration: `Reversal of ${original.number}: ${input.reason}`,
+      source: { type: 'VOUCHER', id: original._id, number: original.number },
+      lines: original.lines.map((line) => ({
+        ledger: { _id: line.ledgerId, name: line.ledgerName },
+        drPaise: line.crPaise,
+        crPaise: line.drPaise,
+      })),
+      userId: input.userId,
+      now: input.now,
+    },
+    session,
+  );
 }
 
 /** Debit minus credit, as people read it: "₹500.00 Dr" or "₹500.00 Cr". */

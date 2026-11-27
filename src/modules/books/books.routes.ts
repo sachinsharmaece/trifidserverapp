@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { LedgerGroupModel, LedgerModel, VoucherModel } from '../../models/index.js';
 import { onlyChanged, writeAudit } from '../../shared/audit.js';
 import { encryptText } from '../../shared/encryption.js';
-import { BANK_KINDS } from '../../shared/enums.js';
+import { BANK_KINDS, HAND_LEDGER_GROUPS } from '../../shared/enums.js';
 import { conflict, notFound } from '../../shared/errors.js';
 import { escapeRegex, failIfDuplicate } from '../../shared/mongo.js';
 import { IFSC_PATTERN } from '../../shared/validators.js';
@@ -25,6 +25,7 @@ export const booksRouter: Router = Router();
 
 const canReadBankAccounts = requireRole('SALES', 'ACCOUNTS', 'CONTROLLER', 'FOUNDER', 'ADMIN');
 const canReadBooks = requireRole('ACCOUNTS', 'CONTROLLER', 'FOUNDER', 'ADMIN');
+const canWriteLedgers = requireRole('ACCOUNTS', 'FOUNDER', 'ADMIN');
 const NAME_TAKEN = 'A ledger with this name already exists.';
 
 booksRouter.use('/bank-accounts', requireAuth, canReadBankAccounts);
@@ -169,6 +170,89 @@ function kindOf(ledger: { party?: { side: string } | null; bank?: unknown }) {
   return 'OTHER';
 }
 
+/** A ledger Accounts made by hand: not a buyer, seller, bank account or automatic-posting ledger. */
+function isHandLedger(ledger: { party?: unknown; bank?: unknown; system?: unknown }) {
+  return !ledger.party && !ledger.bank && !ledger.system;
+}
+
+const handLedgerBody = z.object({
+  name: nameField('a name for the ledger, e.g. "Office rent"', 120),
+  group: z.enum(HAND_LEDGER_GROUPS),
+});
+
+/**
+ * POST /ledgers { name, group }  ->  201 { ledger }. The ledger master (SRS-ACC-02, Build 9): Accounts adds the
+ * ledgers journals need (rent, interest, capital, a loan). Only the groups in HAND_LEDGER_GROUPS: buyer, seller,
+ * bank and automatic ledgers are made by the system (Q-ACC-13: Accounts may add Capital and Loans).
+ */
+booksRouter.post('/ledgers', canWriteLedgers, async (req, res) => {
+  const body = handLedgerBody.parse(req.body);
+  const ledger = await LedgerModel.create({
+    name: body.name,
+    nameKey: body.name.toLowerCase(),
+    groupId: await ledgerGroupId(body.group),
+    createdBy: currentUserOf(req).id,
+  }).catch(failIfDuplicate(NAME_TAKEN, 'NAME_TAKEN'));
+  await writeAudit(req, {
+    action: 'ledger.create',
+    entityType: 'Ledger',
+    entityId: ledger.id,
+    after: { name: ledger.name, group: body.group },
+  });
+  res.status(201).json({ ledger: { id: ledger.id, name: ledger.name, group: body.group } });
+});
+
+const handLedgerUpdate = z.object({
+  version: z.number().int().min(0),
+  name: handLedgerBody.shape.name.optional(),
+  active: z.boolean().optional(),
+});
+
+/**
+ * PATCH /ledgers/:id { version, name?, active? }  ->  { ledger }. Rename or turn off a hand-made ledger. A ledger
+ * is never deleted (vouchers name it), and one with a balance is not turned off: clear it with a journal first.
+ */
+booksRouter.patch('/ledgers/:id', canWriteLedgers, async (req, res) => {
+  const body = handLedgerUpdate.parse(req.body);
+  const ledger = isValidObjectId(req.params.id) ? await LedgerModel.findById(req.params.id) : null;
+  if (!ledger) throw notFound('Ledger not found.');
+  if (!isHandLedger(ledger)) {
+    throw conflict(
+      'This ledger is kept by the system. Change it where it comes from (bank accounts, buyers, sellers).',
+      'MANAGED_LEDGER',
+    );
+  }
+  if (ledger.version !== body.version) {
+    throw conflict('Someone else changed this ledger. Reload and try again.', 'STALE_LEDGER');
+  }
+  if (body.active === false && ledger.active) {
+    const sum = (await totalsByLedger()).get(ledger.id) ?? { drPaise: 0, crPaise: 0 };
+    if (sum.drPaise !== sum.crPaise) {
+      throw conflict(
+        'This ledger still has a balance. Clear it with a journal before turning it off.',
+        'LEDGER_HAS_BALANCE',
+      );
+    }
+  }
+  const before = { name: ledger.name, active: ledger.active };
+  if (body.name !== undefined) {
+    ledger.name = body.name;
+    ledger.nameKey = body.name.toLowerCase();
+  }
+  if (body.active !== undefined) ledger.active = body.active;
+  ledger.version += 1;
+  await ledger.save().catch(failIfDuplicate(NAME_TAKEN, 'NAME_TAKEN'));
+  await writeAudit(req, {
+    action: 'ledger.update',
+    entityType: 'Ledger',
+    entityId: ledger.id,
+    ...onlyChanged(before, { name: ledger.name, active: ledger.active }),
+  });
+  res.json({
+    ledger: { id: ledger.id, name: ledger.name, active: ledger.active, version: ledger.version },
+  });
+});
+
 /**
  * GET /ledgers?q=  ->  { ledgers }: every ledger with its group, debit and credit totals, and balance (Dr/Cr).
  * One ledger per row, so a buyer and a seller never share a row (SRS-ACC-07).
@@ -190,6 +274,9 @@ booksRouter.get('/ledgers', async (req, res) => {
         group: groupName.get(String(ledger.groupId)) ?? '',
         kind: kindOf(ledger),
         active: ledger.active,
+        /** Made by hand (Build 9): it can be renamed and turned off here. The others are kept where they come from. */
+        hand: isHandLedger(ledger),
+        version: ledger.version,
         drPaise: sum.drPaise,
         crPaise: sum.crPaise,
         balance: balanceOf(sum.drPaise, sum.crPaise),

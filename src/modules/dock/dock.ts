@@ -1,10 +1,11 @@
-import type { Types } from 'mongoose';
+import type { ClientSession, Types } from 'mongoose';
 import { z } from 'zod';
 import { nextDocumentNumber } from '../../db/documentNumbers.js';
 import { numberSetting } from '../../db/settings.js';
 import {
   CompanyModel,
   InspectionModel,
+  VoucherModel,
   RefundModel,
   ReturnNoteModel,
   SalesOrderModel,
@@ -15,9 +16,10 @@ import { writeAudit } from '../../shared/audit.js';
 import type { InspectionOutcome } from '../../shared/enums.js';
 import { conflict, invalidField } from '../../shared/errors.js';
 import { formatRupees, HOME_STATE_CODE, splitGst } from '../../shared/money.js';
-import { postVoucher, sellerLedger, systemLedger } from '../books/books.js';
-import { istDate } from '../payments/payments.js';
+import { postReversal, postVoucher, sellerLedger, systemLedger } from '../books/books.js';
+import { istDate } from '../../shared/dates.js';
 import { purchaseOrderOf, savePurchaseOrder } from '../purchaseOrders/dispatch.js';
+import type { PurchaseOrderDoc } from '../purchaseOrders/purchaseOrders.js';
 import type { CommandContext } from '../trades/commands.js';
 import { monthsFromNow } from '../trades/stages.js';
 import { payoutsOfRefunds } from '../payouts/payouts.js';
@@ -28,6 +30,8 @@ import { payoutsOfRefunds } from '../payouts/payouts.js';
  *   recordArrival  the goods reached the dock: when, how many boxes were counted, did the seller's bill come too
  *                  → PO ARRIVED, the inspection clock starts (INSPECTION_HOURS, 24)
  *   inspectLot     the check, line by line (Gate B) → PO CHECKED (or REJECTED when nothing passed)
+ *   correctInspection  a wrong count found later (SRS-LOG-03, Build 9): a NEW check that replaces the first, allowed
+ *                  until the Marg bill is saved or the seller's payout starts. The first check is kept as it was.
  *
  * What the check writes, all in the engine's transaction (ARCH A6.4):
  *   - the inspection (append-only)
@@ -234,11 +238,27 @@ function failedText(t: { short: number; damaged: number; leaking: number }) {
 
 /** Gate B: the dock's check of the goods (see the top of this file for what it writes). */
 export async function inspectLot(ctx: CommandContext, input: InspectionInput) {
-  const { req, trade, userId, now, session } = ctx;
   const po = await purchaseOrderOf(ctx);
   if (po.status !== 'ARRIVED' || !po.arrival) {
     throw conflict('Record the arrival first.', 'WRONG_STAGE');
   }
+  return saveCheck(ctx, po, input, null);
+}
+
+type InspectionDoc = InstanceType<typeof InspectionModel>;
+
+/**
+ * Writes one check and everything that follows from it. Used for the first check and, with `replaces`, for a
+ * correction. `po.arrival` is set (both callers have checked it).
+ */
+async function saveCheck(
+  ctx: CommandContext,
+  po: PurchaseOrderDoc,
+  input: InspectionInput,
+  replaces: InspectionDoc | null,
+) {
+  const { req, trade, userId, now, session } = ctx;
+  if (!po.arrival) throw conflict('Record the arrival first.', 'WRONG_STAGE');
   const floor = await numberSetting('SHELF_LIFE_FLOOR_MONTHS', DEFAULTS.SHELF_LIFE_FLOOR_MONTHS);
   const { lines, totals, outcome } = inspectionLines(
     po,
@@ -265,6 +285,7 @@ export async function inspectLot(ctx: CommandContext, input: InspectionInput) {
         outcome,
         acceptedBoxes: totals.accepted,
         acceptedValuePaise,
+        ...(replaces ? { correctsId: replaces._id } : {}),
         savedBy: userId,
         savedAt: now,
       },
@@ -293,7 +314,7 @@ export async function inspectLot(ctx: CommandContext, input: InspectionInput) {
       {
         type: 'PURCHASE',
         date: istDate(now),
-        narration: `${po.number}: ${totals.accepted} boxes accepted at the dock`,
+        narration: `${po.number}: ${totals.accepted} boxes accepted at the dock${replaces ? ' (corrected check)' : ''}`,
         source: { type: 'INSPECTION', id: inspection._id, number: po.number },
         lines: [
           { ledger: await systemLedger('PURCHASE', userId, session), drPaise: gst.taxablePaise },
@@ -416,16 +437,28 @@ export async function inspectLot(ctx: CommandContext, input: InspectionInput) {
       outcome,
       acceptedBoxes: totals.accepted,
       acceptedValuePaise,
-      inspectedAt: now,
+      // A correction keeps the PO's place in the queue: `inspectedAt` is the day of the first check.
+      ...(replaces ? {} : { inspectedAt: now }),
     },
-    {
-      action: 'purchaseOrder.inspect',
-      before: { status: po.status },
-      after: { outcome, acceptedBoxes: totals.accepted, acceptedValuePaise },
-    },
+    replaces
+      ? {
+          action: 'purchaseOrder.inspectCorrection',
+          before: {
+            outcome: replaces.outcome,
+            acceptedBoxes: replaces.acceptedBoxes,
+            acceptedValuePaise: replaces.acceptedValuePaise,
+          },
+          after: { outcome, acceptedBoxes: totals.accepted, acceptedValuePaise },
+        }
+      : {
+          action: 'purchaseOrder.inspect',
+          before: { status: po.status },
+          after: { outcome, acceptedBoxes: totals.accepted, acceptedValuePaise },
+        },
   );
 
   return {
+    corrected: replaces !== null,
     outcome,
     totals,
     voucherNumber,
@@ -434,6 +467,160 @@ export async function inspectLot(ctx: CommandContext, input: InspectionInput) {
     refund: refund ? { number: refund.number, amountPaise: refund.amountPaise } : null,
     failed: failedText(totals),
     order,
+  };
+}
+
+/**
+ * Why a PO's check can no longer be corrected, or null when it can. The three things that make a check final:
+ * the seller's payout has started, the Marg bill is saved (the bill carries the accepted boxes to the buyer), or a
+ * return note was closed (the boxes already went back). Also used by the Dock screen to show the button.
+ */
+export async function correctionBlock(
+  po: Pick<
+    PurchaseOrderDoc,
+    'status' | 'payoutBatchId' | 'paidAt' | 'salesOrderId' | 'tradeId' | '_id'
+  > & {
+    latestInspectionId?: Types.ObjectId | null;
+  },
+  session?: ClientSession,
+) {
+  if (po.status === 'REJECTED') {
+    return 'The dock rejected the whole lot, so it cannot be corrected. Sales may reopen the deal.';
+  }
+  if (po.status !== 'CHECKED' || !po.latestInspectionId)
+    return 'Only a checked lot can be corrected.';
+  if (po.payoutBatchId || po.paidAt) {
+    return "The seller's payout has started, so the check can no longer be corrected.";
+  }
+  const order = await SalesOrderModel.findById(po.salesOrderId, { margBill: 1 }).session(
+    session ?? null,
+  );
+  if (order?.margBill) return 'The Marg bill is saved, so the check can no longer be corrected.';
+  const closed = await ReturnNoteModel.findOne({
+    inspectionId: po.latestInspectionId,
+    state: 'CLOSED',
+  }).session(session ?? null);
+  if (closed) {
+    return `${closed.number} is already closed (the boxes went back), so the check can no longer be corrected.`;
+  }
+  const inPayout = (await checkRefunds(po.tradeId, session)).find(
+    (refund) => refund.status === 'PAID' || refund.payoutBatchId,
+  );
+  if (inPayout) {
+    return `${inPayout.number} is already in a payout, so the check can no longer be corrected.`;
+  }
+  return null;
+}
+
+/** The refunds the dock check created for a trade (not the complaint ones), apart from cancelled ones. */
+function checkRefunds(tradeId: Types.ObjectId, session?: ClientSession) {
+  return RefundModel.find({
+    tradeId,
+    complaintId: { $exists: false },
+    status: { $ne: 'CANCELLED' },
+  }).session(session ?? null);
+}
+
+/**
+ * Correct a saved check (SRS-LOG-03, Build 9). Logistics typed a wrong count and sees it before the Marg bill is
+ * saved. Everything the first check wrote is undone, and the new check writes it again:
+ *   - its PURCHASE voucher is reversed (RX) and a new one posted for the new accepted boxes
+ *   - its open return notes are cancelled and its refund (if not yet in a payout) is cancelled; new ones follow
+ *   - the PO shows the new result; the first check stays in `inspections`, and the new one points back to it
+ * Not allowed: a closed return note, a started payout, a saved Marg bill, or "nothing accepted" (that is a
+ * rejection of the lot, not a correction). The arrival count is not changed here.
+ */
+export async function correctInspection(ctx: CommandContext, input: InspectionInput) {
+  const { req, trade, userId, now, session } = ctx;
+  const po = await purchaseOrderOf(ctx);
+  const blocked = await correctionBlock(po, session);
+  if (blocked) throw conflict(blocked, 'CORRECTION_NOT_ALLOWED');
+  if (!po.arrival || !po.latestInspectionId) {
+    throw conflict('Only a checked lot can be corrected.', 'WRONG_STAGE');
+  }
+  const previous = await InspectionModel.findById(po.latestInspectionId).session(session).orFail();
+
+  // The refund of the first check (if it had one): correctionBlock has made sure it is not in a payout yet.
+  const refunds = await checkRefunds(trade._id, session);
+  // Refuse a whole-lot rejection BEFORE anything is written.
+  const floor = await numberSetting('SHELF_LIFE_FLOOR_MONTHS', DEFAULTS.SHELF_LIFE_FLOOR_MONTHS);
+  const wanted = inspectionLines(po, po.arrival.boxesCounted, input, floor, now);
+  if (wanted.totals.accepted === 0) {
+    throw invalidField(
+      'lines',
+      'At least one box must stay accepted. A lot that failed completely is not a correction.',
+    );
+  }
+
+  // Undo what the first check wrote.
+  const notes = await ReturnNoteModel.find({
+    inspectionId: previous._id,
+    state: 'OPEN',
+  }).session(session);
+  for (const note of notes) {
+    await ReturnNoteModel.updateOne(
+      { _id: note._id, state: 'OPEN' },
+      { $set: { state: 'CANCELLED', cancelledAt: now }, $inc: { version: 1 } },
+      { session },
+    );
+    await writeAudit(req, {
+      action: 'returnNote.cancel',
+      entityType: 'ReturnNote',
+      entityId: note.id,
+      before: { state: 'OPEN' },
+      after: { state: 'CANCELLED', reason: 'Dock check corrected' },
+      session,
+    });
+  }
+  for (const refund of refunds) {
+    await RefundModel.updateOne(
+      { _id: refund._id, status: 'DUE' },
+      { $set: { status: 'CANCELLED', cancelledAt: now } },
+      { session },
+    );
+    await writeAudit(req, {
+      action: 'refund.cancel',
+      entityType: 'Refund',
+      entityId: refund.id,
+      before: { status: 'DUE' },
+      after: { status: 'CANCELLED', reason: 'Dock check corrected' },
+      session,
+    });
+  }
+  const oldVoucher = await VoucherModel.findOne({
+    type: 'PURCHASE',
+    'source.type': 'INSPECTION',
+    'source.id': previous._id,
+  }).session(session);
+  if (oldVoucher) {
+    await postReversal(
+      req,
+      oldVoucher,
+      { reason: `dock check of ${po.number} corrected`, userId, now },
+      session,
+    );
+  }
+
+  const result = await saveCheck(ctx, po, input, previous);
+  return {
+    ...result,
+    before: {
+      acceptedBoxes: previous.acceptedBoxes,
+      acceptedValuePaise: previous.acceptedValuePaise,
+    },
+  };
+}
+
+/** The history notes of a correction: the buyer's refund may change, the seller's amount owed changes. */
+export function correctionNotes(result: Awaited<ReturnType<typeof correctInspection>>) {
+  const { totals } = result;
+  const refund = result.refund
+    ? ` Refund due to the buyer: ${formatRupees(result.refund.amountPaise)} (${result.refund.number}).`
+    : ' No refund is due.';
+  const why = result.failed ? ` (${result.failed})` : '';
+  return {
+    buyerNote: `Dock check corrected: ${totals.accepted} of ${totals.ordered} boxes accepted${why}.${refund}`,
+    sellerNote: `Dock check corrected: ${totals.accepted} of ${totals.ordered} boxes accepted${why}. ${result.voucherNumber}: ${formatRupees(result.acceptedValuePaise)} owed to the seller (was ${formatRupees(result.before.acceptedValuePaise)}).`,
   };
 }
 

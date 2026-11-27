@@ -28,6 +28,8 @@ const refundSchema = new Schema(
     /** The payout batch that is paying it (set while the batch is live, kept once paid; cleared if it is cancelled). */
     payoutBatchId: refField('PayoutBatch'),
     paidAt: Date,
+    /** A dock correction replaced it before it was paid (status CANCELLED, Build 9). */
+    cancelledAt: Date,
     createdBy: { ...refField('User'), required: true },
   },
   { collection: 'refunds', timestamps: true, versionKey: false },

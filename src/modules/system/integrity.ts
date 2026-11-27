@@ -1,8 +1,10 @@
 import {
+  BankReconciliationModel,
   BuyerModel,
   ComplaintModel,
   InspectionModel,
   JobRunModel,
+  JournalModel,
   LedgerModel,
   PayoutBatchModel,
   PurchaseOrderModel,
@@ -17,14 +19,15 @@ import type { Types } from 'mongoose';
 import type { IntegrityCheck, JobTrigger } from '../../shared/enums.js';
 import { formatRupees } from '../../shared/money.js';
 import { logger } from '../../shared/logger.js';
-import { istDate } from '../payments/payments.js';
+import { istDate } from '../../shared/dates.js';
+import { allocatedPaise } from '../payments/allocations.js';
 
 /**
  * The integrity check (ARCH §3.8 and §4.6, SRS-NFR-08). Once a night, and whenever a supervisor presses "Run now",
  * it reads the data and looks for things that must never be true. It only READS: it never fixes anything. A
  * finding names the record, and a person decides what to do. The goal is zero findings (SRS-NFR-08).
  *
- * Four groups of checks:
+ * Four groups of checks (Build 9 added the journals, reversals, allocations and bank reconciliations to them):
  *   ORPHAN_REFERENCE  a record points at another record that does not exist
  *   TOTAL_MISMATCH    a total is not the sum of its parts (order lines, GST parts, voucher sides, money received)
  *   TRIAL_BALANCE     the debits of all vouchers do not equal the credits
@@ -80,10 +83,40 @@ async function orphans(data: Data): Promise<Finding[]> {
       { from: po.number, field: 'trade', to: 'trades', id: po.tradeId },
     ]),
     ...data.receipts.flatMap((receipt) => [
-      { from: receipt.number, field: 'sales order', to: 'sales_orders', id: receipt.salesOrderId },
+      // A hand-added payment has no order until an advance is spent on one.
+      ...(receipt.salesOrderId
+        ? [
+            {
+              from: receipt.number,
+              field: 'sales order',
+              to: 'sales_orders',
+              id: receipt.salesOrderId,
+            },
+          ]
+        : []),
+      ...(receipt.allocations ?? []).map((item) => ({
+        from: receipt.number,
+        field: 'sales order (spent on)',
+        to: 'sales_orders',
+        id: item.salesOrderId,
+      })),
       { from: receipt.number, field: 'buyer', to: 'buyers', id: receipt.buyerId },
       { from: receipt.number, field: 'bank ledger', to: 'ledgers', id: receipt.bankLedgerId },
     ]),
+    ...data.journals.flatMap((journal) =>
+      journal.lines.map((line) => ({
+        from: journal.number,
+        field: 'ledger',
+        to: 'ledgers',
+        id: line.ledgerId,
+      })),
+    ),
+    ...data.reconciliations.map((item) => ({
+      from: `Reconciliation ${item.date}`,
+      field: 'bank ledger',
+      to: 'ledgers',
+      id: item.bankLedgerId,
+    })),
     ...data.trades
       .filter((trade) => trade.salesOrderId)
       .map((trade) => ({
@@ -135,10 +168,28 @@ async function orphans(data: Data): Promise<Finding[]> {
 
 function totals(data: Data): Finding[] {
   const findings: Finding[] = [];
+  // What each order has received: the allocations of posted payments (a payment posted before Build 9 has none and
+  // counts in full for its own order, see allocatedPaise).
   const postedByOrder = new Map<string, number>();
+  const addTo = (orderId: unknown, paise: number) =>
+    postedByOrder.set(key(orderId), (postedByOrder.get(key(orderId)) ?? 0) + paise);
   for (const receipt of data.receipts.filter((item) => item.status === 'POSTED')) {
-    const id = key(receipt.salesOrderId);
-    postedByOrder.set(id, (postedByOrder.get(id) ?? 0) + receipt.amountPaise);
+    const spent = allocatedPaise(receipt);
+    const spentOn = receipt.allocations ?? []; // payments posted before Build 9 have no list
+    if (spentOn.length > 0) {
+      for (const item of spentOn) addTo(item.salesOrderId, item.amountPaise);
+    } else if (receipt.salesOrderId) {
+      addTo(receipt.salesOrderId, receipt.amountPaise);
+    }
+    if (spent > receipt.amountPaise) {
+      findings.push(
+        find(
+          'TOTAL_MISMATCH',
+          receipt.number,
+          `${formatRupees(spent)} is spent from a payment of ${formatRupees(receipt.amountPaise)}.`,
+        ),
+      );
+    }
   }
 
   for (const order of data.orders) {
@@ -224,6 +275,38 @@ function totals(data: Data): Finding[] {
       }
     }
   }
+  for (const journal of data.journals) {
+    const dr = journal.lines.reduce((sum, line) => sum + line.drPaise, 0);
+    const cr = journal.lines.reduce((sum, line) => sum + line.crPaise, 0);
+    if (dr !== cr || dr !== journal.totalPaise) {
+      findings.push(
+        find(
+          'TOTAL_MISMATCH',
+          journal.number,
+          `Debits ${formatRupees(dr)}, credits ${formatRupees(cr)} and the journal total ${formatRupees(journal.totalPaise)} must all be equal.`,
+        ),
+      );
+    }
+  }
+
+  // A reconciled bank day must still add up: nothing may have been posted into it since.
+  for (const item of data.reconciliations.filter((row) => row.status === 'RECONCILED')) {
+    let closing = 0;
+    for (const voucher of data.vouchers.filter((row) => row.date <= item.date)) {
+      for (const line of voucher.lines) {
+        if (key(line.ledgerId) === key(item.bankLedgerId)) closing += line.drPaise - line.crPaise;
+      }
+    }
+    if (closing !== item.statementClosingPaise) {
+      findings.push(
+        find(
+          'TOTAL_MISMATCH',
+          `Reconciliation ${item.date}`,
+          `The bank statement said ${formatRupees(item.statementClosingPaise)} but the books now say ${formatRupees(closing)} for a day that was reconciled.`,
+        ),
+      );
+    }
+  }
   return findings;
 }
 
@@ -259,6 +342,8 @@ const VOUCHER_TYPE_OF_SOURCE = {
   INSPECTION: 'PURCHASE',
   PAYOUT_LINE: 'PAYMENT',
   COMPLAINT: 'JOURNAL',
+  JOURNAL: 'JOURNAL',
+  VOUCHER: 'REVERSAL',
 } as const;
 
 async function voucherSources(data: Data): Promise<Finding[]> {
@@ -266,9 +351,15 @@ async function voucherSources(data: Data): Promise<Finding[]> {
   const vouchers = data.vouchers;
   const bySource = (type: string, id: unknown) =>
     vouchers.find((voucher) => voucher.source.type === type && key(voucher.source.id) === key(id));
+  /** The REVERSAL voucher that undoes this voucher, if there is one. */
+  const reversalOf = (voucherId: unknown) =>
+    vouchers.find(
+      (voucher) => voucher.type === 'REVERSAL' && key(voucher.source.id) === key(voucherId),
+    );
 
   // Document → voucher
-  for (const receipt of data.receipts.filter((item) => item.status === 'POSTED')) {
+  const withVoucher = ['POSTED', 'REVERSED']; // a reversed payment keeps its voucher: the reversal mirrors it
+  for (const receipt of data.receipts.filter((item) => withVoucher.includes(item.status))) {
     const voucher = bySource('RECEIPT', receipt._id);
     if (!voucher) {
       findings.push(
@@ -288,7 +379,7 @@ async function voucherSources(data: Data): Promise<Finding[]> {
       );
     }
   }
-  for (const receipt of data.receipts.filter((item) => item.status !== 'POSTED')) {
+  for (const receipt of data.receipts.filter((item) => !withVoucher.includes(item.status))) {
     const voucher = bySource('RECEIPT', receipt._id);
     if (voucher) {
       findings.push(
@@ -322,8 +413,13 @@ async function voucherSources(data: Data): Promise<Finding[]> {
     }
   }
   for (const po of data.purchaseOrders.filter((item) => (item.acceptedValuePaise ?? 0) > 0)) {
+    // After a dock correction a PO has two PURCHASE vouchers; the live one belongs to the latest check.
     const voucher = vouchers.find(
-      (item) => item.source.type === 'INSPECTION' && item.source.number === po.number,
+      (item) =>
+        item.source.type === 'INSPECTION' &&
+        (po.latestInspectionId
+          ? key(item.source.id) === key(po.latestInspectionId)
+          : item.source.number === po.number),
     );
     if (!voucher) {
       findings.push(
@@ -358,7 +454,112 @@ async function voucherSources(data: Data): Promise<Finding[]> {
     }
   }
 
+  // A dock check that a correction replaced must have had its PURCHASE voucher reversed.
+  const latestChecks = new Set(
+    data.purchaseOrders.flatMap((po) =>
+      po.latestInspectionId ? [key(po.latestInspectionId)] : [],
+    ),
+  );
+  for (const voucher of vouchers.filter((item) => item.source.type === 'INSPECTION')) {
+    if (!latestChecks.has(key(voucher.source.id)) && !reversalOf(voucher._id)) {
+      findings.push(
+        find(
+          'VOUCHER_SOURCE',
+          voucher.number,
+          'This dock check was replaced by a correction but its PURCHASE voucher was not reversed.',
+        ),
+      );
+    }
+  }
+
+  // Journals and opening balances: only an approved one has a voucher, and a reversed one has its reversal.
+  for (const journal of data.journals) {
+    const voucher = bySource('JOURNAL', journal._id);
+    const posted = journal.status === 'POSTED' || journal.status === 'REVERSED';
+    if (posted && !voucher) {
+      findings.push(
+        find(
+          'VOUCHER_SOURCE',
+          journal.number,
+          `The journal is ${journal.status} but has no JOURNAL voucher.`,
+        ),
+      );
+    } else if (!posted && voucher) {
+      findings.push(
+        find(
+          'VOUCHER_SOURCE',
+          journal.number,
+          `The journal is ${journal.status} but voucher ${voucher.number} exists.`,
+        ),
+      );
+    } else if (voucher && voucher.totalPaise !== journal.totalPaise) {
+      findings.push(
+        find(
+          'VOUCHER_SOURCE',
+          journal.number,
+          `The journal is ${formatRupees(journal.totalPaise)} but voucher ${voucher.number} is ${formatRupees(voucher.totalPaise)}.`,
+        ),
+      );
+    }
+    if (journal.status === 'REVERSED' && voucher && !reversalOf(voucher._id)) {
+      findings.push(
+        find(
+          'VOUCHER_SOURCE',
+          journal.number,
+          'The journal is reversed but has no REVERSAL voucher.',
+        ),
+      );
+    }
+  }
+  for (const receipt of data.receipts.filter((item) => item.status === 'REVERSED')) {
+    const voucher = bySource('RECEIPT', receipt._id);
+    if (voucher && !reversalOf(voucher._id)) {
+      findings.push(
+        find(
+          'VOUCHER_SOURCE',
+          receipt.number,
+          'The payment is reversed but has no REVERSAL voucher.',
+        ),
+      );
+    }
+  }
+
+  // A reversal is the exact mirror of the voucher it undoes.
+  for (const reversal of vouchers.filter((item) => item.type === 'REVERSAL')) {
+    const original = vouchers.find((item) => key(item._id) === key(reversal.source.id));
+    if (!original) continue; // reported below as a missing document
+    const net = (lines: typeof original.lines) => {
+      const sums = new Map<string, number>();
+      for (const line of lines) {
+        sums.set(
+          key(line.ledgerId),
+          (sums.get(key(line.ledgerId)) ?? 0) + line.drPaise - line.crPaise,
+        );
+      }
+      return sums;
+    };
+    const was = net(original.lines);
+    const now = net(reversal.lines);
+    const mirrored =
+      was.size === now.size && [...was].every(([ledger, paise]) => now.get(ledger) === -paise);
+    if (!mirrored) {
+      findings.push(
+        find(
+          'VOUCHER_SOURCE',
+          reversal.number,
+          `This reversal is not the exact opposite of ${original.number}.`,
+        ),
+      );
+    }
+  }
+
   // Voucher → document
+  const journalIds = new Set(
+    data.journals
+      .filter((item) => item.status === 'POSTED' || item.status === 'REVERSED')
+      .map((item) => key(item._id)),
+  );
+  const voucherIds = new Set(vouchers.map((item) => key(item._id)));
   const lineIds = new Set(
     data.batches.flatMap((batch) => batch.lines.map((line) => key(line._id))),
   );
@@ -371,7 +572,7 @@ async function voucherSources(data: Data): Promise<Finding[]> {
     vouchers.filter((v) => v.source.type === 'COMPLAINT').map((v) => v.source.id),
   );
   const receiptIds = new Set(
-    data.receipts.filter((item) => item.status === 'POSTED').map((item) => key(item._id)),
+    data.receipts.filter((item) => withVoucher.includes(item.status)).map((item) => key(item._id)),
   );
   const billedOrderIds = new Set(
     data.orders.filter((item) => item.margBill).map((item) => key(item._id)),
@@ -387,7 +588,11 @@ async function voucherSources(data: Data): Promise<Finding[]> {
             ? inspections.has(key(id))
             : type === 'PAYOUT_LINE'
               ? lineIds.has(key(id))
-              : complaints.has(key(id));
+              : type === 'JOURNAL'
+                ? journalIds.has(key(id))
+                : type === 'VOUCHER'
+                  ? voucherIds.has(key(id))
+                  : complaints.has(key(id));
     if (!has) {
       findings.push(
         find(
@@ -416,15 +621,18 @@ async function voucherSources(data: Data): Promise<Finding[]> {
 
 /** Everything the checks read, loaded once. Fine for TriFid's volume (a few thousand records). */
 async function load() {
-  const [orders, purchaseOrders, receipts, trades, vouchers, batches] = await Promise.all([
-    SalesOrderModel.find().lean(),
-    PurchaseOrderModel.find().lean(),
-    ReceiptModel.find().lean(),
-    TradeModel.find({}, { number: 1, salesOrderId: 1 }).lean(),
-    VoucherModel.find().lean(),
-    PayoutBatchModel.find().lean(),
-  ]);
-  return { orders, purchaseOrders, receipts, trades, vouchers, batches };
+  const [orders, purchaseOrders, receipts, trades, vouchers, batches, journals, reconciliations] =
+    await Promise.all([
+      SalesOrderModel.find().lean(),
+      PurchaseOrderModel.find().lean(),
+      ReceiptModel.find().lean(),
+      TradeModel.find({}, { number: 1, salesOrderId: 1 }).lean(),
+      VoucherModel.find().lean(),
+      PayoutBatchModel.find().lean(),
+      JournalModel.find().lean(),
+      BankReconciliationModel.find().lean(),
+    ]);
+  return { orders, purchaseOrders, receipts, trades, vouchers, batches, journals, reconciliations };
 }
 type Data = Awaited<ReturnType<typeof load>>;
 

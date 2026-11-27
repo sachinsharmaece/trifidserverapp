@@ -19,6 +19,8 @@ import { objectId } from '../parties/common.js';
 import { computeBuyerRate, loadMargins, pricingTierOf } from '../pricing/pricing.js';
 import {
   arrivalInput,
+  correctInspection as saveCorrection,
+  correctionNotes,
   inspectionInput,
   inspectionNotes,
   inspectLot as runInspection,
@@ -33,6 +35,7 @@ import {
   resolveComplaint as saveResolution,
   resolveInput as resolutionInput,
 } from '../complaints/complaints.js';
+import { spendAdvance } from '../payments/advances.js';
 import { confirmReceipt, logReceipt, rejectReceipt } from '../payments/payments.js';
 import { recordSellerPayment as savePayment, sellerPaymentInput } from '../payouts/payouts.js';
 import {
@@ -500,6 +503,26 @@ const enterPayment = command(paymentInput, async (ctx, input) => {
   };
 });
 
+type PaidOrder = Parameters<typeof raisePurchaseOrder>[1];
+
+/**
+ * Gate A: the order is paid in full, so the PO goes to the seller: b6 → b7, s2 → s3, the dispatch clock starts.
+ * Shared by `confirmPayment` and `useAdvance`: both end here.
+ */
+async function openGateA(ctx: CommandContext, order: PaidOrder, paid: string) {
+  const po = await raisePurchaseOrder(ctx, order);
+  return {
+    set: {
+      buyerStage: 'B7_PAID' as const,
+      sellerStage: 'S3_PO' as const,
+      purchaseOrderId: po._id,
+      dueAt: po.dispatchDueAt,
+    },
+    buyerNote: `${paid}. ${order.number} is paid in full`,
+    sellerNote: `${po.number} raised: the seller should dispatch`,
+  };
+}
+
 /**
  * Accounts found the money (never the person who entered it). Posts the RECEIPT voucher (Dr bank · Cr buyer).
  * Paid in full → the order is PAID, the PO goes to the seller: b6 → b7, s2 → s3, the dispatch clock starts.
@@ -515,17 +538,24 @@ const confirmPayment = command(z.object({ receiptId: objectId }), async (ctx, in
       sellerNote: '',
     };
   }
-  const po = await raisePurchaseOrder(ctx, done.order);
-  return {
-    set: {
-      buyerStage: 'B7_PAID',
-      sellerStage: 'S3_PO',
-      purchaseOrderId: po._id,
-      dueAt: po.dispatchDueAt,
-    },
-    buyerNote: `${paid}. ${done.order.number} is paid in full`,
-    sellerNote: `${po.number} raised: the seller should dispatch`,
-  };
+  return openGateA(ctx, done.order, paid);
+});
+
+/**
+ * Build 9: Accounts puts the buyer's advance (a hand-added payment already posted) on this order, oldest payment
+ * first and never more than the order needs. Paid in full → Gate A exactly like a confirmed payment.
+ */
+const useAdvance = command(z.object({}), async (ctx) => {
+  const done = await spendAdvance(ctx);
+  const paid = `Advance used: ${formatRupees(done.usedPaise)} from ${done.used.map((item) => item.number).join(', ')}`;
+  if (!done.paidInFull) {
+    return {
+      set: {},
+      buyerNote: `${paid}. ${formatRupees(done.stillDuePaise)} still due on ${done.order.number}`,
+      sellerNote: '',
+    };
+  }
+  return openGateA(ctx, done.order, paid);
 });
 
 /** Accounts could not find the money: the entry is marked not received, with a note for Sales. */
@@ -611,6 +641,15 @@ const inspectLot = command(inspectionInput, async (ctx, input) => {
     unset: ['dueAt'],
     ...notes,
   };
+});
+
+/**
+ * Build 9: the dock typed a wrong count and sees it before the Marg bill is saved. A new check replaces the first;
+ * its voucher, return notes and refund are replaced too. The deal stays where it is (b8 / s6).
+ */
+const correctInspection = command(inspectionInput, async (ctx, input) => {
+  const result = await saveCorrection(ctx, input);
+  return { set: {}, ...correctionNotes(result) };
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -755,11 +794,13 @@ export const COMMANDS: Record<TradeActionName, Command> = {
   reopen,
   enterPayment,
   confirmPayment,
+  useAdvance,
   rejectPayment,
   recordDispatch,
   recordSellerBill,
   recordArrival,
   inspectLot,
+  correctInspection,
   recordMargBill,
   recordPod,
   confirmDelivery,

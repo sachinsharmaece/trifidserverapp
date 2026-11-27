@@ -67,6 +67,13 @@ export const TRADE_ACTIONS = {
     desk: 'ACCOUNTS',
     buyerFrom: ['B6_ORDER_CONFIRMED'],
   },
+  // Build 9: the buyer's advance (money Accounts added by hand, with no order) goes to this order. It shows on the
+  // deal card only when the buyer has an advance to use (view.ts).
+  useAdvance: {
+    label: "Use the buyer's advance",
+    desk: 'ACCOUNTS',
+    buyerFrom: ['B6_ORDER_CONFIRMED'],
+  },
   // Build 3: leg 1 and the dock (LOCK-40). Logistics presses its two from the Dock screen.
   recordDispatch: {
     label: 'Record dispatch',
@@ -92,6 +99,15 @@ export const TRADE_ACTIONS = {
     desk: 'LOGISTICS',
     buyerFrom: ['B7_PAID'],
     sellerFrom: ['S5_ARRIVED'],
+  },
+  // Build 9: a wrong dock count found later (Logistics, from the Dock screen's Checked lane), until the Marg bill is
+  // saved. The stage does not move; the old check's voucher, return notes and refund are replaced.
+  correctInspection: {
+    label: 'Correct the check',
+    desk: 'LOGISTICS',
+    buyerFrom: ['B8_BILLED'],
+    sellerFrom: ['S6_PAYMENT'],
+    onCard: false,
   },
   // Build 4: the Marg bill (Accounts, from To be billed), the POD (Logistics, from Trips), delivery (Sales).
   recordMargBill: { label: 'Marg bill', desk: 'ACCOUNTS', buyerFrom: ['B8_BILLED'] },

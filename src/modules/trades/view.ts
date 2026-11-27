@@ -27,6 +27,7 @@ import type { TradeDoc } from './commands.js';
 import { acceptedLines, margBillView } from '../billing/billing.js';
 import { complaintsOf } from '../complaints/complaints.js';
 import { refundsOf } from '../dock/dock.js';
+import { advanceOf } from '../payments/advances.js';
 import { paymentsOf } from '../payments/payments.js';
 import { payoutOfPo } from '../payouts/payouts.js';
 import { purchaseOrderSummary } from '../purchaseOrders/purchaseOrders.js';
@@ -70,14 +71,17 @@ export function dueOf(trade: TradeDoc) {
  * The buttons for this trade: every action possible at its stage, pressable by its desk (or Founder/Admin).
  * `payoutHeld` is whether the seller's payout is on hold; null for a reader who does not see the seller side.
  * The hold buttons are seller side: only the one that applies now is shown, and Sales sees neither.
+ * `hasAdvance`: the buyer has an advance to use (buyer side only); it decides whether "Use the buyer's advance" shows.
  */
-function actionsFor(trade: TradeDoc, role: Role, payoutHeld: boolean | null) {
+function actionsFor(trade: TradeDoc, role: Role, payoutHeld: boolean | null, hasAdvance: boolean) {
   const showsNow = (name: string) =>
     name === 'holdPayout'
       ? payoutHeld === false
       : name === 'releaseHold'
         ? payoutHeld === true
-        : true;
+        : name === 'useAdvance'
+          ? hasAdvance
+          : true;
   return TRADE_ACTION_NAMES.filter(
     (name) => showsOnCard(name) && isAtStage(name, trade) && showsNow(name),
   ).map((name) => {
@@ -142,6 +146,11 @@ export async function tradeView(trade: TradeDoc, role: Role) {
       ? await PurchaseOrderModel.findById(trade.purchaseOrderId)
       : null;
   const payoutHeld = seesSellerSide(role) ? Boolean(purchaseOrder?.hold) : null;
+  // The buyer's unspent advance matters only while his order waits for payment, and only the buyer side sees it.
+  const advance =
+    seesBuyerSide(role) && trade.buyerStage === 'B6_ORDER_CONFIRMED'
+      ? await advanceOf(trade.buyerId)
+      : null;
 
   const view = {
     id: trade.id,
@@ -154,7 +163,7 @@ export async function tradeView(trade: TradeDoc, role: Role) {
     boxesWanted: trade.boxesWanted ?? null,
     ask: trade.ask ? { reason: trade.ask.reason, note: trade.ask.note ?? null } : null,
     due: dueOf(trade),
-    actions: actionsFor(trade, role, payoutHeld),
+    actions: actionsFor(trade, role, payoutHeld, Boolean(advance?.totalPaise)),
     history: await historyFor(trade, role),
     version: trade.version,
     lastActionAt: trade.lastActionAt,
@@ -200,6 +209,8 @@ export async function tradeView(trade: TradeDoc, role: Role) {
       ...(order
         ? await paymentsSummary(order)
         : { payments: [], balanceDuePaise: null, openPaise: null }),
+      // The buyer's advance not yet spent (hand-added payments), while this order waits for payment.
+      advance,
       // Money owed back to the buyer after the dock check, and whether a payout batch has paid it.
       refunds: order ? await refundsOf(order._id) : [],
       // Complaints on this trade (Build 6), oldest first, and the last moment the buyer may still complain.

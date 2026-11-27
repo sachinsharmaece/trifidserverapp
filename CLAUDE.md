@@ -86,6 +86,16 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
   as a FAILED run. A mounted-earlier router (`/sales-orders`, `/purchase-orders`) already guards its paths, so the report
   routes there repeat the role check on purpose. Finding documents in the integrity check: use Mongoose finders, not raw
   `collection` calls (the test fake only supports finders).
+- Build 9 (the rest of the books): every voucher goes through `postVoucher` (`modules/books/books.ts`), which also
+  refuses a bank line on or before that bank's last RECONCILED day (`assertBankDayOpen`, 409 `DAY_RECONCILED`); forms
+  that save first and post later (a payment, a journal) call the same check early. A mistake is undone with
+  `postReversal` (an exact mirror dated today), never by editing a voucher; WHICH vouchers a person may reverse is
+  decided in `modules/books/reversals.ts` (only hand-made ones). Journals and opening balances are one flow
+  (`modules/books/journals.ts`): typed, then approved by a DIFFERENT person; re-check everything that can change while
+  it waits (ledgers turned off, the opening rules) at approval. What is left of a payment is worked out by
+  `unspentPaise()` (`modules/payments/allocations.ts`, pure); spend an advance only through the engine action
+  `useAdvance`. A dock check is corrected only by `correctInspection`, and `correctionBlock(po)` is the one place that
+  says when it is too late. Keep the Controller read-only here (writers are Accounts, Founder, Admin).
 - Margins live in `src/modules/masters/marginCells.routes.ts`: reading needs `canSeeMargins` (the wall), writing adds
   `canEditMasters` and `requireStepUp` (`src/modules/auth/stepUp.ts`, 428 until the password was re-checked in the last 5
   minutes). Use `requireStepUp` after the role check on any route that should ask for the password again. A cell is

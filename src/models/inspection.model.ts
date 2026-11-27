@@ -34,8 +34,8 @@ const lineSchema = new Schema(
 
 /**
  * One dock check of one purchase order (ARCH B3.7, `inspectLot`). Saved by any Logistics user; there is no
- * signature step (L40.4). Append-only: a saved check is never changed or deleted. (Corrections, as a new record
- * pointing to the old one, come later: they need voucher reversal.)
+ * signature step (L40.4). Append-only: a saved check is never changed or deleted. A correction is a NEW check with
+ * `correctsId` pointing to the one it replaces, allowed until the Marg bill is saved (Build 9, `correctInspection`).
  *
  * The outcome decides the rest (LOCK-40 A2): accepted boxes > 0 is Gate B (the PURCHASE voucher); damaged or
  * leaking boxes get a REJECTED return note; extra boxes an EXCESS return note; short, damaged and leaking boxes
@@ -60,6 +60,8 @@ const inspectionSchema = new Schema(
     acceptedBoxes: { ...BOXES, required: true },
     /** Seller side: accepted boxes at the seller's landed rate. Never sent to Logistics. */
     acceptedValuePaise: { ...intField(0, MAX_PAISE), required: true },
+    /** Set on a correction: the check it replaces (SRS-LOG-03). The old one is kept as it was. */
+    correctsId: refField('Inspection'),
     savedBy: { ...refField('User'), required: true },
     savedAt: { type: Date, required: true },
   },

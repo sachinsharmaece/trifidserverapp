@@ -1,5 +1,6 @@
 import {
   ComplaintModel,
+  JournalModel,
   PurchaseOrderModel,
   ReceiptModel,
   RefundModel,
@@ -9,6 +10,9 @@ import {
 } from '../../models/index.js';
 import type { Role } from '../../shared/enums.js';
 import { BUYER_STAGES, SELLER_STAGES } from '../../shared/enums.js';
+import { formatRupees } from '../../shared/money.js';
+import { banksToReconcile } from '../books/reconciliation.js';
+import { unspentAdvances } from '../payments/advances.js';
 import { istDate } from '../payments/payments.js';
 import { BUYER_STAGE_LABELS, SELLER_STAGE_LABELS } from '../trades/stages.js';
 import { lastIntegrityRun } from '../system/integrity.js';
@@ -19,7 +23,8 @@ import { deskOf } from '../today/today.js';
  * What each role sees follows the wall: Sales counts buyer-side trades only, Purchase seller-side only, Accounts and
  * Logistics see queues with no firm names, and only the Controller, Founder and Admin see money and margin.
  *
- * "Marg queries" and the day-close status (Accounts) are not here: they come with the books build (Build 9).
+ * The Accounts desk also counts journals waiting for approval, advances not yet used and banks to reconcile (Build 9).
+ * "Marg queries" is not here: Q-ACC-02 removed that idea (Marg is entered by hand, so there is nothing to query).
  */
 
 type Tone = 'normal' | 'warn' | 'bad';
@@ -203,6 +208,8 @@ export async function dashboardView(role: Role, now = new Date()) {
       ),
     );
   } else if (role === 'ACCOUNTS') {
+    const advances = await unspentAdvances();
+    const banksOpen = (await banksToReconcile()).filter((bank) => bank.entriesSince > 0).length;
     tiles.push(
       count(
         'paymentsToConfirm',
@@ -230,6 +237,29 @@ export async function dashboardView(role: Role, now = new Date()) {
         'warn',
       ),
       count('pastPaymentTime', 'Orders past their payment time', pastPaymentTime, 'bad'),
+      count(
+        'journalsToApprove',
+        'Journals waiting for approval',
+        await JournalModel.countDocuments({ status: 'PENDING_APPROVAL' }),
+        'warn',
+        'Typed by one person, approved by another.',
+      ),
+      count(
+        'advancesUnused',
+        'Advances not yet used',
+        advances.count,
+        'warn',
+        advances.count > 0
+          ? `${formatRupees(advances.totalPaise)} from ${advances.buyers} buyer${advances.buyers === 1 ? '' : 's'}`
+          : undefined,
+      ),
+      count(
+        'banksToReconcile',
+        'Banks to reconcile',
+        banksOpen,
+        'warn',
+        'Bank accounts with entries after the last reconciled day.',
+      ),
     );
   } else if (role === 'LOGISTICS') {
     tiles.push(

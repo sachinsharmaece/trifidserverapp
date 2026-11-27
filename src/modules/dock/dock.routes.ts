@@ -19,6 +19,7 @@ import { requireRole } from '../auth/requireRole.js';
 import { objectId, pagingShape } from '../parties/common.js';
 import type { PurchaseOrderDoc } from '../purchaseOrders/purchaseOrders.js';
 import { runTradeAction } from '../trades/engine.js';
+import { correctionBlock } from './dock.js';
 
 /**
  * The Logistics desk (Q-WF-01, Option 3: a desk queue presses the SAME engine actions as the deal card).
@@ -26,6 +27,7 @@ import { runTradeAction } from '../trades/engine.js';
  *   GET  /dock?lane=COMING|ARRIVED|CHECKED     the dock's three lanes
  *   POST /dock/:purchaseOrderId/arrival        engine action recordArrival   { version, arrivedAt, boxesCounted, billWithGoods }
  *   POST /dock/:purchaseOrderId/inspection     engine action inspectLot      { version, lines[], note? }
+ *   POST /dock/:purchaseOrderId/correction     engine action correctInspection  { version, lines[], note? } (Build 9)
  *   GET  /return-notes?state=OPEN|CLOSED       boxes going back to sellers
  *   POST /return-notes/:id/close               { version, how, freightPaise?, note? }
  *
@@ -69,6 +71,14 @@ async function dockRows(purchaseOrders: PurchaseOrderDoc[]) {
   const returnNotes = await ReturnNoteModel.find({
     purchaseOrderId: { $in: purchaseOrders.map((po) => po._id) },
   });
+
+  // Checked lots may be corrected (a rejected lot says why not); lots not yet checked have nothing to correct.
+  const correctionBlocks = new Map<string, string | null>();
+  for (const po of purchaseOrders.filter(
+    (item) => item.status === 'CHECKED' || item.status === 'REJECTED',
+  )) {
+    correctionBlocks.set(po.id, await correctionBlock(po));
+  }
 
   return purchaseOrders.map((po) => {
     const seller = sellers.find((item) => item._id.equals(po.sellerId));
@@ -126,6 +136,8 @@ async function dockRows(purchaseOrders: PurchaseOrderDoc[]) {
             billWithGoods: po.arrival.billWithGoods,
           }
         : null,
+      /** Why the check can no longer be corrected, or null when Logistics may still correct it (Build 9). */
+      correctionBlock: correctionBlocks.get(po.id) ?? null,
       inspectBy: po.inspectBy ?? null,
       inspectionOverdue:
         po.status === 'ARRIVED' && Boolean(po.inspectBy) && po.inspectBy!.getTime() < now,
@@ -134,6 +146,8 @@ async function dockRows(purchaseOrders: PurchaseOrderDoc[]) {
             outcome: inspection.outcome,
             acceptedBoxes: inspection.acceptedBoxes,
             savedAt: inspection.savedAt,
+            /** This result replaced an earlier check (SRS-LOG-03). */
+            corrected: Boolean(inspection.correctsId),
             note: inspection.note ?? null,
             lines: inspection.lines.map((line) => ({
               lineNo: line.lineNo,
@@ -152,7 +166,7 @@ async function dockRows(purchaseOrders: PurchaseOrderDoc[]) {
           }
         : null,
       returnNotes: returnNotes
-        .filter((note) => note.purchaseOrderId.equals(po._id))
+        .filter((note) => note.purchaseOrderId.equals(po._id) && note.state !== 'CANCELLED')
         .map((note) => ({ number: note.number, type: note.type, boxes: note.boxes })),
     };
   });
@@ -192,7 +206,7 @@ async function findPurchaseOrder(id: string) {
 async function press(
   req: Parameters<typeof runTradeAction>[0],
   id: string,
-  action: 'recordArrival' | 'inspectLot',
+  action: 'recordArrival' | 'inspectLot' | 'correctInspection',
 ) {
   const po = await findPurchaseOrder(id);
   await runTradeAction(req, String(po.tradeId), action, req.body);
@@ -206,6 +220,11 @@ dockRouter.post('/dock/:id/arrival', async (req, res) => {
 
 dockRouter.post('/dock/:id/inspection', async (req, res) => {
   res.json(await press(req, req.params.id, 'inspectLot'));
+});
+
+/** POST /dock/:id/correction  { version, lines[], note? }: the engine action correctInspection (Build 9). */
+dockRouter.post('/dock/:id/correction', async (req, res) => {
+  res.json(await press(req, req.params.id, 'correctInspection'));
 });
 
 // --- Return notes -----------------------------------------------------------------------------------------
