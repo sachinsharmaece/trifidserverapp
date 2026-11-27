@@ -35,6 +35,8 @@ const billSchema = new Schema(
           date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
           by: { ...refField('User'), required: true },
           at: { type: Date, required: true },
+          /** Reference-copy branch: the LR / receipt photo. */
+          photoFileId: refField('UploadedFile'),
         },
         { _id: false },
       ),
@@ -59,6 +61,9 @@ const tripSchema = new Schema(
     vehicleNumber: { ...textField(20), required: true },
     driverName: { ...textField(100), required: true },
     driverMobile: { type: String, required: true, match: /^\d{10}$/ },
+    /** Reference-copy branch: the registered vehicle the trip uses (its number, owner and mobile are copied). */
+    vehicleOwnerId: refField('VehicleOwner'),
+    vehicleType: textField(60),
     status: { type: String, enum: TRIP_STATUSES, required: true, default: 'PLANNED' },
     bills: { type: [billSchema], default: [] },
     whatsappText: textField(4000),

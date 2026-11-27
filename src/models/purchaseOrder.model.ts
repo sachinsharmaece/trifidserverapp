@@ -167,6 +167,9 @@ const purchaseOrderSchema = new Schema(
     hold: { type: holdSchema, default: undefined },
     /** Set when the Controller closed the shipment as lost in transit (status LOST). */
     lostAt: Date,
+    /** Reference-copy branch: the truck/cases photo at arrival and the inspection photos. */
+    arrivalPhotoFileId: refField('UploadedFile'),
+    inspectionPhotoFileIds: { type: [refField('UploadedFile')], default: undefined },
     createdBy: { ...refField('User'), required: true },
     version: { ...intField(0), required: true, default: 0 },
   },

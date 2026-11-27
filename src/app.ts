@@ -17,7 +17,12 @@ export function createApp(): Express {
   app.use(requestId);
   app.use(helmet());
   app.use(cors({ origin: env.corsOrigins, credentials: true, exposedHeaders: ['X-Request-Id'] }));
-  app.use(express.json({ limit: '256kb' }));
+  // Photos (reference-copy branch) come as base64 JSON, so /uploads takes up to 8 MB; everything else 256 kB.
+  const smallJson = express.json({ limit: '256kb' });
+  const uploadJson = express.json({ limit: '8mb' });
+  app.use((req, res, next) =>
+    (req.path.endsWith('/uploads') ? uploadJson : smallJson)(req, res, next),
+  );
 
   // Load-balancer probes stay at the root: /health and /ready.
   app.use(healthRouter);

@@ -32,6 +32,7 @@ import { tehsilsRouter } from '../modules/masters/tehsils.routes.js';
 import { usersRouter } from '../modules/users/users.routes.js';
 import { settingsRouter } from '../modules/settings/settings.routes.js';
 import { salesRouter } from '../modules/sales/sales.routes.js';
+import { logisticsRouter } from '../modules/logistics/logistics.routes.js';
 import { healthRouter } from '../modules/health/health.routes.js';
 
 /**
@@ -51,6 +52,7 @@ apiRouter.use(authRouter);
 apiRouter.use(usersRouter);
 apiRouter.use(settingsRouter);
 apiRouter.use(salesRouter);
+apiRouter.use(logisticsRouter);
 
 // /api/v1/company, /manufacturers, /technicals, /hsn-codes, /products, /skus, /tehsils and /reason-codes: the masters.
 // Everyone signed in can read them; only Founder and Admin can change them.

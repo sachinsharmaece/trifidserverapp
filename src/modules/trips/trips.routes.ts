@@ -2,7 +2,7 @@ import { Router, type Request } from 'express';
 import { isValidObjectId } from 'mongoose';
 import { z } from 'zod';
 import { nextDocumentNumber } from '../../db/documentNumbers.js';
-import { SalesOrderModel, TradeModel, TripModel } from '../../models/index.js';
+import { SalesOrderModel, TradeModel, TripModel, VehicleOwnerModel } from '../../models/index.js';
 import { writeAudit } from '../../shared/audit.js';
 import { BOOK_WITH_MODES, TRIP_STATUSES } from '../../shared/enums.js';
 import { conflict, invalidField, notFound } from '../../shared/errors.js';
@@ -102,6 +102,7 @@ async function tripView(trip: TripDoc) {
     vehicleNumber: trip.vehicleNumber,
     driverName: trip.driverName,
     driverMobile: trip.driverMobile,
+    vehicleType: trip.vehicleType ?? null,
     status: trip.status,
     bills: trip.bills.map((bill) => ({
       salesOrderId: String(bill.salesOrderId),
@@ -112,7 +113,14 @@ async function tripView(trip: TripDoc) {
       destination: bill.destination,
       boxes: bill.boxes,
       bookWith: { mode: bill.bookWith.mode, transporter: bill.bookWith.transporter ?? null },
-      pod: bill.pod ? { ref: bill.pod.ref, date: bill.pod.date, at: bill.pod.at } : null,
+      pod: bill.pod
+        ? {
+            ref: bill.pod.ref,
+            date: bill.pod.date,
+            at: bill.pod.at,
+            hasPhoto: Boolean(bill.pod.photoFileId),
+          }
+        : null,
     })),
     whatsappText: trip.whatsappText ?? null,
     checkedOutAt: trip.checkedOutAt ?? null,
@@ -155,7 +163,23 @@ const newTrip = z.object({
 
 /** POST /trips: a new PLANNED trip. */
 tripsRouter.post('/trips', requireRole(...WRITERS), async (req, res) => {
-  const input = newTrip.parse(req.body);
+  // Reference-copy branch: a trip may name a registered vehicle; its number, owner and mobile are copied.
+  const body = req.body as Record<string, unknown>;
+  let fromVehicle: Record<string, unknown> = {};
+  if (typeof body.vehicleOwnerId === 'string') {
+    const owner = isValidObjectId(body.vehicleOwnerId)
+      ? await VehicleOwnerModel.findById(body.vehicleOwnerId)
+      : null;
+    if (!owner || owner.status !== 'ACTIVE') throw invalidField('vehicleOwnerId', 'Pick a vehicle');
+    fromVehicle = {
+      vehicleNumber: owner.vehicleNumber,
+      driverName: owner.name,
+      driverMobile: owner.mobile,
+    };
+    const input = newTrip.parse({ ...body, ...fromVehicle });
+    fromVehicle = { ...input, vehicleOwnerId: owner._id, vehicleType: owner.vehicleType };
+  }
+  const input = Object.keys(fromVehicle).length > 0 ? fromVehicle : newTrip.parse(req.body);
   const trip = await TripModel.create({
     code: await nextDocumentNumber('T'),
     ...input,
@@ -296,6 +320,14 @@ tripsRouter.post(
     const bill = trip.bills.find((item) => item.salesOrderId.equals(id));
     if (!bill) throw notFound('That bill is not on this trip.');
     await runTradeAction(req, String(bill.tradeId), 'recordPod', req.body);
+    // Reference-copy branch: keep the LR / receipt photo with the POD.
+    const photo = (req.body as { photoFileId?: unknown }).photoFileId;
+    if (typeof photo === 'string' && isValidObjectId(photo)) {
+      await TripModel.updateOne(
+        { _id: trip._id, 'bills.salesOrderId': id },
+        { $set: { 'bills.$.pod.photoFileId': photo } },
+      );
+    }
     res.json({ trip: await tripView(await TripModel.findById(trip._id).orFail()) });
   },
 );
