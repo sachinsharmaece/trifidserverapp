@@ -1,11 +1,25 @@
 import { z } from 'zod';
 import { numberSetting } from '../../db/settings.js';
-import { BuyerModel, ListingModel, ReasonCodeModel, SellerModel, SkuModel, } from '../../models/index.js';
+import { BuyerModel, ListingModel, SellerModel, SkuModel, } from '../../models/index.js';
 import { DECLINE_REASONS } from '../../shared/enums.js';
 import { conflict, invalidField } from '../../shared/errors.js';
 import { formatRupees } from '../../shared/money.js';
+import { clip } from '../../shared/text.js';
+import { reasonFor } from '../masters/reasons.js';
 import { objectId } from '../parties/common.js';
 import { computeBuyerRate, loadMargins, pricingTierOf } from '../pricing/pricing.js';
+import { arrivalInput, correctInspection as saveCorrection, correctionNotes, inspectionInput, inspectionNotes, inspectLot as runInspection, recordArrival as saveArrival, } from '../dock/dock.js';
+import { margBillInput, recordMargBill as saveMargBill } from '../billing/billing.js';
+import { closeLostInTransit as saveLost, lostInput, lostNotes } from '../dock/lostInTransit.js';
+import { holdInput, holdPayout as saveHold, releaseHold as saveRelease } from '../payouts/hold.js';
+import { raiseComplaint as saveComplaint, raiseInput as complaintInput, resolveComplaint as saveResolution, resolveInput as resolutionInput, } from '../complaints/complaints.js';
+import { spendAdvance } from '../payments/advances.js';
+import { confirmReceipt, logReceipt, rejectReceipt } from '../payments/payments.js';
+import { recordSellerPayment as savePayment, sellerPaymentInput } from '../payouts/payouts.js';
+import { dispatchInput, leg1Summary, recordDispatch as saveDispatch, recordSellerBill as saveSellerBill, sellerBillInput, } from '../purchaseOrders/dispatch.js';
+import { raisePurchaseOrder } from '../purchaseOrders/purchaseOrders.js';
+import { markDelivered } from '../salesOrders/salesOrders.js';
+import { podInput, recordPod as savePod } from '../trips/trips.js';
 import { cancelSalesOrder, raiseSalesOrder } from '../salesOrders/salesOrders.js';
 import { earliestExpiryMonth, monthsFromNow } from './stages.js';
 /** Ties an input schema to its handler, so the handler always gets checked, typed input. */
@@ -237,14 +251,6 @@ const giveQuote = command(quoteInput, async ({ trade, userId, now }, input) => {
 });
 // ---------------------------------------------------------------------------------------------------------------
 // Sales again: the buyer's answer (FR-ORD-02)
-/** A reason picked from the reason codes master: it must exist, be turned on and belong to this dropdown. */
-async function reasonFor(reasonCodeId, context) {
-    const reason = await ReasonCodeModel.findById(reasonCodeId);
-    if (!reason?.active || reason.context !== context) {
-        throw invalidField('reasonCodeId', 'Choose a reason from the list.');
-    }
-    return reason;
-}
 const reasonInput = z.object({ reasonCodeId: objectId, note: optionalText(300) });
 /**
  * b4 → b5: Sales sends the offer to the buyer (boxes, rate, expiry) and waits for his call. The seller keeps
@@ -342,16 +348,297 @@ const leakAfterOrder = command(reasonInput, async (ctx, input) => {
     };
 });
 /**
- * Leakage → b2: the buyer is interested again. The old seller answer, offer and order link are cleared (a
- * cancelled order stays on record), so "Send to seller" starts the seller side afresh.
+ * Leakage or Dock rejected → b2: the buyer is interested again. The old seller answer, offer and order links are
+ * cleared (the old order, PO and any refund due stay on record), so "Send to seller" starts the seller side afresh.
  */
 const reopen = command(z.object({}), () => ({
     set: { buyerStage: 'B2_INQUIRY' },
-    unset: ['leakage', 'sellerStage', 'sellerId', 'sellerAnswer', 'offer', 'salesOrderId', 'dueAt'],
+    unset: [
+        'leakage',
+        'sellerStage',
+        'sellerId',
+        'sellerAnswer',
+        'offer',
+        'salesOrderId',
+        'purchaseOrderId',
+        'dueAt',
+    ],
     buyerNote: 'Reopened: send it to the seller again when the buyer is ready',
     sellerNote: '',
 }));
+// ---------------------------------------------------------------------------------------------------------------
+// Gate A: the buyer pays (FR-PAY, SRS-PAY-01..03; Q-ACC-01 = full payment before the PO)
+const paymentInput = z.object({
+    bankLedgerId: objectId,
+    // A bank reference: letters and digits, spaces and dashes removed, capitals.
+    utr: z
+        .string()
+        .transform((text) => text.replace(/[\s-]/g, '').toUpperCase())
+        .pipe(z.string().regex(/^[0-9A-Z]{6,30}$/, 'A UTR has 6 to 30 letters or digits.')),
+    amountPaise: z.number().int().min(1, 'Enter the amount.').max(100_000_000_000),
+    receivedOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter the date the money came in.'),
+});
+/**
+ * b6: Sales enters what the buyer says he paid (bank, UTR, amount, date). Not money yet: Accounts must find it in
+ * the bank. The trade stays at b6.
+ */
+const enterPayment = command(paymentInput, async (ctx, input) => {
+    const { receipt } = await logReceipt(ctx, input);
+    return {
+        set: {},
+        buyerNote: `Payment entered: ${formatRupees(receipt.amountPaise)}, UTR ${receipt.utr} (${receipt.number}). Waiting for Accounts`,
+        sellerNote: '',
+    };
+});
+/**
+ * Gate A: the order is paid in full, so the PO goes to the seller: b6 → b7, s2 → s3, the dispatch clock starts.
+ * Shared by `confirmPayment` and `useAdvance`: both end here.
+ */
+async function openGateA(ctx, order, paid) {
+    const po = await raisePurchaseOrder(ctx, order);
+    return {
+        set: {
+            buyerStage: 'B7_PAID',
+            sellerStage: 'S3_PO',
+            purchaseOrderId: po._id,
+            dueAt: po.dispatchDueAt,
+        },
+        buyerNote: `${paid}. ${order.number} is paid in full`,
+        sellerNote: `${po.number} raised: the seller should dispatch`,
+    };
+}
+/**
+ * Accounts found the money (never the person who entered it). Posts the RECEIPT voucher (Dr bank · Cr buyer).
+ * Paid in full → the order is PAID, the PO goes to the seller: b6 → b7, s2 → s3, the dispatch clock starts.
+ * Less → an advance: the order waits at b6 for the rest.
+ */
+const confirmPayment = command(z.object({ receiptId: objectId }), async (ctx, input) => {
+    const done = await confirmReceipt(ctx, input.receiptId);
+    const paid = `Payment confirmed: ${formatRupees(done.receipt.amountPaise)} (${done.voucher.number})`;
+    if (!done.paidInFull) {
+        return {
+            set: {},
+            buyerNote: `${paid}. Advance kept: ${formatRupees(done.stillDuePaise)} still due on ${done.order.number}`,
+            sellerNote: '',
+        };
+    }
+    return openGateA(ctx, done.order, paid);
+});
+/**
+ * Build 9: Accounts puts the buyer's advance (a hand-added payment already posted) on this order, oldest payment
+ * first and never more than the order needs. Paid in full → Gate A exactly like a confirmed payment.
+ */
+const useAdvance = command(z.object({}), async (ctx) => {
+    const done = await spendAdvance(ctx);
+    const paid = `Advance used: ${formatRupees(done.usedPaise)} from ${done.used.map((item) => item.number).join(', ')}`;
+    if (!done.paidInFull) {
+        return {
+            set: {},
+            buyerNote: `${paid}. ${formatRupees(done.stillDuePaise)} still due on ${done.order.number}`,
+            sellerNote: '',
+        };
+    }
+    return openGateA(ctx, done.order, paid);
+});
+/** Accounts could not find the money: the entry is marked not received, with a note for Sales. */
+const rejectPayment = command(z.object({
+    receiptId: objectId,
+    note: z
+        .string()
+        .trim()
+        .min(1, 'Say what was wrong, e.g. "No such UTR in the HDFC statement".')
+        .max(300),
+}), async (ctx, input) => {
+    const receipt = await rejectReceipt(ctx, input.receiptId, input.note);
+    return {
+        set: {},
+        buyerNote: `${receipt.number} (${formatRupees(receipt.amountPaise)}, UTR ${receipt.utr}) not found in the bank: ${input.note}`,
+        sellerNote: '',
+    };
+});
 /** Every action's command. The engine looks the action up here. */
+// ---------------------------------------------------------------------------------------------------------------
+// Build 3: leg 1 (Purchase) and the Indore dock (Logistics), LOCK-40
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** s3 → s5 On the way: Purchase records how the seller sent the goods. The arrival clock starts. */
+const recordDispatch = command(dispatchInput, async (ctx, input) => {
+    const { leg1 } = await saveDispatch(ctx, input);
+    const days = await numberSetting('TRANSIT_OVERDUE_DAYS', 4);
+    const freight = input.freightTerms === 'TO_PAY' && input.freightPaise
+        ? `, freight ${formatRupees(input.freightPaise)} to pay at Indore`
+        : ', freight paid by the seller';
+    return {
+        set: { sellerStage: 'S5_DISPATCHED', dueAt: new Date(ctx.now.getTime() + days * DAY_MS) },
+        buyerNote: 'Goods on the way to the Indore dock',
+        sellerNote: `Dispatched on ${input.dispatchedOn} ${leg1Summary(leg1)}${freight}`,
+    };
+});
+/** The seller's tax invoice (any time from the PO until he is paid). The stage does not move. */
+const recordSellerBill = command(sellerBillInput, async (ctx, input) => {
+    const { note, replaced } = await saveSellerBill(ctx, input);
+    return {
+        set: {},
+        buyerNote: '',
+        sellerNote: replaced ? `${note} (replaces the earlier bill)` : note,
+    };
+});
+/** s5 On the way → s5 At the dock: Logistics records the arrival. The dock must check within a day. */
+const recordArrival = command(arrivalInput, async (ctx, input) => {
+    const { inspectBy, ordered } = await saveArrival(ctx, input);
+    const bill = input.billWithGoods
+        ? 'seller bill came with the goods'
+        : 'no seller bill with the goods';
+    return {
+        set: { sellerStage: 'S5_ARRIVED', dueAt: inspectBy },
+        buyerNote: 'Goods arrived at the Indore dock',
+        sellerNote: `Arrived: ${input.boxesCounted} boxes counted for ${ordered} ordered; ${bill}`,
+    };
+});
+/**
+ * Gate B: the dock checks the goods line by line. Some accepted → b8 To be billed / s6 (the PURCHASE voucher is
+ * posted). Nothing accepted (O4) → Dock rejected / Closed: the buyer is owed a full refund; Sales may reopen.
+ */
+const inspectLot = command(inspectionInput, async (ctx, input) => {
+    const result = await runInspection(ctx, input);
+    const notes = inspectionNotes(result);
+    if (result.outcome === 'O4') {
+        return {
+            set: { buyerStage: 'X_DOCK_REJECTED', sellerStage: 'S_CLOSED' },
+            unset: ['dueAt'],
+            ...notes,
+        };
+    }
+    return {
+        set: { buyerStage: 'B8_BILLED', sellerStage: 'S6_PAYMENT' },
+        unset: ['dueAt'],
+        ...notes,
+    };
+});
+/**
+ * Build 9: the dock typed a wrong count and sees it before the Marg bill is saved. A new check replaces the first;
+ * its voucher, return notes and refund are replaced too. The deal stays where it is (b8 / s6).
+ */
+const correctInspection = command(inspectionInput, async (ctx, input) => {
+    const result = await saveCorrection(ctx, input);
+    return { set: {}, ...correctionNotes(result) };
+});
+// ---------------------------------------------------------------------------------------------------------------
+// Build 4: the Marg bill (Accounts), the proof of dispatch on a trip (Logistics), delivery (Sales)
+/** b8: Accounts keys the Marg invoice; the checks pass, the SALES voucher is posted. The stage stays b8. */
+const recordMargBill = command(margBillInput, async (ctx, input) => {
+    const { note } = await saveMargBill(ctx, input);
+    return { set: {}, buyerNote: note, sellerNote: '' };
+});
+/** b8 → b9 Dispatched: the POD for this bill on a trip that is out. The delivery window starts. */
+const recordPod = command(podInput, async (ctx, input) => {
+    const { tripCode, via } = await savePod(ctx, input);
+    const days = await numberSetting('DELIVERY_WINDOW_DAYS', 7);
+    // The delivery window is also the complaint window: both end at the same moment (kept after delivery).
+    const windowEnds = new Date(ctx.now.getTime() + days * DAY_MS);
+    return {
+        set: { buyerStage: 'B9_DISPATCH', dueAt: windowEnds, complaintByAt: windowEnds },
+        buyerNote: `Dispatched to the buyer on trip ${tripCode}: ${via}`,
+        sellerNote: '',
+    };
+});
+/** b9 → b10 Delivered: Sales confirms the buyer has the goods. */
+const confirmDelivery = command(z.object({}), async (ctx) => {
+    await markDelivered(ctx);
+    return {
+        set: { buyerStage: 'B10_DELIVERED' },
+        unset: ['dueAt'],
+        buyerNote: 'Delivered: the buyer has the goods',
+        sellerNote: '',
+    };
+});
+/**
+ * b9/b10 → b11 Complaint: Sales records the buyer's complaint inside the delivery window (7 days after the proof of
+ * dispatch). The silence clock stops; the Controller is due to decide within SLA_B11_HOURS.
+ */
+const raiseComplaint = command(complaintInput, async (ctx, input) => {
+    const { resolveByAt, note } = await saveComplaint(ctx, input);
+    return {
+        set: { buyerStage: 'B11_COMPLAINTS', dueAt: resolveByAt },
+        buyerNote: note,
+        sellerNote: '',
+    };
+});
+/**
+ * b11 → b10 Delivered: the Controller decides (no action, credit, replacement, return or refund). A credit or
+ * refund posts a credit note; a refund also waits in Payouts. Sales reads the decision on the card.
+ */
+const resolveComplaint = command(resolutionInput, async (ctx, input) => {
+    const { deliver, note } = await saveResolution(ctx, input);
+    if (deliver)
+        await markDelivered(ctx);
+    return {
+        set: { buyerStage: 'B10_DELIVERED' },
+        unset: ['dueAt'],
+        buyerNote: note,
+        sellerNote: '',
+    };
+});
+/**
+ * b9 → b10 Delivered, by the system (Q-LOG-09): the 7-day window ended and no complaint came. Only the clock
+ * (modules/clocks) presses it, as 'SYSTEM'; nobody can press it by hand.
+ */
+const silenceDelivery = command(z.object({}), async (ctx) => {
+    if (!ctx.trade.dueAt || ctx.trade.dueAt > ctx.now) {
+        throw conflict('The delivery window has not ended yet.', 'WINDOW_OPEN');
+    }
+    await markDelivered(ctx);
+    return {
+        set: { buyerStage: 'B10_DELIVERED' },
+        unset: ['dueAt'],
+        buyerNote: 'Delivered: no complaint came within the delivery window',
+        sellerNote: '',
+    };
+});
+/** s6 → Closed: Accounts types the bank's UTR for the seller's line in a released payout batch (Q-ACC-11). */
+const recordSellerPayment = command(sellerPaymentInput, async (ctx, input) => {
+    const { note } = await savePayment(ctx, input);
+    return { set: { sellerStage: 'S_CLOSED' }, buyerNote: '', sellerNote: note };
+});
+// ---------------------------------------------------------------------------------------------------------------
+// Build 7: Lost in transit, a hold on a seller's payout, and the b1 archive clock
+/**
+ * s5 On the way → Closed (Controller): the goods never reached the dock and the arrival clock has run out (O8).
+ * The buyer is refunded in full, the seller gets a strike, nothing is owed to the seller. Sales may reopen the deal.
+ */
+const closeLostInTransit = command(lostInput, async (ctx, input) => {
+    const result = await saveLost(ctx, input);
+    return {
+        set: { buyerStage: 'X_LOST_IN_TRANSIT', sellerStage: 'S_CLOSED' },
+        unset: ['dueAt'],
+        ...lostNotes(result, input),
+    };
+});
+/** s6 (Controller): do not pay this seller for now. The stage does not move; the PO shows "On hold: reason". */
+const holdPayout = command(holdInput, async (ctx, input) => {
+    await saveHold(ctx, input);
+    return { set: {}, buyerNote: '', sellerNote: clip(`Payout held: ${input.reason}`) };
+});
+/** s6 (Controller): the seller may be paid again. */
+const releaseHold = command(z.object({}), async (ctx) => {
+    const { reason } = await saveRelease(ctx);
+    return { set: {}, buyerNote: '', sellerNote: clip(`Payout hold released (was: ${reason})`) };
+});
+/**
+ * b1 → Archived: nobody touched this viewing for B1_ARCHIVE_DAYS. Only the system presses it (modules/clocks).
+ * The viewing never had a seller, an order or money, so nothing else changes; Sales opens a new one from the board.
+ */
+const archiveViewing = command(z.object({}), async (ctx) => {
+    const days = await numberSetting('B1_ARCHIVE_DAYS', 7);
+    if (ctx.trade.lastActionAt.getTime() > ctx.now.getTime() - days * DAY_MS) {
+        throw conflict('This viewing was touched lately.', 'NOT_IDLE');
+    }
+    return {
+        set: { buyerStage: 'X_ARCHIVED' },
+        unset: ['dueAt'],
+        buyerNote: `Archived: nobody touched this viewing for ${days} days`,
+        sellerNote: '',
+    };
+});
 export const COMMANDS = {
     wantIt,
     sendToSeller,
@@ -363,5 +650,25 @@ export const COMMANDS = {
     buyerNo,
     leakAfterOrder,
     reopen,
+    enterPayment,
+    confirmPayment,
+    useAdvance,
+    rejectPayment,
+    recordDispatch,
+    recordSellerBill,
+    recordArrival,
+    inspectLot,
+    correctInspection,
+    recordMargBill,
+    recordPod,
+    confirmDelivery,
+    recordSellerPayment,
+    raiseComplaint,
+    resolveComplaint,
+    silenceDelivery,
+    closeLostInTransit,
+    holdPayout,
+    releaseHold,
+    archiveViewing,
 };
 //# sourceMappingURL=commands.js.map

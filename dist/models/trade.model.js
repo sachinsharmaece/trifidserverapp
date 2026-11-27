@@ -81,6 +81,8 @@ const tradeSchema = new Schema({
     },
     /** The sales order raised when the buyer said yes (b6). Cleared when a lost trade is reopened. */
     salesOrderId: refField('SalesOrder'),
+    /** The purchase order raised when the buyer paid in full (b7 / s3). */
+    purchaseOrderId: refField('PurchaseOrder'),
     /** Why the trade was lost (X_LEAKAGE): the buyer said no (BUYER_NO) or dropped the order (B6_LEAK). */
     leakage: {
         type: new Schema({
@@ -96,6 +98,8 @@ const tradeSchema = new Schema({
     },
     /** The clock for whoever acts next, from Settings (SRS-TRD-04). Empty = no clock at this stage. */
     dueAt: Date,
+    /** The buyer may complain until then (DELIVERY_WINDOW_DAYS after the proof of dispatch). Kept after delivery. */
+    complaintByAt: Date,
     /** The Sales person who opened it (the owner, for later team scope). */
     ownerUserId: { ...refField('User'), required: true },
     lastActionAt: { type: Date, required: true },

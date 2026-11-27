@@ -3,24 +3,32 @@ import { z } from 'zod';
 import { nextDocumentNumber } from '../../db/documentNumbers.js';
 import { BuyerModel, ListingModel, ProductModel, SkuModel, TradeEventModel, TradeModel, } from '../../models/index.js';
 import { writeAudit } from '../../shared/audit.js';
-import { ASK_REASONS } from '../../shared/enums.js';
-import { conflict, forbidden, invalidField, notFound } from '../../shared/errors.js';
+import { ASK_REASONS, } from '../../shared/enums.js';
+import { conflict, forbidden, invalidField, notFound, unauthenticated, } from '../../shared/errors.js';
 import { isDuplicateKeyError } from '../../shared/mongo.js';
 import { currentUserOf } from '../auth/requireAuth.js';
 import { objectId } from '../parties/common.js';
-import { DESK_NAMES, TRADE_ACTIONS, canPress, isAtStage, isTradeAction } from './actions.js';
+import { DESK_NAMES, TRADE_ACTIONS, canPress, isAtStage, isTradeAction, } from './actions.js';
 import { COMMANDS } from './commands.js';
 import { BUYER_STAGE_LABELS } from './stages.js';
 import { canSeeTrade } from './view.js';
+/** Who is acting: the signed-in person, or the system itself when a clock job made the request (Build 6). */
+function actorOf(req) {
+    if (req.user)
+        return { id: req.user.id, role: req.user.role };
+    if (req.systemRun)
+        return { role: 'SYSTEM' };
+    throw unauthenticated();
+}
 /** Writes the history line and the audit line for one engine action (inside the same transaction). */
 async function recordHistory(req, trade, line, session) {
-    const user = currentUserOf(req);
+    const actor = actorOf(req);
     await TradeEventModel.create([
         {
             tradeId: trade._id,
             action: line.action,
-            actorId: user.id,
-            actorRole: user.role,
+            ...(actor.id ? { actorId: actor.id } : {}),
+            actorRole: actor.role,
             ...(line.before?.buyerStage ? { buyerStageBefore: line.before.buyerStage } : {}),
             ...(line.before?.sellerStage ? { sellerStageBefore: line.before.sellerStage } : {}),
             buyerStageAfter: line.after.buyerStage,
@@ -50,9 +58,13 @@ export async function runTradeAction(req, tradeId, action, body) {
     if (!isTradeAction(action))
         throw notFound('Unknown action.');
     const trade = isValidObjectId(tradeId) ? await TradeModel.findById(tradeId) : null;
-    if (!trade || !canSeeTrade(trade, user.role))
+    // A desk that may press this action may act from its queue even if it cannot open the card (Accounts).
+    if (!trade || (!canSeeTrade(trade, user.role) && !canPress(user.role, action))) {
         throw notFound('Trade not found.');
+    }
     const rule = TRADE_ACTIONS[action];
+    if ('systemOnly' in rule)
+        throw forbidden('The system does this when the time is up.');
     if (!canPress(user.role, action))
         throw forbidden(`${DESK_NAMES[rule.desk] ?? rule.desk} does this.`);
     if (!isAtStage(action, trade)) {
@@ -61,9 +73,31 @@ export async function runTradeAction(req, tradeId, action, body) {
     const { version, ...input } = actionBody.parse(body);
     if (version !== trade.version)
         throw staleTrade();
+    return applyAction(req, trade, action, input, new Types.ObjectId(user.id));
+}
+/** Nobody: the `userId` a system run hands to commands. `silenceDelivery` writes no user into anything. */
+const NO_USER_ID = new Types.ObjectId('000000000000000000000000');
+/**
+ * Runs an action only the system presses. `silenceDelivery` (Build 6): the buyer's 7-day window ended and he did not
+ * complain, so the deal counts as delivered. `archiveViewing` (Build 7): a b1 viewing nobody touched for a week. The
+ * history and audit lines say 'SYSTEM'. Throws a 409 when the trade is no longer at the right stage, the time is not up
+ * (the command checks) or someone moved it first; the clock job skips those.
+ */
+export async function runSystemAction(tradeId, action) {
+    const trade = await TradeModel.findById(tradeId);
+    if (!trade)
+        throw notFound('Trade not found.');
+    if (!isAtStage(action, trade)) {
+        throw conflict(`This trade is at ${BUYER_STAGE_LABELS[trade.buyerStage]}.`, 'WRONG_STAGE');
+    }
+    const req = { requestId: `clock-${Date.now()}`, ip: '', systemRun: true };
+    return applyAction(req, trade, action, {}, NO_USER_ID);
+}
+/** The checks are done: change the trade, write its history line and its audit line, all in one transaction. */
+async function applyAction(req, trade, action, input, userId) {
     const now = new Date();
     await mongoose.connection.transaction(async (session) => {
-        const change = await COMMANDS[action].run({ req, trade, userId: new Types.ObjectId(user.id), now, session }, input);
+        const change = await COMMANDS[action].run({ req, trade, userId, now, session }, input);
         const before = { buyerStage: trade.buyerStage, sellerStage: trade.sellerStage };
         // Only update if nobody changed the trade since it was loaded (same version).
         const result = await TradeModel.updateOne({ _id: trade._id, version: trade.version }, {
@@ -140,8 +174,11 @@ export async function openViewing(req, body) {
         buyerStage: 'B1_VIEWING',
     };
     const existing = await TradeModel.findOne(open);
-    if (existing)
+    if (existing) {
+        // Looking at it again counts as touching it: the idle clock (archiveViewing) starts over.
+        await TradeModel.updateOne({ _id: existing._id }, { $set: { lastActionAt: new Date() } });
         return { trade: existing, created: false };
+    }
     try {
         const trade = await createTrade(req, {
             source: 'LISTED',

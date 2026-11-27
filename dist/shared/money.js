@@ -17,4 +17,6 @@ export function splitGst(totalPaise, taxBp, interState) {
     const sgstPaise = Math.ceil(tax / 2);
     return { taxablePaise, cgstPaise: tax - sgstPaise, sgstPaise, igstPaise: 0 };
 }
+/** Our GST state when the company profile has no GSTIN yet: Madhya Pradesh (23), where TriFid is (SRS A-8). */
+export const HOME_STATE_CODE = '23';
 //# sourceMappingURL=money.js.map

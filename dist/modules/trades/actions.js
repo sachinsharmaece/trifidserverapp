@@ -27,8 +27,130 @@ export const TRADE_ACTIONS = {
         desk: 'SALES',
         buyerFrom: ['B6_ORDER_CONFIRMED'],
     },
-    reopen: { label: 'Reopen', desk: 'SALES', buyerFrom: ['X_LEAKAGE'] },
+    reopen: {
+        label: 'Reopen',
+        desk: 'SALES',
+        buyerFrom: ['X_LEAKAGE', 'X_DOCK_REJECTED', 'X_LOST_IN_TRANSIT'],
+    },
+    enterPayment: { label: 'Enter payment', desk: 'SALES', buyerFrom: ['B6_ORDER_CONFIRMED'] },
+    confirmPayment: {
+        label: 'Confirm payment',
+        desk: 'ACCOUNTS',
+        buyerFrom: ['B6_ORDER_CONFIRMED'],
+    },
+    rejectPayment: {
+        label: 'Payment not received',
+        desk: 'ACCOUNTS',
+        buyerFrom: ['B6_ORDER_CONFIRMED'],
+    },
+    // Build 9: the buyer's advance (money Accounts added by hand, with no order) goes to this order. It shows on the
+    // deal card only when the buyer has an advance to use (view.ts).
+    useAdvance: {
+        label: "Use the buyer's advance",
+        desk: 'ACCOUNTS',
+        buyerFrom: ['B6_ORDER_CONFIRMED'],
+    },
+    // Build 3: leg 1 and the dock (LOCK-40). Logistics presses its two from the Dock screen.
+    recordDispatch: {
+        label: 'Record dispatch',
+        desk: 'PURCHASE',
+        buyerFrom: ['B7_PAID'],
+        sellerFrom: ['S3_PO'],
+    },
+    recordSellerBill: {
+        label: 'Seller bill',
+        desk: 'PURCHASE',
+        // The buyer side moves on without waiting for the seller's bill (b9 to b11), so the bill may come late.
+        buyerFrom: ['B7_PAID', 'B8_BILLED', 'B9_DISPATCH', 'B10_DELIVERED', 'B11_COMPLAINTS'],
+        sellerFrom: ['S3_PO', 'S5_DISPATCHED', 'S5_ARRIVED', 'S6_PAYMENT'],
+    },
+    recordArrival: {
+        label: 'Goods arrived',
+        desk: 'LOGISTICS',
+        buyerFrom: ['B7_PAID'],
+        sellerFrom: ['S5_DISPATCHED'],
+    },
+    inspectLot: {
+        label: 'Check the goods',
+        desk: 'LOGISTICS',
+        buyerFrom: ['B7_PAID'],
+        sellerFrom: ['S5_ARRIVED'],
+    },
+    // Build 9: a wrong dock count found later (Logistics, from the Dock screen's Checked lane), until the Marg bill is
+    // saved. The stage does not move; the old check's voucher, return notes and refund are replaced.
+    correctInspection: {
+        label: 'Correct the check',
+        desk: 'LOGISTICS',
+        buyerFrom: ['B8_BILLED'],
+        sellerFrom: ['S6_PAYMENT'],
+        onCard: false,
+    },
+    // Build 4: the Marg bill (Accounts, from To be billed), the POD (Logistics, from Trips), delivery (Sales).
+    recordMargBill: { label: 'Marg bill', desk: 'ACCOUNTS', buyerFrom: ['B8_BILLED'] },
+    recordPod: { label: 'Proof of dispatch', desk: 'LOGISTICS', buyerFrom: ['B8_BILLED'] },
+    confirmDelivery: { label: 'Delivered', desk: 'SALES', buyerFrom: ['B9_DISPATCH'] },
+    // Build 5: the bank proof for a seller's line in a released payout batch (Accounts, from the Payouts screen).
+    recordSellerPayment: {
+        label: 'Seller payment proof',
+        desk: 'ACCOUNTS',
+        buyerFrom: ['B8_BILLED', 'B9_DISPATCH', 'B10_DELIVERED', 'B11_COMPLAINTS'],
+        sellerFrom: ['S6_PAYMENT'],
+        onCard: false,
+    },
+    // Build 6: complaints after dispatch. Sales raises one within the delivery window; the Controller decides.
+    raiseComplaint: {
+        label: 'Buyer complains',
+        desk: 'SALES',
+        buyerFrom: ['B9_DISPATCH', 'B10_DELIVERED'],
+    },
+    resolveComplaint: {
+        label: 'Resolve the complaint',
+        desk: 'CONTROLLER',
+        buyerFrom: ['B11_COMPLAINTS'],
+    },
+    // The delivery window ended with no complaint: the clock marks the trade delivered (Q-LOG-09, modules/clocks).
+    silenceDelivery: {
+        label: 'Delivered (no complaint)',
+        desk: 'SALES',
+        buyerFrom: ['B9_DISPATCH'],
+        onCard: false,
+        systemOnly: true,
+    },
+    // Build 7: the Controller's queue (Today) and the second clock.
+    // The shipment never reached the dock and its arrival clock has run out (the command checks that).
+    closeLostInTransit: {
+        label: 'Close as lost in transit',
+        desk: 'CONTROLLER',
+        buyerFrom: ['B7_PAID'],
+        sellerFrom: ['S5_DISPATCHED'],
+    },
+    // Stop paying a seller for a while, and let him be paid again. The deal card shows only the one that applies.
+    holdPayout: {
+        label: 'Hold the payout',
+        desk: 'CONTROLLER',
+        buyerFrom: ['B8_BILLED', 'B9_DISPATCH', 'B10_DELIVERED', 'B11_COMPLAINTS'],
+        sellerFrom: ['S6_PAYMENT'],
+    },
+    releaseHold: {
+        label: 'Release the hold',
+        desk: 'CONTROLLER',
+        buyerFrom: ['B8_BILLED', 'B9_DISPATCH', 'B10_DELIVERED', 'B11_COMPLAINTS'],
+        sellerFrom: ['S6_PAYMENT'],
+    },
+    // A b1 viewing nobody touched for B1_ARCHIVE_DAYS: the clock closes it (modules/clocks).
+    archiveViewing: {
+        label: 'Archive the viewing',
+        desk: 'SALES',
+        buyerFrom: ['B1_VIEWING'],
+        onCard: false,
+        systemOnly: true,
+    },
 };
+/** Whether the deal card shows a button for this action (a few are done from their own screen). */
+export function showsOnCard(action) {
+    const rule = TRADE_ACTIONS[action];
+    return rule.onCard !== false;
+}
 export const TRADE_ACTION_NAMES = Object.keys(TRADE_ACTIONS);
 export function isTradeAction(name) {
     return Object.hasOwn(TRADE_ACTIONS, name);
@@ -42,14 +164,23 @@ export function isAtStage(action, trade) {
         return true;
     return trade.sellerStage ? rule.sellerFrom.includes(trade.sellerStage) : false;
 }
-/** Founder and Admin have every right, so they may press any desk's button (client decision, 23 Nov 2026). */
+/** Founder and Admin have every right, so they may press any desk's button (client decision, 23 Nov 2026), except the system's. */
 export const PRESS_ANY_BUTTON_ROLES = ['FOUNDER', 'ADMIN'];
 /** May this role press this action's button? Its own desk, or Founder/Admin. */
 export function canPress(role, action) {
-    return role === TRADE_ACTIONS[action].desk || PRESS_ANY_BUTTON_ROLES.includes(role);
+    const rule = TRADE_ACTIONS[action];
+    if (rule.systemOnly)
+        return false;
+    return role === rule.desk || PRESS_ANY_BUTTON_ROLES.includes(role);
 }
 /** Names people see for the desks, as in "Purchase does this". */
-export const DESK_NAMES = { SALES: 'Sales', PURCHASE: 'Purchase' };
+export const DESK_NAMES = {
+    SALES: 'Sales',
+    PURCHASE: 'Purchase',
+    ACCOUNTS: 'Accounts',
+    LOGISTICS: 'Logistics',
+    CONTROLLER: 'Controller',
+};
 /** Labels for the history: the actions above plus the two that create a trade. */
 export const HISTORY_LABELS = {
     openViewing: 'Opened from the rate board',

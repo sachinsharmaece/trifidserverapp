@@ -1,16 +1,18 @@
 import { AuditEventModel } from '../models/index.js';
 import { unauthenticated } from './errors.js';
-/** Writes one line to the append-only audit log: who (from the signed-in user) did what to which record. */
+/**
+ * Writes one line to the append-only audit log: who (from the signed-in user) did what to which record.
+ * A system job (the clocks) has no signed-in user: its made-up request says `systemRun`, and the line is 'SYSTEM'.
+ */
 export async function writeAudit(req, entry) {
     const actor = req.user;
-    if (!actor)
+    if (!actor && !req.systemRun)
         throw unauthenticated(); // audited actions always sit behind requireAuth
     const { session, ...fields } = entry;
     await AuditEventModel.create([
         {
             ...fields,
-            actorId: actor.id,
-            actorRole: actor.role,
+            ...(actor ? { actorId: actor.id, actorRole: actor.role } : { actorRole: 'SYSTEM' }),
             requestId: req.requestId,
             ip: req.ip ?? '',
         },

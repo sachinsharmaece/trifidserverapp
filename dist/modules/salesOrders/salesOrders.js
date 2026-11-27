@@ -1,9 +1,14 @@
 import { numberSetting } from '../../db/settings.js';
 import { nextDocumentNumber } from '../../db/documentNumbers.js';
-import { BuyerModel, CompanyModel, HsnCodeModel, ProductModel, SalesOrderModel, SellerModel, SkuModel, } from '../../models/index.js';
+import { BuyerModel, CompanyModel, HsnCodeModel, ProductModel, ReceiptModel, SalesOrderModel, SellerModel, SkuModel, } from '../../models/index.js';
 import { writeAudit } from '../../shared/audit.js';
 import { conflict } from '../../shared/errors.js';
-import { splitGst } from '../../shared/money.js';
+import { HOME_STATE_CODE, splitGst } from '../../shared/money.js';
+import { margBillView } from '../billing/billing.js';
+import { complaintsOf } from '../complaints/complaints.js';
+import { refundsOf } from '../dock/dock.js';
+import { paymentsOf } from '../payments/payments.js';
+import { deliveryOf } from '../trips/trips.js';
 import { requireRole } from '../auth/requireRole.js';
 /** Who may read sales orders: the buyer side (Sales), Accounts (who will confirm payments), and supervisors. */
 export const ORDER_READER_ROLES = [
@@ -16,8 +21,6 @@ export const ORDER_READER_ROLES = [
 export const canReadSalesOrders = requireRole(...ORDER_READER_ROLES);
 /** Who also sees the seller and his rate on an order: the supervisors (never Sales or Accounts). */
 const SEES_SELLER = ['CONTROLLER', 'FOUNDER', 'ADMIN'];
-/** Our GST state when the company profile has no GSTIN yet: Madhya Pradesh (23), where TriFid is (SRS A-8). */
-const HOME_STATE_CODE = '23';
 const DEFAULT_PAYMENT_WINDOW_HOURS = 24;
 /**
  * The buyer said yes (`buyerYes`): raise his sales order from the trade's fixed offer and the seller's answer.
@@ -104,6 +107,13 @@ export async function raiseSalesOrder({ req, trade, userId, now, session }) {
  */
 export async function cancelSalesOrder({ req, trade, userId, now, session }, reason) {
     const order = await SalesOrderModel.findById(trade.salesOrderId).session(session).orFail();
+    const waiting = await ReceiptModel.countDocuments({
+        salesOrderId: order._id,
+        status: 'LOGGED',
+    }).session(session);
+    if (waiting > 0) {
+        throw conflict('A payment entered for this order is waiting for Accounts: ask them to confirm or reject it first.', 'PAYMENT_WAITING');
+    }
     if (order.status !== 'AWAITING_PAYMENT' || order.paidPaise > 0) {
         throw conflict('Money was received for this order: refunds are not built yet.', 'ORDER_HAS_PAYMENT');
     }
@@ -132,6 +142,22 @@ export async function cancelSalesOrder({ req, trade, userId, now, session }, rea
         session,
     });
     return order;
+}
+/** b9 → b10: the buyer has the goods (engine action `confirmDelivery`). The order becomes DELIVERED. */
+export async function markDelivered({ req, trade, now, session }) {
+    const order = await SalesOrderModel.findById(trade.salesOrderId).session(session).orFail();
+    const result = await SalesOrderModel.updateOne({ _id: order._id, version: order.version }, { $set: { status: 'DELIVERED', deliveredAt: now }, $inc: { version: 1 } }, { session, runValidators: true });
+    if (result.matchedCount !== 1) {
+        throw conflict('Someone else changed this order. Reload and try again.', 'STALE_ORDER');
+    }
+    await writeAudit(req, {
+        action: 'salesOrder.deliver',
+        entityType: 'SalesOrder',
+        entityId: order.id,
+        before: { status: order.status },
+        after: { status: 'DELIVERED' },
+        session,
+    });
 }
 /** One row of the Sales orders list. */
 export function salesOrderRow(order) {
@@ -194,6 +220,14 @@ export async function salesOrderView(order, role) {
         },
         paymentDueAt: order.paymentDueAt,
         paidPaise: order.paidPaise,
+        paidAt: order.paidAt ?? null,
+        payments: (await paymentsOf(order._id)).map(({ enteredById: _hidden, ...payment }) => payment),
+        // Money owed back to the buyer after the dock check (paid later, with payouts).
+        refunds: await refundsOf(order._id),
+        complaints: await complaintsOf({ salesOrderId: order._id }),
+        // Build 4: the Marg bill, the trip and delivery.
+        margBill: margBillView(order),
+        delivery: await deliveryOf(order),
         cancel: order.cancel
             ? {
                 at: order.cancel.at,

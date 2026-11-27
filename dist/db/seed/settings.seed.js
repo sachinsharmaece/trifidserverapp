@@ -28,6 +28,18 @@ export const SETTINGS_SEED = [
         type: 'NUMBER',
         description: 'Days in transit before a shipment is flagged overdue.',
     },
+    {
+        key: 'INSPECTION_HOURS',
+        value: 24,
+        type: 'NUMBER',
+        description: 'Hours after arrival within which the dock should check the goods (LOCK-40 L40.3).',
+    },
+    {
+        key: 'RETURN_NOTE_DAYS',
+        value: 30,
+        type: 'NUMBER',
+        description: 'Days within which boxes on a return note go back to the seller (LOCK-40 L40.7).',
+    },
     { key: 'ASK_LIFE_DAYS', value: 30, type: 'NUMBER', description: 'Days a buyer ask stays open.' },
     {
         key: 'LISTING_LIFE_DAYS',

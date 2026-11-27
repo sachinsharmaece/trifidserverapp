@@ -2,6 +2,20 @@ import { Router } from 'express';
 import { authRouter } from '../modules/auth/auth.routes.js';
 import { listingsRouter } from '../modules/listings/listings.routes.js';
 import { boardRouter } from '../modules/pricing/board.routes.js';
+import { booksRouter } from '../modules/books/books.routes.js';
+import { bankReconciliationRouter } from '../modules/books/bankReconciliation.routes.js';
+import { journalsRouter } from '../modules/books/journals.routes.js';
+import { billingRouter } from '../modules/billing/billing.routes.js';
+import { clocksRouter } from '../modules/clocks/clocks.routes.js';
+import { complaintsRouter } from '../modules/complaints/complaints.routes.js';
+import { dockRouter } from '../modules/dock/dock.routes.js';
+import { payoutsRouter } from '../modules/payouts/payouts.routes.js';
+import { todayRouter } from '../modules/today/today.routes.js';
+import { tripsRouter } from '../modules/trips/trips.routes.js';
+import { paymentsRouter } from '../modules/payments/payments.routes.js';
+import { reportsRouter } from '../modules/reports/reports.routes.js';
+import { systemRouter } from '../modules/system/system.routes.js';
+import { purchaseOrdersRouter } from '../modules/purchaseOrders/purchaseOrders.routes.js';
 import { salesOrdersRouter } from '../modules/salesOrders/salesOrders.routes.js';
 import { tradesRouter } from '../modules/trades/trades.routes.js';
 import { buyersRouter } from '../modules/parties/buyers.routes.js';
@@ -52,4 +66,28 @@ apiRouter.use(boardRouter);
 apiRouter.use(tradesRouter);
 // Sales orders: read only. The trade engine raises and cancels them (buyer says yes / drops the order).
 apiRouter.use(salesOrdersRouter);
+// Payments to confirm (the Accounts queue: the same engine actions as the deal card), POs and the books.
+apiRouter.use(paymentsRouter);
+apiRouter.use(purchaseOrdersRouter);
+apiRouter.use(booksRouter);
+// Build 9: hand-made journals and opening balances (a different person approves), the vouchers list and reversals.
+apiRouter.use(journalsRouter);
+// Build 9: bank reconciliation: the statement balance against the books, and the lock on reconciled days.
+apiRouter.use(bankReconciliationRouter);
+// The Logistics dock (arrival and check: the same engine actions) and return notes. No firm names or money.
+apiRouter.use(dockRouter);
+// Build 4: To be billed (the Accounts queue: the Marg bill) and Trips (Logistics: POD). Same engine actions.
+apiRouter.use(billingRouter);
+apiRouter.use(tripsRouter);
+apiRouter.use(payoutsRouter);
+// Build 6: complaints after dispatch (the Controller's queue; the engine actions raise and resolve them) and the
+// "Run now" button for the clocks.
+apiRouter.use(complaintsRouter);
+apiRouter.use(clocksRouter);
+// Build 7: the Controller's Today page (what ran past its time, lost-in-transit candidates, held payouts).
+apiRouter.use(todayRouter);
+// Build 8: the registers, trial balance, dashboards and the two PDFs (proforma, purchase order), and the
+// integrity check ("Run now" and what the last run found).
+apiRouter.use(reportsRouter);
+apiRouter.use(systemRouter);
 //# sourceMappingURL=index.js.map

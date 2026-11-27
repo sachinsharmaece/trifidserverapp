@@ -13,6 +13,8 @@ const envSchema = z
     CORS_ORIGIN: z.string().default('http://localhost:5173'),
     /** How long to wait for in-flight requests to finish on shutdown. */
     SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+    /** `false` turns the 15-minute clock timer off (for a second server). "Run now" still works. */
+    CLOCKS_ENABLED: z.enum(['true', 'false']).default('true'),
     /** Secret key for bank account numbers (see src/shared/encryption.ts). Empty is the same as not set. */
     DATA_ENCRYPTION_KEY: z
         .string()
@@ -40,6 +42,7 @@ export const env = {
         .map((origin) => origin.trim())
         .filter(Boolean),
     shutdownTimeoutMs: parsed.data.SHUTDOWN_TIMEOUT_MS,
+    clocksEnabled: parsed.data.CLOCKS_ENABLED === 'true',
     /** Undefined until it is set in .env: everything works except saving bank account numbers. */
     dataEncryptionKey: parsed.data.DATA_ENCRYPTION_KEY || undefined,
 };

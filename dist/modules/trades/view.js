@@ -1,7 +1,15 @@
-import { BuyerModel, ListingModel, ProductModel, SalesOrderModel, SellerModel, SkuModel, TradeEventModel, UserModel, } from '../../models/index.js';
+import { BuyerModel, ListingModel, ProductModel, PurchaseOrderModel, SalesOrderModel, SellerModel, SkuModel, TradeEventModel, UserModel, } from '../../models/index.js';
 import { BUYER_SIDE_ROLES, SELLER_SIDE_ROLES } from '../parties/permissions.js';
 import { computeBuyerRate, loadMargins, pricingTierOf } from '../pricing/pricing.js';
-import { DESK_NAMES, HISTORY_LABELS, TRADE_ACTIONS, TRADE_ACTION_NAMES, canPress, isAtStage, } from './actions.js';
+import { DESK_NAMES, HISTORY_LABELS, TRADE_ACTIONS, TRADE_ACTION_NAMES, canPress, isAtStage, showsOnCard, } from './actions.js';
+import { acceptedLines, margBillView } from '../billing/billing.js';
+import { complaintsOf } from '../complaints/complaints.js';
+import { refundsOf } from '../dock/dock.js';
+import { advanceOf } from '../payments/advances.js';
+import { paymentsOf } from '../payments/payments.js';
+import { payoutOfPo } from '../payouts/payouts.js';
+import { purchaseOrderSummary } from '../purchaseOrders/purchaseOrders.js';
+import { deliveryOf } from '../trips/trips.js';
 /**
  * What the API sends about a trade. A trade holds both sides of the visibility wall, so the answer is built
  * per role: the buyer side (buyer, the rate offered to him) only for BUYER_SIDE_ROLES, the seller side (seller,
@@ -14,7 +22,7 @@ export function canSeeTrade(trade, role) {
     return seesBuyerSide(role) || (seesSellerSide(role) && Boolean(trade.sellerStage));
 }
 /** Who must act next, and by when (shown as a clock on cards and queues). */
-function dueOf(trade) {
+export function dueOf(trade) {
     if (!trade.dueAt)
         return null;
     if (trade.sellerStage === 'S0_DEMAND')
@@ -25,11 +33,33 @@ function dueOf(trade) {
         return { at: trade.dueAt, label: 'Seller holds the stock until' };
     if (trade.buyerStage === 'B6_ORDER_CONFIRMED')
         return { at: trade.dueAt, label: 'Payment due' };
+    if (trade.sellerStage === 'S3_PO')
+        return { at: trade.dueAt, label: 'Seller to dispatch by' };
+    if (trade.sellerStage === 'S5_DISPATCHED')
+        return { at: trade.dueAt, label: 'Arrives at the dock by' };
+    if (trade.sellerStage === 'S5_ARRIVED')
+        return { at: trade.dueAt, label: 'Dock check by' };
+    if (trade.buyerStage === 'B9_DISPATCH')
+        return { at: trade.dueAt, label: 'Delivery window ends' };
+    if (trade.buyerStage === 'B11_COMPLAINTS')
+        return { at: trade.dueAt, label: 'Controller to decide by' };
     return { at: trade.dueAt, label: 'Due' };
 }
-/** The buttons for this trade: every action possible at its stage, pressable by its desk (or Founder/Admin). */
-function actionsFor(trade, role) {
-    return TRADE_ACTION_NAMES.filter((name) => isAtStage(name, trade)).map((name) => {
+/**
+ * The buttons for this trade: every action possible at its stage, pressable by its desk (or Founder/Admin).
+ * `payoutHeld` is whether the seller's payout is on hold; null for a reader who does not see the seller side.
+ * The hold buttons are seller side: only the one that applies now is shown, and Sales sees neither.
+ * `hasAdvance`: the buyer has an advance to use (buyer side only); it decides whether "Use the buyer's advance" shows.
+ */
+function actionsFor(trade, role, payoutHeld, hasAdvance) {
+    const showsNow = (name) => name === 'holdPayout'
+        ? payoutHeld === false
+        : name === 'releaseHold'
+            ? payoutHeld === true
+            : name === 'useAdvance'
+                ? hasAdvance
+                : true;
+    return TRADE_ACTION_NAMES.filter((name) => showsOnCard(name) && isAtStage(name, trade) && showsNow(name)).map((name) => {
         const rule = TRADE_ACTIONS[name];
         const allowed = canPress(role, name);
         return {
@@ -40,14 +70,32 @@ function actionsFor(trade, role) {
         };
     });
 }
+/** The order's payments, what is still due (total − confirmed) and what may still be entered (− waiting ones). */
+async function paymentsSummary(order) {
+    const payments = await paymentsOf(order._id);
+    const waiting = payments
+        .filter((payment) => payment.status === 'LOGGED')
+        .reduce((sum, payment) => sum + payment.amountPaise, 0);
+    const balanceDuePaise = order.totalPaise - order.paidPaise;
+    return { payments, balanceDuePaise, openPaise: balanceDuePaise - waiting };
+}
+/** History lines only the seller side may see: a hold on the seller's payout is never shown to Sales. */
+const SELLER_ONLY_EVENTS = ['holdPayout', 'releaseHold'];
 async function historyFor(trade, role) {
-    const events = await TradeEventModel.find({ tradeId: trade._id }).sort({ at: 1 });
-    const users = await UserModel.find({ _id: { $in: events.map((event) => event.actorId) } });
+    const found = await TradeEventModel.find({ tradeId: trade._id }).sort({ at: 1 });
+    const events = seesSellerSide(role)
+        ? found
+        : found.filter((event) => !SELLER_ONLY_EVENTS.includes(event.action));
+    const users = await UserModel.find({
+        _id: { $in: events.flatMap((event) => (event.actorId ? [event.actorId] : [])) },
+    });
     return events.map((event) => ({
         at: event.at,
         action: event.action,
         label: HISTORY_LABELS[event.action] ?? event.action,
-        by: users.find((user) => user._id.equals(event.actorId))?.name ?? '',
+        by: event.actorRole === 'SYSTEM'
+            ? 'System'
+            : (users.find((user) => user._id.equals(event.actorId))?.name ?? ''),
         ...(seesBuyerSide(role) && event.buyerNote ? { buyerNote: event.buyerNote } : {}),
         ...(seesSellerSide(role) && event.sellerNote ? { sellerNote: event.sellerNote } : {}),
     }));
@@ -57,6 +105,15 @@ export async function tradeView(trade, role) {
     const product = await ProductModel.findById(trade.productId).orFail();
     const sku = trade.skuId ? await SkuModel.findById(trade.skuId) : null;
     const listing = trade.listingId ? await ListingModel.findById(trade.listingId) : null;
+    // The purchase order is read once here: its hold decides the buttons, and the seller side below shows it.
+    const purchaseOrder = seesSellerSide(role) && trade.purchaseOrderId
+        ? await PurchaseOrderModel.findById(trade.purchaseOrderId)
+        : null;
+    const payoutHeld = seesSellerSide(role) ? Boolean(purchaseOrder?.hold) : null;
+    // The buyer's unspent advance matters only while his order waits for payment, and only the buyer side sees it.
+    const advance = seesBuyerSide(role) && trade.buyerStage === 'B6_ORDER_CONFIRMED'
+        ? await advanceOf(trade.buyerId)
+        : null;
     const view = {
         id: trade.id,
         number: trade.number,
@@ -68,7 +125,7 @@ export async function tradeView(trade, role) {
         boxesWanted: trade.boxesWanted ?? null,
         ask: trade.ask ? { reason: trade.ask.reason, note: trade.ask.note ?? null } : null,
         due: dueOf(trade),
-        actions: actionsFor(trade, role),
+        actions: actionsFor(trade, role, payoutHeld, Boolean(advance?.totalPaise)),
         history: await historyFor(trade, role),
         version: trade.version,
         lastActionAt: trade.lastActionAt,
@@ -109,6 +166,26 @@ export async function tradeView(trade, role) {
                 }
                 : null,
             // Why the trade was lost (Leakage): buyer side only.
+            // Payments entered for the order (buyer side only: an amount tells our selling price).
+            ...(order
+                ? await paymentsSummary(order)
+                : { payments: [], balanceDuePaise: null, openPaise: null }),
+            // The buyer's advance not yet spent (hand-added payments), while this order waits for payment.
+            advance,
+            // Money owed back to the buyer after the dock check, and whether a payout batch has paid it.
+            refunds: order ? await refundsOf(order._id) : [],
+            // Complaints on this trade (Build 6), oldest first, and the last moment the buyer may still complain.
+            complaints: await complaintsOf({ tradeId: trade._id }),
+            complaintByAt: trade.complaintByAt ?? null,
+            // From the dock check on (b8): what was accepted at the buyer's rate, the Marg bill, the trip, delivery.
+            billing: order &&
+                ['B8_BILLED', 'B9_DISPATCH', 'B10_DELIVERED', 'B11_COMPLAINTS'].includes(trade.buyerStage)
+                ? {
+                    accepted: await acceptedLines(order),
+                    margBill: margBillView(order),
+                    ...(await deliveryOf(order)),
+                }
+                : null,
             leakage: trade.leakage
                 ? {
                     context: trade.leakage.context,
@@ -153,6 +230,10 @@ export async function tradeView(trade, role) {
                     status: listing.status,
                 }
                 : null,
+            // The purchase order (b7 / s3 onward): seller side only, it holds the seller's rate.
+            purchaseOrder: purchaseOrder ? purchaseOrderSummary(purchaseOrder) : null,
+            // Where the seller's payment is (Build 5): seller side only, it is the seller's money.
+            payout: purchaseOrder ? await payoutOfPo(purchaseOrder) : null,
             sellerAnswer: answer
                 ? {
                     kind: answer.kind,
