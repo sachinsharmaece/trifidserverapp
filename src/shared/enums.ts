@@ -359,3 +359,24 @@ export const COMPLAINT_OUTCOMES = [
   'REFUND',
 ] as const;
 export type ComplaintOutcome = (typeof COMPLAINT_OUTCOMES)[number];
+
+/** The system's own jobs that keep a log (Build 8). The nightly integrity check is the first. */
+export const JOB_NAMES = ['INTEGRITY_CHECK'] as const;
+export type JobName = (typeof JOB_NAMES)[number];
+
+/** SCHEDULE = the nightly timer ran it; MANUAL = a person pressed "Run now". */
+export const JOB_TRIGGERS = ['SCHEDULE', 'MANUAL'] as const;
+export type JobTrigger = (typeof JOB_TRIGGERS)[number];
+
+/** OK = nothing found. FINDINGS = the check ran and found problems. FAILED = the check itself crashed. */
+export const JOB_RUN_STATUSES = ['OK', 'FINDINGS', 'FAILED'] as const;
+export type JobRunStatus = (typeof JOB_RUN_STATUSES)[number];
+
+/** The four groups of integrity checks (ARCH §4.6). */
+export const INTEGRITY_CHECKS = [
+  'ORPHAN_REFERENCE',
+  'TOTAL_MISMATCH',
+  'TRIAL_BALANCE',
+  'VOUCHER_SOURCE',
+] as const;
+export type IntegrityCheck = (typeof INTEGRITY_CHECKS)[number];

@@ -3,6 +3,7 @@ import { numberSetting } from '../../db/settings.js';
 import { TradeModel } from '../../models/index.js';
 import { HttpError } from '../../shared/errors.js';
 import { logger } from '../../shared/logger.js';
+import { runIntegrityIfDue } from '../system/integrity.js';
 import { runSystemAction, type SystemAction } from '../trades/engine.js';
 
 /**
@@ -57,10 +58,16 @@ export async function runClocks(now = new Date()) {
   };
 }
 
-/** Starts the timer (every 15 minutes). Called once by server.ts; tests call `runClocks()` themselves. */
+/**
+ * Starts the timer (every 15 minutes). Called once by server.ts; tests call `runClocks()` themselves.
+ * The same timer also starts the nightly integrity check: from 2 am Indian time, once a day (Build 8).
+ */
 export function startClocks() {
   const timer = setInterval(() => {
     runClocks().catch((error: unknown) => logger.error({ msg: 'The clocks failed', error }));
+    runIntegrityIfDue().catch((error: unknown) =>
+      logger.error({ msg: 'The nightly integrity check failed', error }),
+    );
   }, HOW_OFTEN_MS);
   timer.unref(); // never keeps the server alive on its own
 }

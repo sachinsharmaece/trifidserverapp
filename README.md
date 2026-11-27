@@ -65,6 +65,7 @@ deleted. Enums are in `src/shared/enums.ts`, GSTIN/IFSC/HSN/pincode checks in `s
 | Trips      | `trips` (one vehicle leaving the dock with its Marg bills and their PODs)                                                              |
 | Payouts    | `payout_batches` (a batch of seller payments and buyer refunds, its lines kept inside it)                                              |
 | Complaints | `complaints` (a buyer's complaint after dispatch, and the Controller's decision on it)                                                 |
+| Jobs       | `job_runs` (one row per run of a scheduled job: today the nightly integrity check and its findings)                                    |
 
 First time on a database (after `.env` points at it):
 
@@ -107,7 +108,8 @@ src/
   middleware/          requestId (more later: idempotency)
   routes/index.ts      the /api/v1 router — mount feature modules here
   modules/<feature>/   one folder per feature (health, auth, users, masters, parties, listings, pricing, trades,
-                       salesOrders, payments, purchaseOrders, books, dock, billing, trips, payouts, complaints, clocks today)
+                       salesOrders, payments, purchaseOrders, books, dock, billing, trips, payouts, complaints, clocks today,
+                       reports, system)
   shared/              errors (HttpError + error envelope), audit (writeAudit), mongo (duplicate-key helper), logger,
                        shutdown, enums, validators
   types/               Express type additions (req.requestId, req.user)
@@ -790,6 +792,85 @@ get 403). The buttons on it are the same engine actions as on the deal card.
 **No `npm run db:sync` is needed for Build 7:** there is no new collection or index. The new fields on `purchase_orders`
 (`hold`, `lostAt`) are optional, and the new stages and the PO status `LOST` are only new values of existing fields.
 
+## Registers, reports, dashboards and the integrity check (Build 8)
+
+The questions were open, so these are our defaults (all written in the root `CLAUDE.md`). Everything here **only reads**.
+The registers and the trial balance are read from the **vouchers** (Q-ACC-09), so they can never disagree with the books.
+
+| Call                                                     | Who                                            | What it does                                                                                                   |
+| -------------------------------------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `GET /reports/sales-register?from&to&q&page&pageSize`    | Accounts, Controller, Founder, Admin           | One row per SALES voucher (a Marg bill): `{ rows, totals, total, page, pageSize }`                             |
+| `GET /reports/purchase-register?from&to&q&page&pageSize` | Purchase, Accounts, Controller, Founder, Admin | One row per PURCHASE voucher (an accepted lot), with the seller's bill or `null`                               |
+| `GET /reports/trial-balance?asOn`                        | Accounts, Controller, Founder, Admin           | `{ asOn, rows[{ledgerId,name,group,debitPaise,creditPaise}], totals, balanced }`                               |
+| `GET /reports/dashboard`                                 | any signed-in user                             | `{ role, generatedAt, funnels[], tiles[], leakage }`: only what that role may see                              |
+| `GET /sales-orders/:id/proforma`                         | whoever may read sales orders                  | The proforma as a PDF (`inline`)                                                                               |
+| `GET /purchase-orders/:id/document`                      | whoever may read purchase orders               | The purchase order as a PDF (`inline`)                                                                         |
+| `GET /system/integrity`                                  | Controller, Founder, Admin                     | `{ last, history }`: the last run with its findings, then the ten before it (counts only)                      |
+| `POST /system/integrity/run`                             | Controller, Founder, Admin                     | Runs the check now (no password step: it changes nothing) and returns `{ run }`; audited `system.integrityRun` |
+
+**The registers** (`modules/reports/registers.ts`). `from` and `to` are `YYYY-MM-DD` and inclusive (a date that does not
+exist, such as `2026-02-31`, or `to` before `from`, is 422). `q` searches the order number, invoice number, e-way bill,
+buyer number, name and GSTIN (sales), or the seller's bill number, PO number, seller name and GSTIN (purchase). `totals`
+cover **every** row that matches, not only the page. `format=csv` returns every matching row (at most 50,000, else 409
+`TOO_MANY_ROWS`), whatever `page` and `pageSize` say. **Two registers, never one**: the sales register has the buyer and his
+GSTIN and no seller; the purchase register has the seller and no buyer; neither has a rate beside another rate, and the
+word "margin" is nowhere on an Accounts screen (SRS-ACC-07). A test checks this against the JSON and the CSV.
+
+**CSV** (`shared/csv.ts`, `toCsv`): UTF-8 with a byte order mark (so Excel opens it correctly), RFC 4180 quoting (a cell
+with a comma, quote or line break is wrapped in quotes, and quotes are doubled), lines end with CRLF, money is rupees with
+2 decimals (`1240.50`, never floating point), dates are ISO. **Formula guard:** a text cell that starts with `=`, `+`, `-`,
+`@`, a tab or a carriage return gets a leading `'`, so a spreadsheet does not run a firm's name as a formula; a plain
+number such as `-12.50` is left alone. Every download is audited as `report.export` (entity type `Report`, the report's
+name). The file is named `sales-register_<from>_to_<to>.csv` (or `_all.csv`), `purchase-register_…` or
+`trial-balance_<asOn or today>.csv`.
+
+**The trial balance.** Every ledger's closing balance as on `asOn` (default today), worked out from the voucher lines
+with an aggregation: one Debit or Credit column per ledger, ledgers with a zero balance left out, `balanced` is true when
+the two totals are equal. It is not a stored figure: nothing can drift.
+
+**The PDFs** (`modules/reports/documents.ts`, the `pdf-lib` package, standard fonts only). The proforma carries the
+company's name, GSTIN and address, the buyer as he was on the order, each line (product and pack, HSN, units per box,
+boxes, rate, box value, line total), the taxable value, the CGST and SGST (half the tax each) or the IGST, the total, and
+the words "Proforma, not a tax invoice" with the pay-by date (Q-SAL-07 default). The standard font has no rupee sign, so
+it prints "Rs.". A cancelled order has none (409 `ORDER_CANCELLED`), and with no company profile saved yet nothing prints
+(409 `NO_COMPANY`, "Add the company details first"). The purchase order PDF has the seller, the landed rate, the expiry,
+the dispatch-by date and **no buyer**. Both ask the same role question as the order pages themselves, and the wall is
+checked twice (the `/sales-orders` and `/purchase-orders` routers guard the paths before the report route does).
+
+**Dashboards** (`modules/reports/dashboard.ts`). `tiles` are `{ key, label, value, kind: count|money, tone:
+normal|warn|bad, hint? }`; a tile is only `warn` or `bad` when its count is above zero. Sales: the buyer funnel, overdue
+for Sales, awaiting payment, past their payment time. Purchase: the seller funnel, overdue for Purchase, waiting for the
+seller to dispatch, late. Accounts: payments to post, to be billed, seller payouts (a PO with a released hold counts, so
+the filter is `hold: null`), refunds to pay, past their payment time. Logistics: inbound, inbound late, at the dock, dock
+check late, billed orders waiting for a trip (one already on a trip is not waiting), on the road: no money and no names.
+Controller, Founder and Admin: both funnels, order value today and this month, **margin** today and this month (the
+selling value minus the buying value of every non-cancelled order, GST inside both, so it equals the old rate minus
+landed), clocks that ran out, open complaints, held payouts, the integrity tile, and the lost deals of the month by
+reason. Margin reaches no other role. Not built: the "Marg queries" tile and the day-close status (Build 9).
+
+**The integrity check** (`modules/system/integrity.ts`, SRS-NFR-08). It loads the orders, purchase orders, receipts,
+trades and vouchers once and runs four checks, each finding naming the record to look at:
+
+1. `ORPHAN_REFERENCE`: a record pointing at one that is gone (a receipt's bank ledger, an order's buyer or trade, a
+   voucher's ledger, a PO's order and so on).
+2. `TOTAL_MISMATCH`: an order whose lines do not add up to its total or whose GST parts do not add up, "paid" that is not
+   the confirmed receipts, a voucher whose debits and credits are not equal.
+3. `TRIAL_BALANCE`: the debit and credit totals of all vouchers differ.
+4. `VOUCHER_SOURCE`: a confirmed receipt, a Marg bill or an accepted lot with no voucher, a voucher whose document is gone,
+   or a voucher of the wrong type for its source.
+
+A run is saved in `job_runs` (job `INTEGRITY_CHECK`, trigger `SCHEDULE` or `MANUAL`, who started it, what it looked at,
+`findingCount`, up to 200 stored `findings`, and `error` when it crashed, in which case its status is `FAILED`: a crash is
+never silence). **Nightly:** `runIntegrityIfDue()` is called from the clocks' 15-minute timer (`startClocks`) and runs
+once a day, in the first quarter-hour at or after 2 am India time; with several server copies keep `CLOCKS_ENABLED=true`
+on one only. The goal is zero findings.
+
+**Run `npm install` and `npm run db:sync`** after pulling Build 8: the first adds `pdf-lib`, the second creates the
+`job_runs` collection and its index.
+
+Not built yet: a ledger statement with a date range and a CSV (SRS-RPT-04: the existing statement lists every line), the
+delivery challan, and e-invoicing.
+
 ## Left out for now
 
 MFA (step-up is a password re-check for now), a per-IP rate limit on login, a breached-password check, and "forgot
@@ -800,5 +881,4 @@ Parties not built yet: opening ledgers, seller KYC documents (Q-PUR-01), the bul
 (Q-DATA-01), placeholder parties, and automatic classification at the first order.
 Listings not built yet: a daily job to expire
 listings (the sweep inside the API does it for now), editing a listing, and a seller's own `/sellers/:id/listings` view.
-Trades not built yet: the registers, dashboards and reports (Build 8), and hand-added receipts, journals and bank
-reconciliation (Build 9).
+Trades not built yet: hand-added receipts, journals, opening balances and bank reconciliation (Build 9).

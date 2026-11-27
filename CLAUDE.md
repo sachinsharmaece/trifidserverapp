@@ -75,6 +75,17 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
   dispatch or dock check) never act: they are only listed on the Today page, computed live from `trade.dueAt`
   (`modules/today/today.ts`); do not add an alerts collection. History notes are capped at 300 characters: put the
   person's free text last and pass the whole note through `clip()` (`shared/text.ts`).
+- Build 8 (registers, reports, dashboards, integrity check): all of it only reads. The registers and the trial balance
+  come from `vouchers` (`modules/reports/registers.ts`), never from the orders, so they cannot drift from the books; keep
+  the **two** registers apart (sales: buyer, no seller; purchase: seller, no buyer) and never put the word "margin" or a
+  rate on an Accounts screen (SRS-ACC-07). CSV goes through `toCsv` (`shared/csv.ts`: BOM, RFC 4180, formula guard,
+  rupees from paise); never build a CSV by hand, and audit every download (`auditExport`). PDFs are `pdf-lib` with the
+  standard fonts, so run all text through `safe()` (no rupee sign: "Rs."). A dashboard tile is decided by role in
+  `dashboard.ts`; margin tiles are only in the Controller, Founder and Admin branch. The integrity check
+  (`modules/system/integrity.ts`) must stay read-only and must never throw out of `runIntegrityCheck`: a crash is saved
+  as a FAILED run. A mounted-earlier router (`/sales-orders`, `/purchase-orders`) already guards its paths, so the report
+  routes there repeat the role check on purpose. Finding documents in the integrity check: use Mongoose finders, not raw
+  `collection` calls (the test fake only supports finders).
 - Margins live in `src/modules/masters/marginCells.routes.ts`: reading needs `canSeeMargins` (the wall), writing adds
   `canEditMasters` and `requireStepUp` (`src/modules/auth/stepUp.ts`, 428 until the password was re-checked in the last 5
   minutes). Use `requireStepUp` after the role check on any route that should ask for the password again. A cell is

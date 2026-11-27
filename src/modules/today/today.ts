@@ -21,7 +21,7 @@ import { dueOf } from '../trades/view.js';
 const SHOWN = 100; // a long list is a sign that something else is wrong; the page says how many there are
 
 /** Which desk should act on a trade that is overdue (a plain reading of the stage). */
-function deskOf(trade: TradeDoc): string {
+export function deskOf(trade: TradeDoc): string {
   const { buyerStage, sellerStage } = trade;
   if (sellerStage === 'S0_DEMAND' || buyerStage === 'B3_PENDING_SELLER' || sellerStage === 'S3_PO')
     return 'Purchase';

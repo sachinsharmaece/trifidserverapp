@@ -11,6 +11,8 @@ import { payoutsRouter } from '../modules/payouts/payouts.routes.js';
 import { todayRouter } from '../modules/today/today.routes.js';
 import { tripsRouter } from '../modules/trips/trips.routes.js';
 import { paymentsRouter } from '../modules/payments/payments.routes.js';
+import { reportsRouter } from '../modules/reports/reports.routes.js';
+import { systemRouter } from '../modules/system/system.routes.js';
 import { purchaseOrdersRouter } from '../modules/purchaseOrders/purchaseOrders.routes.js';
 import { salesOrdersRouter } from '../modules/salesOrders/salesOrders.routes.js';
 import { tradesRouter } from '../modules/trades/trades.routes.js';
@@ -83,3 +85,7 @@ apiRouter.use(complaintsRouter);
 apiRouter.use(clocksRouter);
 // Build 7: the Controller's Today page (what ran past its time, lost-in-transit candidates, held payouts).
 apiRouter.use(todayRouter);
+// Build 8: the registers, trial balance, dashboards and the two PDFs (proforma, purchase order), and the
+// integrity check ("Run now" and what the last run found).
+apiRouter.use(reportsRouter);
+apiRouter.use(systemRouter);
