@@ -68,6 +68,7 @@ export function margBillView(order: SalesOrderDoc) {
   return {
     invoiceNumber: bill.invoiceNumber,
     ewayBillNumber: bill.ewayBillNumber ?? null,
+    pdfFileId: bill.pdfFileId ? String(bill.pdfFileId) : null,
     billDate: bill.billDate,
     totalPaise: bill.totalPaise,
     expectedPaise: bill.expectedPaise,
@@ -89,6 +90,11 @@ export const margBillInput = z.object({
     .optional()
     .transform((text) => text || undefined),
   billDate: day,
+  /** The Marg bill PDF, uploaded first through POST /uploads. */
+  pdfFileId: z
+    .string()
+    .regex(/^[a-f0-9]{24}$/, 'Upload the bill PDF again.')
+    .optional(),
   totalPaise: z.number().int().min(1, 'Enter the bill total.').max(100_000_000_000),
   lines: z
     .array(
@@ -179,6 +185,7 @@ export async function recordMargBill(ctx: CommandContext, input: z.output<typeof
   const margBill = {
     invoiceNumber: input.invoiceNumber,
     ...(input.ewayBillNumber ? { ewayBillNumber: input.ewayBillNumber } : {}),
+    ...(input.pdfFileId ? { pdfFileId: input.pdfFileId } : {}),
     billDate: input.billDate,
     totalPaise: input.totalPaise,
     expectedPaise: accepted.expectedPaise,

@@ -150,6 +150,38 @@ paymentsRouter.get('/payments/buyers', async (req, res) => {
   });
 });
 
+const openOrdersQuery = z.object({ buyerId: z.string().regex(/^[a-f0-9]{24}$/, 'Pick a buyer.') });
+
+/**
+ * GET /payments/open-orders?buyerId=  ->  { orders: [{ salesOrderId, number, tradeId, tradeVersion, duePaise }] }.
+ * One buyer's orders waiting for payment (stage b6), oldest first: the "Adjust against" choices of Upcoming payments.
+ */
+paymentsRouter.get('/payments/open-orders', async (req, res) => {
+  const { buyerId } = openOrdersQuery.parse(req.query);
+  const orders = await SalesOrderModel.find({ buyerId, status: 'AWAITING_PAYMENT' }).sort({
+    createdAt: 1,
+  });
+  const trades = await TradeModel.find(
+    { _id: { $in: orders.map((order) => order.tradeId) } },
+    { version: 1, buyerStage: 1 },
+  );
+  res.json({
+    orders: orders.flatMap((order) => {
+      const trade = trades.find((item) => item._id.equals(order.tradeId));
+      if (trade?.buyerStage !== 'B6_ORDER_CONFIRMED') return [];
+      return [
+        {
+          salesOrderId: order.id,
+          number: order.number,
+          tradeId: String(order.tradeId),
+          tradeVersion: trade.version,
+          duePaise: order.totalPaise - order.paidPaise,
+        },
+      ];
+    }),
+  });
+});
+
 const useAdvanceInput = z.object({ tradeId: z.string(), version: z.number().int().min(0) });
 
 /**

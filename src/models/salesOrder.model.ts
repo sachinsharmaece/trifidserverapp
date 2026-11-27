@@ -41,6 +41,8 @@ const margBillSchema = new Schema(
   {
     invoiceNumber: { ...textField(40), required: true },
     ewayBillNumber: textField(40),
+    /** The Marg bill PDF (an UploadedFile), kept by the reference To-be-billed screen. */
+    pdfFileId: refField('UploadedFile'),
     billDate: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
     totalPaise: { ...intField(1, MAX_PAISE), required: true },
     expectedPaise: { ...intField(1, MAX_PAISE), required: true },

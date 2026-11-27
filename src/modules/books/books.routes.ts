@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { isValidObjectId } from 'mongoose';
 import { z } from 'zod';
-import { LedgerGroupModel, LedgerModel, VoucherModel } from '../../models/index.js';
+import { JournalModel, LedgerGroupModel, LedgerModel, VoucherModel } from '../../models/index.js';
+import { istDate } from '../../shared/dates.js';
 import { onlyChanged, writeAudit } from '../../shared/audit.js';
 import { encryptText } from '../../shared/encryption.js';
 import { BANK_KINDS, HAND_LEDGER_GROUPS } from '../../shared/enums.js';
@@ -163,6 +164,54 @@ async function totalsByLedger() {
   return totals;
 }
 
+/**
+ * For each ledger with a balance: the date its balance last moved off zero (or changed side), i.e. how long it has
+ * been pending. A simple reading of "days since the oldest unpaid entry" (reference Ledger screen).
+ */
+async function pendingSinceByLedger() {
+  const since = new Map<string, string>();
+  const net = new Map<string, number>();
+  const vouchers = await VoucherModel.find({}, { date: 1, lines: 1 })
+    .sort({ date: 1, number: 1 })
+    .lean();
+  for (const voucher of vouchers) {
+    for (const line of voucher.lines) {
+      const key = String(line.ledgerId);
+      const before = net.get(key) ?? 0;
+      const after = before + line.drPaise - line.crPaise;
+      net.set(key, after);
+      if (after === 0) since.delete(key);
+      else if (before === 0 || Math.sign(before) !== Math.sign(after)) since.set(key, voucher.date);
+    }
+  }
+  return since;
+}
+
+/** Days from an ISO date (YYYY-MM-DD) to today (IST). */
+function daysSince(day: string) {
+  const ms = Date.parse(`${istDate(new Date())}T00:00:00Z`) - Date.parse(`${day}T00:00:00Z`);
+  return Math.max(0, Math.round(ms / 86_400_000));
+}
+
+/** Each ledger's opening balance: the lines of posted OPENING journals. */
+async function openingsByLedger() {
+  const openings = new Map<string, { drPaise: number; crPaise: number }>();
+  const journals = await JournalModel.find(
+    { kind: 'OPENING', status: 'POSTED' },
+    { lines: 1 },
+  ).lean();
+  for (const journal of journals) {
+    for (const line of journal.lines) {
+      const key = String(line.ledgerId);
+      const sum = openings.get(key) ?? { drPaise: 0, crPaise: 0 };
+      sum.drPaise += line.drPaise;
+      sum.crPaise += line.crPaise;
+      openings.set(key, sum);
+    }
+  }
+  return openings;
+}
+
 function kindOf(ledger: { party?: { side: string } | null; bank?: unknown }) {
   if (ledger.bank) return 'BANK';
   if (ledger.party?.side === 'BUYER') return 'BUYER';
@@ -259,10 +308,12 @@ booksRouter.patch('/ledgers/:id', canWriteLedgers, async (req, res) => {
  */
 booksRouter.get('/ledgers', async (req, res) => {
   const { q } = z.object({ q: z.string().trim().max(100).default('') }).parse(req.query);
-  const [ledgers, groups, totals] = await Promise.all([
+  const [ledgers, groups, totals, since, openings] = await Promise.all([
     LedgerModel.find(q ? { name: new RegExp(escapeRegex(q), 'i') } : {}).sort({ nameKey: 1 }),
     LedgerGroupModel.find(),
     totalsByLedger(),
+    pendingSinceByLedger(),
+    openingsByLedger(),
   ]);
   const groupName = new Map(groups.map((group) => [group.id, group.name]));
   res.json({
@@ -280,6 +331,17 @@ booksRouter.get('/ledgers', async (req, res) => {
         drPaise: sum.drPaise,
         crPaise: sum.crPaise,
         balance: balanceOf(sum.drPaise, sum.crPaise),
+        /** Days the balance has been pending (null when it is zero). */
+        pendingDays: since.has(ledger.id) ? daysSince(since.get(ledger.id)!) : null,
+        /** The opening balance from a posted Opening journal (null when none). */
+        opening: openings.has(ledger.id)
+          ? balanceOf(openings.get(ledger.id)!.drPaise, openings.get(ledger.id)!.crPaise)
+          : null,
+        partyId: ledger.party?.buyerId
+          ? String(ledger.party.buyerId)
+          : ledger.party?.sellerId
+            ? String(ledger.party.sellerId)
+            : null,
       };
     }),
   });
@@ -289,7 +351,19 @@ booksRouter.get('/ledgers', async (req, res) => {
  * GET /ledgers/:id/statement  ->  { ledger, lines, totals }: this ledger's voucher lines, oldest first, with the
  * running balance. For a bank ledger this is the bank book.
  */
+const statementQuery = z.object({
+  from: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+  to: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+});
+
 booksRouter.get('/ledgers/:id/statement', async (req, res) => {
+  const { from, to } = statementQuery.parse(req.query);
   const ledger = isValidObjectId(req.params.id) ? await LedgerModel.findById(req.params.id) : null;
   if (!ledger) throw notFound('Ledger not found.');
   const group = await LedgerGroupModel.findById(ledger.groupId);
@@ -299,9 +373,22 @@ booksRouter.get('/ledgers/:id/statement', async (req, res) => {
   });
   let drPaise = 0;
   let crPaise = 0;
+  // Entries before `from` are carried in as the brought-forward balance; entries after `to` are left out.
+  let broughtDrPaise = 0;
+  let broughtCrPaise = 0;
   const lines = vouchers.flatMap((voucher) =>
     voucher.lines
       .filter((line) => String(line.ledgerId) === ledger.id)
+      .filter((line) => {
+        if (from && voucher.date < from) {
+          broughtDrPaise += line.drPaise;
+          broughtCrPaise += line.crPaise;
+          drPaise += line.drPaise;
+          crPaise += line.crPaise;
+          return false;
+        }
+        return !(to && voucher.date > to);
+      })
       .map((line) => {
         drPaise += line.drPaise;
         crPaise += line.crPaise;
@@ -324,6 +411,7 @@ booksRouter.get('/ledgers/:id/statement', async (req, res) => {
       kind: kindOf(ledger),
     },
     lines,
+    broughtForward: balanceOf(broughtDrPaise, broughtCrPaise),
     totals: { drPaise, crPaise, balance: balanceOf(drPaise, crPaise) },
   });
 });

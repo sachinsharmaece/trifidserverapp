@@ -332,7 +332,11 @@ export async function paymentRows(receipts: ReceiptDoc[], meId: string, role: Ro
       utr: receipt.utr,
       receivedOn: receipt.receivedOn,
       bankName: bankById.get(String(receipt.bankLedgerId))?.name ?? '',
-      buyer: { number: buyer?.number ?? '', firmName: buyer?.firmName ?? '' },
+      buyer: {
+        id: String(receipt.buyerId),
+        number: buyer?.number ?? '',
+        firmName: buyer?.firmName ?? '',
+      },
       salesOrder: order
         ? {
             id: String(receipt.salesOrderId),
