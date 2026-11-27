@@ -25,6 +25,8 @@ interface ActionRule {
 export const TRADE_ACTIONS = {
   wantIt: { label: 'He wants it', desk: 'SALES', buyerFrom: ['B1_VIEWING'] },
   sendToSeller: { label: 'Send to seller', desk: 'SALES', buyerFrom: ['B2_INQUIRY'] },
+  // Reference FAST-ORDER L42.25: shown only when the listing's auto-confirm covers the order (view.ts).
+  orderOnCall: { label: 'Order on call', desk: 'SALES', buyerFrom: ['B1_VIEWING', 'B2_INQUIRY'] },
   giveQuote: {
     label: 'Record the quote',
     desk: 'PURCHASE',

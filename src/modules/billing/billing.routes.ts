@@ -5,6 +5,7 @@ import {
   PurchaseOrderModel,
   RefundModel,
   SalesOrderModel,
+  SellerModel,
   TradeModel,
 } from '../../models/index.js';
 import { notFound } from '../../shared/errors.js';
@@ -87,6 +88,16 @@ billingRouter.get('/to-be-billed', async (req, res) => {
     orders = checked
       .map((po) => found.find((order) => order._id.equals(po.salesOrderId)))
       .filter((order): order is SalesOrderDoc => Boolean(order));
+    // Reference L42.13: a paid TriFid Stock order has no PO or dock check: it is ready to bill at once.
+    const house = await SellerModel.findOne({ isHouse: true });
+    if (house) {
+      const houseOrders = await SalesOrderModel.find({
+        sellerId: house._id,
+        status: 'PAID',
+        ...search,
+      }).sort({ updatedAt: 1 });
+      orders = [...orders, ...houseOrders];
+    }
   } else {
     orders = await SalesOrderModel.find({
       'margBill.invoiceNumber': { $exists: true },

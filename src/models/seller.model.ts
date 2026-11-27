@@ -8,6 +8,11 @@ import { refField, textField } from './_fields.js';
  * Never deleted: `active: false`. The bank account number is stored locked (AES-256-GCM) with its last 4 digits
  * and a fingerprint (`accountHash`) used to spot the same account on two sellers.
  */
+/** TriFid Stock (the house seller) has no GSTIN, mobile, tehsil or bank of its own: they are asked only of others. */
+function notHouse(this: { isHouse?: boolean }) {
+  return !this.isHouse;
+}
+
 const sellerSchema = new Schema(
   {
     /** SEL-0001, filled in by `nextPartyNumber('SEL')`. */
@@ -17,7 +22,7 @@ const sellerSchema = new Schema(
     firmKey: { type: String, required: true },
     gstin: {
       type: String,
-      required: true,
+      required: notHouse,
       trim: true,
       uppercase: true,
       validate: {
@@ -25,9 +30,9 @@ const sellerSchema = new Schema(
         message: 'gstin is not a valid GSTIN (format or checksum)',
       },
     },
-    mobile: { type: String, required: true, match: [/^\d{10}$/, 'mobile must be 10 digits'] },
+    mobile: { type: String, required: notHouse, match: [/^\d{10}$/, 'mobile must be 10 digits'] },
     contactName: textField(100),
-    tehsilId: { ...refField('Tehsil'), required: true },
+    tehsilId: { ...refField('Tehsil'), required: notHouse },
     address: textField(500),
     /** Time of day (HH:mm) by which the seller dispatches goods; drives the PO dispatch due date later. */
     dispatchCutoff: {
@@ -38,21 +43,23 @@ const sellerSchema = new Schema(
     bank: {
       accountNumberEnc: { type: String, select: false },
       accountHash: { type: String, select: false },
-      accountLast4: { type: String, required: true, match: /^\d{4}$/ },
+      accountLast4: { type: String, required: notHouse, match: /^\d{4}$/ },
       ifsc: {
         type: String,
-        required: true,
+        required: notHouse,
         trim: true,
         uppercase: true,
         match: [IFSC_PATTERN, 'ifsc is not valid'],
       },
       /** Optional on the reference-copy branch (the reference form does not ask for it). */
       bankName: textField(100),
-      holderName: { ...textField(150), required: true },
+      holderName: { ...textField(150), required: notHouse },
     },
     /** NEW → VERIFIED → TRUSTED, changed by hand by Purchase or the Controller (reference LOCK-42 L42.5). */
     tier: { type: String, enum: SELLER_TIERS, required: true, default: 'NEW' },
     /** Dealerships: the manufacturers this seller is a dealer of. */
+    /** TriFid Stock: the one house seller (reference LOCK-42 L42.9). Its listings are always auto-confirm. */
+    isHouse: { type: Boolean, required: true, default: false },
     manufacturerIds: { type: [refField('Manufacturer')], default: [] },
     active: { type: Boolean, required: true, default: true },
     createdBy: refField('User'),
@@ -61,9 +68,19 @@ const sellerSchema = new Schema(
 );
 
 sellerSchema.index({ number: 1 }, { unique: true });
-sellerSchema.index({ gstin: 1 }, { unique: true });
-sellerSchema.index({ mobile: 1 }, { unique: true });
-sellerSchema.index({ 'bank.accountHash': 1 }, { unique: true });
+sellerSchema.index(
+  { gstin: 1 },
+  { unique: true, partialFilterExpression: { gstin: { $type: 'string' } } },
+);
+sellerSchema.index(
+  { mobile: 1 },
+  { unique: true, partialFilterExpression: { mobile: { $type: 'string' } } },
+);
+sellerSchema.index(
+  { 'bank.accountHash': 1 },
+  { unique: true, partialFilterExpression: { 'bank.accountHash': { $type: 'string' } } },
+);
+sellerSchema.index({ isHouse: 1 }, { unique: true, partialFilterExpression: { isHouse: true } });
 sellerSchema.index({ firmKey: 1 });
 sellerSchema.index({ tehsilId: 1 });
 sellerSchema.index({ manufacturerIds: 1 });

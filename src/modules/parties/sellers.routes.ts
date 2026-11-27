@@ -102,6 +102,8 @@ function toSeller(seller: SellerDoc, tehsil: TehsilSummary | null) {
     },
     manufacturerIds: seller.manufacturerIds.map(String),
     tier: seller.tier,
+    /** TriFid Stock (reference L42.9): its listings are always auto-confirm. */
+    isHouse: Boolean(seller.isHouse),
     active: seller.active,
     createdAt: seller.createdAt,
   };
@@ -280,6 +282,12 @@ sellersRouter.post('/sellers', async (req, res) => {
 sellersRouter.patch('/sellers/:id', async (req, res) => {
   const changes = updateBody.parse(req.body);
   const seller = await findSeller(req.params.id);
+  if (seller.isHouse) {
+    throw conflict(
+      'TriFid Stock is kept by the system: it has no details or tier to change.',
+      'HOUSE_SELLER',
+    );
+  }
 
   // Only newly chosen values must be active: a seller may keep a tehsil or manufacturer turned off later.
   const newTehsil = ifChanged(changes.tehsilId, seller.tehsilId);

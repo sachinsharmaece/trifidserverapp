@@ -1,3 +1,4 @@
+import { isHouseSeller } from '../fastOrder/house.js';
 import { z } from 'zod';
 import {
   BuyerModel,
@@ -31,6 +32,28 @@ import type { CommandContext } from '../trades/commands.js';
 /** What the dock accepted, per order line, at the buyer's rate. Reads the latest dock check (counts only). */
 export async function acceptedLines(order: SalesOrderDoc) {
   const po = await PurchaseOrderModel.findOne({ salesOrderId: order._id });
+  if (!po && (await isHouseSeller(order.sellerId))) {
+    // Reference L42.13: TriFid Stock's goods were checked when they came into stock, so every box is accepted.
+    const lines = order.lines.map((line) => ({
+      lineNo: line.lineNo,
+      productName: line.productName,
+      packLabel: line.packLabel,
+      unitsPerBox: line.unitsPerBox,
+      orderedBoxes: line.boxes,
+      acceptedBoxes: line.boxes,
+      buyerRatePaisePerUnit: line.buyerRatePaisePerUnit,
+      acceptedValuePaise: line.boxes * line.unitsPerBox * line.buyerRatePaisePerUnit,
+      batch: line.batchNumber ?? null,
+      expiryMonth: line.expiryMonth,
+    }));
+    return {
+      purchaseOrderId: null,
+      inspectedAt: null,
+      lines,
+      acceptedBoxes: lines.reduce((sum, line) => sum + line.acceptedBoxes, 0),
+      expectedPaise: lines.reduce((sum, line) => sum + line.acceptedValuePaise, 0),
+    };
+  }
   const inspection = po?.latestInspectionId
     ? await InspectionModel.findById(po.latestInspectionId)
     : null;

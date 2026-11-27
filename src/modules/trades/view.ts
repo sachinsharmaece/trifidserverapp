@@ -73,15 +73,23 @@ export function dueOf(trade: TradeDoc) {
  * The hold buttons are seller side: only the one that applies now is shown, and Sales sees neither.
  * `hasAdvance`: the buyer has an advance to use (buyer side only); it decides whether "Use the buyer's advance" shows.
  */
-function actionsFor(trade: TradeDoc, role: Role, payoutHeld: boolean | null, hasAdvance: boolean) {
+function actionsFor(
+  trade: TradeDoc,
+  role: Role,
+  payoutHeld: boolean | null,
+  hasAdvance: boolean,
+  autoOn: boolean,
+) {
   const showsNow = (name: string) =>
-    name === 'holdPayout'
-      ? payoutHeld === false
-      : name === 'releaseHold'
-        ? payoutHeld === true
-        : name === 'useAdvance'
-          ? hasAdvance
-          : true;
+    name === 'orderOnCall'
+      ? autoOn
+      : name === 'holdPayout'
+        ? payoutHeld === false
+        : name === 'releaseHold'
+          ? payoutHeld === true
+          : name === 'useAdvance'
+            ? hasAdvance
+            : true;
   return TRADE_ACTION_NAMES.filter(
     (name) => showsOnCard(name) && isAtStage(name, trade) && showsNow(name),
   ).map((name) => {
@@ -163,7 +171,15 @@ export async function tradeView(trade: TradeDoc, role: Role) {
     boxesWanted: trade.boxesWanted ?? null,
     ask: trade.ask ? { reason: trade.ask.reason, note: trade.ask.note ?? null } : null,
     due: dueOf(trade),
-    actions: actionsFor(trade, role, payoutHeld, Boolean(advance?.totalPaise)),
+    actions: actionsFor(
+      trade,
+      role,
+      payoutHeld,
+      Boolean(advance?.totalPaise),
+      Boolean(
+        listing?.autoConfirm && (listing.autoBoxesLeft ?? 0) > 0 && listing.status === 'ACTIVE',
+      ),
+    ),
     history: await historyFor(trade, role),
     version: trade.version,
     lastActionAt: trade.lastActionAt,
@@ -188,6 +204,8 @@ export async function tradeView(trade: TradeDoc, role: Role) {
         tier,
         indicative,
         live: listing.status === 'ACTIVE' && listing.expiresAt > new Date(),
+        /** Reference FAST-ORDER: boxes the listing confirms by itself (0 when auto-confirm is off). */
+        autoBoxesLeft: listing.autoConfirm ? (listing.autoBoxesLeft ?? 0) : 0,
       };
     }
     const answer = trade.sellerAnswer;

@@ -91,8 +91,9 @@ export async function sellerLedger(
         nameKey: name.toLowerCase(),
         groupId: await ledgerGroupId('Sundry Creditors', session),
         party: { side: 'SELLER', sellerId: seller._id },
-        gstin: seller.gstin,
-        stateCode: seller.gstin.slice(0, 2),
+        // TriFid Stock has no GSTIN, but it never has a ledger (it is never paid).
+        ...(seller.gstin ? { gstin: seller.gstin } : {}),
+        stateCode: (seller.gstin ?? '').slice(0, 2),
         createdBy: userId,
       },
     ],

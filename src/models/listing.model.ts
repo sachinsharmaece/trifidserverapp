@@ -1,11 +1,12 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import {
+  AUTO_OFF_REASONS,
   EXPIRY_BANDS,
   LISTING_RATE_TYPES,
   LISTING_STATUSES,
   PROVENANCES,
 } from '../shared/enums.js';
-import { intField, refField } from './_fields.js';
+import { intField, refField, textField } from './_fields.js';
 
 /** Biggest rate we accept: ₹1,00,000 per unit, in paise. Keeps every later multiplication inside safe integers. */
 export const MAX_RATE_PAISE = 10_000_000;
@@ -54,6 +55,21 @@ const listingSchema = new Schema(
         { _id: false },
       ),
     },
+    /** TriFid Stock only: the exact expiry month found at the dock (other listings carry only the band). */
+    expiryMonth: { type: String, match: /^\d{4}-(0[1-9]|1[0-2])$/ },
+    /**
+     * Auto-confirm (reference FAST-ORDER LOCK-42 Part A): an order up to `autoBoxesLeft` boxes is confirmed by the
+     * system at "Send to seller", with no call to the seller. Always on for TriFid Stock (the house seller).
+     */
+    autoConfirm: { type: Boolean, required: true, default: false },
+    autoBoxesSet: { ...intField(0, 1_000_000), default: 0 },
+    autoBoxesLeft: { ...intField(0, 1_000_000), default: 0 },
+    autoOnBy: refField('User'),
+    autoOnAt: Date,
+    autoOffReason: { type: String, enum: AUTO_OFF_REASONS },
+    autoOffNote: textField(300),
+    autoOffBy: refField('User'),
+    autoOffAt: Date,
     createdBy: refField('User'),
   },
   { collection: 'listings', timestamps: true },

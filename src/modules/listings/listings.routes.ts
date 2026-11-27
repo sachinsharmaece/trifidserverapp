@@ -101,6 +101,13 @@ async function toListings(listings: ListingDoc[]) {
       status: listing.status,
       expiresAt: listing.expiresAt.toISOString(),
       createdAt: listing.get('createdAt').toISOString(),
+      // Reference FAST-ORDER Part A: the auto-confirm switch (TriFid Stock: always on; New sellers: not allowed).
+      autoConfirm: Boolean(listing.autoConfirm),
+      autoBoxesSet: listing.autoBoxesSet ?? 0,
+      autoBoxesLeft: listing.autoBoxesLeft ?? 0,
+      autoOffReason: listing.autoOffReason ?? null,
+      sellerIsHouse: Boolean(seller?.isHouse),
+      autoConfirmToggleLocked: Boolean(seller?.isHouse) || seller?.tier === 'NEW',
     };
   });
 }

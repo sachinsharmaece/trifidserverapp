@@ -65,7 +65,9 @@ export function stockPoView(po: StockPoDoc) {
     id: po.id,
     number: po.number,
     type: 'STOCK' as const,
-    approvalStatus: po.status,
+    // Approved once it leaves PENDING_APPROVAL; `status` then follows it through the dock (ARRIVED, CHECKED).
+    approvalStatus:
+      po.status === 'PENDING_APPROVAL' ? ('PENDING_APPROVAL' as const) : ('ISSUED' as const),
     status: po.status,
     seller: { number: po.sellerSnapshot.number, firmName: po.sellerSnapshot.firmName },
     item: line ? `${line.productName} · ${line.packLabel} × ${line.boxes} boxes` : '',

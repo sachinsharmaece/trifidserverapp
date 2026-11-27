@@ -301,7 +301,7 @@ async function saveCheck(
   if (acceptedValuePaise > 0) {
     const seller = await SellerModel.findById(po.sellerId).session(session).orFail();
     const company = await CompanyModel.findOne().session(session);
-    const interState = seller.gstin.slice(0, 2) !== (company?.stateCode ?? HOME_STATE_CODE);
+    const interState = (seller.gstin ?? '').slice(0, 2) !== (company?.stateCode ?? HOME_STATE_CODE);
     const gst = splitGst(acceptedValuePaise, orderLine.taxBp, interState);
     const taxLines = interState
       ? [{ ledger: await systemLedger('INPUT_IGST', userId, session), drPaise: gst.igstPaise }]

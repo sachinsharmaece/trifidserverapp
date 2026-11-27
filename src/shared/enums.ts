@@ -474,7 +474,7 @@ export const SELLER_TIERS = ['NEW', 'VERIFIED', 'TRUSTED'] as const;
 export type SellerTier = (typeof SELLER_TIERS)[number];
 
 /** A Stock PO (reference-copy branch): waits for the Controller, then is issued to the seller. */
-export const STOCK_PO_STATUSES = ['PENDING_APPROVAL', 'ISSUED'] as const;
+export const STOCK_PO_STATUSES = ['PENDING_APPROVAL', 'ISSUED', 'ARRIVED', 'CHECKED'] as const;
 export type StockPoStatus = (typeof STOCK_PO_STATUSES)[number];
 
 /** What happened on a call (reference-copy branch, the reference Call screen's outcomes). */
@@ -492,3 +492,26 @@ export const CALL_OUTCOMES = [
   'WRONG_NUMBER',
 ] as const;
 export type CallOutcome = (typeof CALL_OUTCOMES)[number];
+
+/** Why a listing's auto-confirm went off (reference FAST-ORDER LOCK-42 L42.3/L42.4). The AUTO_ ones are the system's. */
+export const AUTO_OFF_REASONS = [
+  'SOLD_ELSEWHERE',
+  'STOCK_SHORT',
+  'RATE_CHANGING',
+  'OTHER',
+  'AUTO_EMPTY',
+  'AUTO_RATE',
+  'AUTO_EXPIRED',
+] as const;
+export type AutoOffReason = (typeof AUTO_OFF_REASONS)[number];
+/** The reasons a person may pick when turning auto-confirm off. */
+export const MANUAL_AUTO_OFF_REASONS = [
+  'SOLD_ELSEWHERE',
+  'STOCK_SHORT',
+  'RATE_CHANGING',
+  'OTHER',
+] as const;
+
+/** The event log's cross-cutting groups (reference lib/eventlog.ts): credit and listing events. */
+export const EVENT_CATEGORIES = ['CREDIT', 'LISTING'] as const;
+export type EventCategory = (typeof EVENT_CATEGORIES)[number];

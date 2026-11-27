@@ -15,6 +15,12 @@ const lineSchema = new Schema(
     boxes: { ...intField(1, 1_000_000), required: true },
     /** The seller's rate per unit (what TriFid pays). */
     landedPaisePerUnit: { ...intField(1, MAX_PAISE), required: true },
+    /** At the dock: boxes accepted into TriFid Stock and the expiry month found. */
+    acceptedBoxes: intField(0, 1_000_000),
+    rejectedBoxes: intField(0, 1_000_000),
+    expiryFound: { type: String, match: /^\d{4}-(0[1-9]|1[0-2])$/ },
+    /** The TriFid Stock listing the accepted boxes went to. */
+    houseListingId: refField('Listing'),
     /** rate × units per box × boxes. */
     lineTotalPaise: { ...intField(1, MAX_PAISE), required: true },
   },
@@ -55,6 +61,21 @@ const stockPurchaseOrderSchema = new Schema(
     createdBy: { ...refField('User'), required: true },
     approvedBy: refField('User'),
     approvedAt: Date,
+    /** At the Indore dock (reference: a Stock PO follows the normal dock). */
+    arrival: {
+      type: new Schema(
+        {
+          at: { type: Date, required: true },
+          boxesCounted: { ...intField(0, 1_000_000), required: true },
+          photoFileId: refField('UploadedFile'),
+          by: { ...refField('User'), required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
+    checkedAt: Date,
+    checkedBy: refField('User'),
   },
   { collection: 'stock_purchase_orders', timestamps: true, versionKey: false },
 );

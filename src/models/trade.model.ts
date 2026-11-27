@@ -133,6 +133,10 @@ const tradeSchema = new Schema(
     /** The buyer may complain until then (DELIVERY_WINDOW_DAYS after the proof of dispatch). Kept after delivery. */
     complaintByAt: Date,
 
+    /** Reference FAST-ORDER: the seller side was confirmed by the listing's auto-confirm (no call to the seller). */
+    autoConfirmed: Boolean,
+    /** Reference FAST-ORDER Part B: the goods come from TriFid Stock, so there is no PO, dispatch or dock check. */
+    isHouse: Boolean,
     /** The Sales person who opened it (the owner, for later team scope). */
     ownerUserId: { ...refField('User'), required: true },
     lastActionAt: { type: Date, required: true },

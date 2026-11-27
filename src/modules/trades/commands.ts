@@ -50,6 +50,12 @@ import { raisePurchaseOrder } from '../purchaseOrders/purchaseOrders.js';
 import { markDelivered } from '../salesOrders/salesOrders.js';
 import { podInput, recordPod as savePod } from '../trips/trips.js';
 import { cancelSalesOrder, raiseSalesOrder } from '../salesOrders/salesOrders.js';
+import {
+  autoCovers,
+  consume as consumeAuto,
+  restore as restoreAuto,
+} from '../fastOrder/autoConfirm.js';
+import { isHouseSeller } from '../fastOrder/house.js';
 import type { TradeActionName } from './actions.js';
 import { earliestExpiryMonth, monthsFromNow } from './stages.js';
 
@@ -154,6 +160,56 @@ function isLive(listing: { status: string; expiresAt: Date }, now: Date): boolea
   return listing.status === 'ACTIVE' && listing.expiresAt > now;
 }
 
+/** The first month of a listing's expiry band (the band floor), for an answer the system gives. */
+const BAND_FLOOR_MONTHS = { M6_TO_9: 6, M9_TO_12: 9, M12_PLUS: 12 } as const;
+
+type ListingDoc = Awaited<ReturnType<typeof listingOf>>;
+
+/**
+ * Reference FAST-ORDER L42.1/L42.6: the order is inside the listing's auto-confirm boxes, so the system confirms it
+ * for the seller at once (s1 never waits): b3 is skipped and the trade goes to b4 with the seller's answer filled in
+ * (the listing's rate; the expiry month TriFid Stock found at the dock, or the first month of the listing's band).
+ * The boxes left go down. A TriFid Stock order has no seller side at all.
+ */
+async function autoConfirmChange(
+  ctx: CommandContext,
+  listing: ListingDoc,
+  boxes: number,
+): Promise<TradeChange> {
+  const { trade, userId, now, session } = ctx;
+  const house = await isHouseSeller(listing.sellerId, session);
+  const sku = await SkuModel.findById(listing.skuId).orFail();
+  const expiryMonth =
+    listing.expiryMonth ?? earliestExpiryMonth(BAND_FLOOR_MONTHS[listing.expiryBand], now);
+  const sellerAnswer = {
+    kind: 'CONFIRMED' as const,
+    boxes,
+    landedPaisePerUnit: listing.ratePaisePerUnit,
+    unitsPerBox: listing.unitsPerBoxSnapshot,
+    expiryMonth,
+    byUserId: userId,
+    at: now,
+  };
+  await consumeAuto(listing._id, boxes, session);
+  return {
+    set: {
+      buyerStage: 'B4_SEND_CONFIRMATION',
+      ...(house ? {} : { sellerStage: 'S1_CONFIRMATION' as const }),
+      sellerId: listing.sellerId,
+      sellerAnswer,
+      offer: await offerFor(trade, sku.skuClass, listing.ratePaisePerUnit, now),
+      dueAt: await hoursFrom(now, 'SELLER_HOLD_HOURS'),
+      autoConfirmed: true,
+      isHouse: house,
+    },
+    ...(house ? { unset: ['sellerStage' as const] } : {}),
+    buyerNote: `Confirmed automatically: ${boxes} boxes, expiry ${expiryMonth}`,
+    sellerNote: house
+      ? `${boxes} boxes from TriFid Stock`
+      : `Auto-confirm: ${boxes} boxes at ${formatRupees(listing.ratePaisePerUnit)} a unit, expiry ${expiryMonth}`,
+  };
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Sales (buyer side)
 
@@ -180,8 +236,12 @@ const wantIt = command(z.object({ boxes }), async ({ trade, now }, input) => {
  * b2 → b3. A trade with a live listing goes to that listing's seller (s1). Anything else (not listed, the seller
  * declined, or the listing has ended) goes to Purchase to find a seller (s0).
  */
-const sendToSeller = command(z.object({}), async ({ trade, now }) => {
+const sendToSeller = command(z.object({}), async (ctx) => {
+  const { trade, now } = ctx;
   const listing = trade.listingId ? await ListingModel.findById(trade.listingId) : null;
+  if (listing && isLive(listing, now) && autoCovers(listing, trade.boxesWanted ?? 0)) {
+    return autoConfirmChange(ctx, listing, trade.boxesWanted ?? 0);
+  }
   if (listing && isLive(listing, now)) {
     return {
       set: {
@@ -414,16 +474,101 @@ const buyerYes = command(buyerYesInput, async (ctx, input) => {
     },
     { session: ctx.session ?? null },
   );
+  return buyerYesChange(ctx, order);
+});
+
+/** b5 → b6: the order is raised; the seller holds the stock until payment (TriFid Stock has no seller side). */
+function buyerYesChange(
+  ctx: CommandContext,
+  order: Awaited<ReturnType<typeof raiseSalesOrder>>,
+): TradeChange {
   const boxes = ctx.trade.sellerAnswer?.boxes ?? 0;
+  const house = Boolean(ctx.trade.isHouse);
   return {
     set: {
       buyerStage: 'B6_ORDER_CONFIRMED',
-      sellerStage: 'S2_HOLD',
+      ...(house ? {} : { sellerStage: 'S2_HOLD' as const }),
       salesOrderId: order._id,
       dueAt: order.paymentDueAt,
     },
     buyerNote: `Buyer said yes: ${order.number} for ${formatRupees(order.totalPaise)}`,
-    sellerNote: `The buyer confirmed ${boxes} boxes: the seller holds them until the buyer pays`,
+    sellerNote: house
+      ? ''
+      : `The buyer confirmed ${boxes} boxes: the seller holds them until the buyer pays`,
+  };
+}
+
+/**
+ * Reference FAST-ORDER Part D (L42.25) "Order on call": from b1 or b2, while the buyer is on the phone, one press
+ * does "He wants it" → "Send to seller" (auto-confirm) → "Send to buyer" → "Buyer says yes". Offered only when the
+ * listing's auto-confirm covers the boxes. (Pay-first; the credit branch comes with credit.)
+ */
+const orderOnCallInput = z.object({
+  boxes,
+  insuranceElected: z.boolean().optional(),
+  insuranceDeclineReason: optionalText(300),
+});
+
+const orderOnCall = command(orderOnCallInput, async (ctx, input) => {
+  const { trade, now } = ctx;
+  if (input.insuranceElected === false && !input.insuranceDeclineReason) {
+    throw invalidField('insuranceDeclineReason', 'A reason is required when insurance is declined');
+  }
+  const listing = await listingOf(trade);
+  if (!isLive(listing, now)) {
+    throw conflict(
+      'This listing is no longer live. Go back to the rate board.',
+      'LISTING_UNAVAILABLE',
+    );
+  }
+  if (input.boxes < listing.moqBoxes) {
+    throw invalidField('boxes', `The minimum order is ${listing.moqBoxes} boxes.`);
+  }
+  if (!autoCovers(listing, input.boxes)) {
+    throw invalidField(
+      'boxes',
+      listing.autoConfirm
+        ? `Auto-confirm covers only ${listing.autoBoxesLeft ?? 0} boxes.`
+        : 'Auto-confirm is off for this listing.',
+    );
+  }
+  const confirmed = await autoConfirmChange(ctx, listing, input.boxes);
+  const offer = confirmed.set.offer;
+  if (!offer || offer.buyerRatePaisePerUnit == null) {
+    throw conflict(
+      "There is no rate yet: the margin matrix has no box for this pack and this buyer's tier. Ask Founder or Admin to fill it.",
+      'RATE_UNAVAILABLE',
+    );
+  }
+  // The sales order is raised from the answer just given (kept in memory; the engine saves the trade once).
+  trade.set({
+    sellerAnswer: confirmed.set.sellerAnswer,
+    offer,
+    sellerId: confirmed.set.sellerId,
+    isHouse: confirmed.set.isHouse,
+  });
+  const order = await raiseSalesOrder(ctx);
+  const elected = input.insuranceElected !== false;
+  await SalesOrderModel.updateOne(
+    { _id: order._id },
+    {
+      $set: {
+        insurance: {
+          elected,
+          ...(elected || !input.insuranceDeclineReason
+            ? {}
+            : { declineReason: input.insuranceDeclineReason }),
+        },
+      },
+    },
+    { session: ctx.session ?? null },
+  );
+  const yes = buyerYesChange(ctx, order);
+  return {
+    set: { ...confirmed.set, boxesWanted: input.boxes, ...yes.set },
+    ...(trade.isHouse ? { unset: ['sellerStage'] } : {}),
+    buyerNote: `Order on call: ${input.boxes} boxes. ${yes.buyerNote}`,
+    sellerNote: [confirmed.sellerNote, yes.sellerNote].filter(Boolean).join('. '),
   };
 });
 
@@ -462,10 +607,14 @@ const leakAfterOrder = command(reasonInput, async (ctx, input) => {
     reasonLabel: reason.label,
     note: input.note,
   });
+  // Reference L42.8: the boxes of an auto-confirmed order go back to the listing (while auto-confirm is still on).
+  if (ctx.trade.autoConfirmed && ctx.trade.listingId && ctx.trade.sellerAnswer) {
+    await restoreAuto(ctx.trade.listingId, ctx.trade.sellerAnswer.boxes, ctx.session);
+  }
   return {
     set: {
       buyerStage: 'X_LEAKAGE',
-      sellerStage: 'S_RELEASED',
+      ...(ctx.trade.isHouse ? {} : { sellerStage: 'S_RELEASED' as const }),
       leakage: {
         context: 'B6_LEAK',
         reasonCodeId: reason._id,
@@ -496,6 +645,8 @@ const reopen = command(z.object({}), () => ({
     'salesOrderId',
     'purchaseOrderId',
     'dueAt',
+    'autoConfirmed',
+    'isHouse',
   ],
   buyerNote: 'Reopened: send it to the seller again when the buyer is ready',
   sellerNote: '',
@@ -534,7 +685,20 @@ type PaidOrder = Parameters<typeof raisePurchaseOrder>[1];
  * Gate A: the order is paid in full, so the PO goes to the seller: b6 → b7, s2 → s3, the dispatch clock starts.
  * Shared by `confirmPayment` and `useAdvance`: both end here.
  */
-async function openGateA(ctx: CommandContext, order: PaidOrder, paid: string) {
+async function openGateA(
+  ctx: CommandContext,
+  order: PaidOrder,
+  paid: string,
+): Promise<TradeChange> {
+  // Reference L42.13: TriFid Stock's goods are already at Indore and checked, so no PO: straight to To be billed.
+  if (ctx.trade.isHouse) {
+    return {
+      set: { buyerStage: 'B8_BILLED' },
+      unset: ['dueAt', 'sellerStage'],
+      buyerNote: `${paid}. ${order.number} is paid in full: TriFid Stock, straight to To be billed`,
+      sellerNote: '',
+    };
+  }
   const po = await raisePurchaseOrder(ctx, order);
   return {
     set: {
@@ -807,6 +971,7 @@ const archiveViewing = command(z.object({}), async (ctx) => {
 });
 
 export const COMMANDS: Record<TradeActionName, Command> = {
+  orderOnCall,
   wantIt,
   sendToSeller,
   giveQuote,
