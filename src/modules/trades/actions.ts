@@ -47,6 +47,8 @@ export const TRADE_ACTIONS = {
   },
   sendToBuyer: { label: 'Send to buyer', desk: 'SALES', buyerFrom: ['B4_SEND_CONFIRMATION'] },
   buyerYes: { label: 'Buyer says yes', desk: 'SALES', buyerFrom: ['B5_BUYERS_CALL'] },
+  // Reference FAST-ORDER L42.26: instead of "Buyer says yes", on the buyer's credit line (shown when he has one).
+  creditConfirm: { label: 'Confirm on credit', desk: 'SALES', buyerFrom: ['B5_BUYERS_CALL'] },
   buyerNo: { label: 'Buyer says no', desk: 'SALES', buyerFrom: ['B5_BUYERS_CALL'] },
   leakAfterOrder: {
     label: 'Buyer drops the order',

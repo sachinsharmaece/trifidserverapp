@@ -409,6 +409,8 @@ booksRouter.get('/ledgers/:id/statement', async (req, res) => {
       name: ledger.name,
       group: group?.name ?? '',
       kind: kindOf(ledger),
+      /** The buyer behind a buyer ledger (for his credit card on the statement). */
+      buyerId: ledger.party?.buyerId ? String(ledger.party.buyerId) : null,
     },
     lines,
     broughtForward: balanceOf(broughtDrPaise, broughtCrPaise),

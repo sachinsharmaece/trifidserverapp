@@ -1,7 +1,14 @@
 import { Router } from 'express';
 import { isValidObjectId } from 'mongoose';
 import { z } from 'zod';
-import { EventLogModel, SkuModel, StockPurchaseOrderModel, UserModel } from '../../models/index.js';
+import {
+  BuyerModel,
+  EventLogModel,
+  SellerModel,
+  SkuModel,
+  StockPurchaseOrderModel,
+  UserModel,
+} from '../../models/index.js';
 import { EVENT_CATEGORIES } from '../../shared/enums.js';
 import { notFound } from '../../shared/errors.js';
 import { currentUserOf, requireAuth } from '../auth/requireAuth.js';
@@ -133,6 +140,15 @@ fastOrderRouter.get(
       { _id: { $in: events.flatMap((e) => (e.userId ? [e.userId] : [])) } },
       { name: 1 },
     );
+    const partyIds = events.flatMap((e) => (e.partyId ? [e.partyId] : []));
+    const [buyers, sellers] = await Promise.all([
+      BuyerModel.find({ _id: { $in: partyIds } }, { firmName: 1 }),
+      SellerModel.find({ _id: { $in: partyIds } }, { firmName: 1 }),
+    ]);
+    const partyName = (id: unknown) =>
+      id
+        ? ([...buyers, ...sellers].find((p) => p._id.equals(id as string))?.firmName ?? null)
+        : null;
     res.json({
       events: events.map((event) => ({
         id: String(event._id),
@@ -141,6 +157,7 @@ fastOrderRouter.get(
         entityType: event.entityType,
         entityId: String(event.entityId),
         partyId: event.partyId ? String(event.partyId) : null,
+        party: partyName(event.partyId),
         action: event.action,
         by: event.userId
           ? (users.find((user) => user._id.equals(event.userId))?.name ?? '')

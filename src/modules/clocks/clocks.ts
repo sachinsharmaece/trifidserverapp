@@ -1,3 +1,4 @@
+import { runDailyCreditJob } from '../credit/credit.js';
 import type { Types } from 'mongoose';
 import { numberSetting } from '../../db/settings.js';
 import { TradeModel } from '../../models/index.js';
@@ -58,6 +59,15 @@ export async function runClocks(now = new Date()) {
   };
 }
 
+/** The daily credit job (reference FAST-ORDER): once per Indian day, on the first tick of the day. */
+let creditJobDay = '';
+async function runCreditJobIfDue(now = new Date()) {
+  const day = new Date(now.getTime() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  if (day === creditJobDay) return;
+  creditJobDay = day;
+  await runDailyCreditJob(now);
+}
+
 /**
  * Starts the timer (every 15 minutes). Called once by server.ts; tests call `runClocks()` themselves.
  * The same timer also starts the nightly integrity check: from 2 am Indian time, once a day (Build 8).
@@ -67,6 +77,9 @@ export function startClocks() {
     runClocks().catch((error: unknown) => logger.error({ msg: 'The clocks failed', error }));
     runIntegrityIfDue().catch((error: unknown) =>
       logger.error({ msg: 'The nightly integrity check failed', error }),
+    );
+    runCreditJobIfDue().catch((error: unknown) =>
+      logger.error({ msg: 'The daily credit job failed', error }),
     );
   }, HOW_OFTEN_MS);
   timer.unref(); // never keeps the server alive on its own

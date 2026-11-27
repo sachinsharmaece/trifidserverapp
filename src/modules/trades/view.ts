@@ -1,3 +1,4 @@
+import { getCredit } from '../credit/credit.js';
 import {
   BuyerModel,
   ListingModel,
@@ -79,17 +80,20 @@ function actionsFor(
   payoutHeld: boolean | null,
   hasAdvance: boolean,
   autoOn: boolean,
+  hasCredit: boolean,
 ) {
   const showsNow = (name: string) =>
-    name === 'orderOnCall'
-      ? autoOn
-      : name === 'holdPayout'
-        ? payoutHeld === false
-        : name === 'releaseHold'
-          ? payoutHeld === true
-          : name === 'useAdvance'
-            ? hasAdvance
-            : true;
+    name === 'creditConfirm'
+      ? hasCredit
+      : name === 'orderOnCall'
+        ? autoOn
+        : name === 'holdPayout'
+          ? payoutHeld === false
+          : name === 'releaseHold'
+            ? payoutHeld === true
+            : name === 'useAdvance'
+              ? hasAdvance
+              : true;
   return TRADE_ACTION_NAMES.filter(
     (name) => showsOnCard(name) && isAtStage(name, trade) && showsNow(name),
   ).map((name) => {
@@ -159,6 +163,11 @@ export async function tradeView(trade: TradeDoc, role: Role) {
     seesBuyerSide(role) && trade.buyerStage === 'B6_ORDER_CONFIRMED'
       ? await advanceOf(trade.buyerId)
       : null;
+  // Reference FAST-ORDER: the buyer's credit, for "Confirm on credit" and the credit option of "Order on call".
+  const credit =
+    seesBuyerSide(role) && ['B1_VIEWING', 'B2_INQUIRY', 'B5_BUYERS_CALL'].includes(trade.buyerStage)
+      ? await getCredit(trade.buyerId)
+      : null;
 
   const view = {
     id: trade.id,
@@ -179,6 +188,7 @@ export async function tradeView(trade: TradeDoc, role: Role) {
       Boolean(
         listing?.autoConfirm && (listing.autoBoxesLeft ?? 0) > 0 && listing.status === 'ACTIVE',
       ),
+      Boolean(credit?.hasLine),
     ),
     history: await historyFor(trade, role),
     version: trade.version,
@@ -212,6 +222,16 @@ export async function tradeView(trade: TradeDoc, role: Role) {
     const order = trade.salesOrderId ? await SalesOrderModel.findById(trade.salesOrderId) : null;
     buyerSide = {
       buyer: { id: buyer.id, number: buyer.number, firmName: buyer.firmName },
+      payMode: trade.payMode ?? null,
+      credit: credit
+        ? {
+            hasLine: credit.hasLine,
+            status: credit.status,
+            availablePaise: credit.availablePaise,
+            blocked: credit.blocked,
+            overdueDays: credit.overdueDays,
+          }
+        : null,
       // The buyer's order (b6 onward): a short summary; the full order is on its own page.
       salesOrder: order
         ? {

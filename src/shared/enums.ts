@@ -93,6 +93,7 @@ export type SettingType = (typeof SETTING_TYPES)[number];
 
 /** Document-number prefixes kept in `counters` (format PREFIX-YY-0001). */
 export const COUNTER_PREFIXES = [
+  'CR',
   'SO',
   'PO',
   'TRADE',
@@ -515,3 +516,18 @@ export const MANUAL_AUTO_OFF_REASONS = [
 /** The event log's cross-cutting groups (reference lib/eventlog.ts): credit and listing events. */
 export const EVENT_CATEGORIES = ['CREDIT', 'LISTING'] as const;
 export type EventCategory = (typeof EVENT_CATEGORIES)[number];
+
+/** Credit (reference FAST-ORDER LOCK-42 Part C). */
+export const CREDIT_LINE_STATUSES = ['ACTIVE', 'SUSPENDED'] as const;
+export const CREDIT_SUSPEND_REASONS = ['MANUAL', 'UNUSED'] as const;
+export const CREDIT_REQUEST_STATUSES = ['OPEN', 'APPROVED', 'REJECTED'] as const;
+export const CREDIT_ROUTES = ['TM', 'CONTROLLER'] as const;
+export type CreditRoute = (typeof CREDIT_ROUTES)[number];
+export const CREDIT_CHECK_RESULTS = ['ok', 'ctl', 'blk'] as const;
+/** What Accounts may change on a credit line. Never an increase: that is only through a request. */
+export const CREDIT_EDIT_KINDS = ['REDUCE', 'SUSPEND', 'RESUME', 'DAYS', 'CHEQUE'] as const;
+export type CreditEditKind = (typeof CREDIT_EDIT_KINDS)[number];
+export const CREDIT_EDIT_STATUSES = ['PENDING', 'APPLIED', 'REJECTED'] as const;
+export const CREDIT_DAYS = [7, 15] as const;
+/** How the buyer pays for an order: before the PO (the usual), or on his credit line. */
+export const PAY_MODES = ['PAY_FIRST', 'CREDIT'] as const;

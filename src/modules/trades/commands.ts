@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { numberSetting } from '../../db/settings.js';
 import {
   BuyerModel,
+  CreditLineModel,
   ListingModel,
   SellerModel,
   SalesOrderModel,
@@ -56,6 +57,8 @@ import {
   restore as restoreAuto,
 } from '../fastOrder/autoConfirm.js';
 import { isHouseSeller } from '../fastOrder/house.js';
+import { canConfirmOnCredit } from '../credit/credit.js';
+import { logEvent } from '../fastOrder/eventLog.js';
 import type { TradeActionName } from './actions.js';
 import { earliestExpiryMonth, monthsFromNow } from './stages.js';
 
@@ -500,11 +503,12 @@ function buyerYesChange(
 
 /**
  * Reference FAST-ORDER Part D (L42.25) "Order on call": from b1 or b2, while the buyer is on the phone, one press
- * does "He wants it" → "Send to seller" (auto-confirm) → "Send to buyer" → "Buyer says yes". Offered only when the
- * listing's auto-confirm covers the boxes. (Pay-first; the credit branch comes with credit.)
+ * does "He wants it" → "Send to seller" (auto-confirm) → "Send to buyer" → "Buyer says yes" (pay first) or
+ * "Confirm on credit". Offered only when the listing's auto-confirm covers the boxes.
  */
 const orderOnCallInput = z.object({
   boxes,
+  payMode: z.enum(['PAY_FIRST', 'CREDIT']).default('PAY_FIRST'),
   insuranceElected: z.boolean().optional(),
   insuranceDeclineReason: optionalText(300),
 });
@@ -563,13 +567,95 @@ const orderOnCall = command(orderOnCallInput, async (ctx, input) => {
     },
     { session: ctx.session ?? null },
   );
-  const yes = buyerYesChange(ctx, order);
+  const next =
+    input.payMode === 'CREDIT' ? await creditConfirmChange(ctx, order) : buyerYesChange(ctx, order);
+  const unset = [...(next.unset ?? []), ...(trade.isHouse ? (['sellerStage'] as const) : [])];
   return {
-    set: { ...confirmed.set, boxesWanted: input.boxes, ...yes.set },
-    ...(trade.isHouse ? { unset: ['sellerStage'] } : {}),
-    buyerNote: `Order on call: ${input.boxes} boxes. ${yes.buyerNote}`,
-    sellerNote: [confirmed.sellerNote, yes.sellerNote].filter(Boolean).join('. '),
+    set: { ...confirmed.set, boxesWanted: input.boxes, ...next.set },
+    ...(unset.length ? { unset: [...new Set(unset)] } : {}),
+    buyerNote: `Order on call: ${input.boxes} boxes. ${next.buyerNote}`,
+    sellerNote: [confirmed.sellerNote, next.sellerNote].filter(Boolean).join('. '),
   };
+});
+
+/**
+ * Reference FAST-ORDER L42.26/27 "Confirm on credit": at the buyer's call (b5) instead of "Buyer says yes". The whole
+ * order must fit his available credit (never part credit), his line active and no bill overdue. The sales order is
+ * raised on credit and the trade moves on at once: outside seller → b7 + the PO opens; TriFid Stock → b8.
+ */
+async function creditConfirmChange(
+  ctx: CommandContext,
+  order: Awaited<ReturnType<typeof raiseSalesOrder>>,
+): Promise<TradeChange> {
+  const { trade, session, userId, now } = ctx;
+  const check = await canConfirmOnCredit(trade.buyerId, order.totalPaise, session);
+  if (!check.ok) {
+    throw conflict(`Confirm on credit refused: ${check.reason ?? ''}`, 'CREDIT_REFUSED');
+  }
+  await SalesOrderModel.updateOne(
+    { _id: order._id },
+    { $set: { onCredit: true, status: 'PAID', paidAt: now } },
+    { session },
+  );
+  if (check.credit.creditLineId) {
+    await CreditLineModel.updateOne(
+      { _id: check.credit.creditLineId },
+      { $set: { lastUsedAt: now } },
+      { session },
+    );
+  }
+  const usedBefore = check.credit.usedPaise;
+  const usedAfter = usedBefore + order.totalPaise;
+  await logEvent(
+    {
+      category: 'CREDIT',
+      entityType: 'Trade',
+      entityId: trade._id,
+      partyId: trade.buyerId,
+      action: 'CREDIT_ORDER',
+      userId,
+      newValue: {
+        salesOrderNumber: order.number,
+        orderValuePaise: order.totalPaise,
+        usedBeforePaise: usedBefore,
+        usedAfterPaise: usedAfter,
+      },
+    },
+    session,
+  );
+  const common = {
+    payMode: 'CREDIT' as const,
+    salesOrderId: order._id,
+    creditUsedBeforePaise: usedBefore,
+    creditUsedAfterPaise: usedAfter,
+  };
+  const note = `Confirmed on credit: ${order.number} for ${formatRupees(order.totalPaise)} (credit used ${formatRupees(usedBefore)} → ${formatRupees(usedAfter)})`;
+  if (trade.isHouse) {
+    return {
+      set: { ...common, buyerStage: 'B8_BILLED' },
+      unset: ['dueAt', 'sellerStage'],
+      buyerNote: `${note}: TriFid Stock, straight to To be billed`,
+      sellerNote: '',
+    };
+  }
+  const paidOrder = await SalesOrderModel.findById(order._id).session(session).orFail();
+  const po = await raisePurchaseOrder(ctx, paidOrder);
+  return {
+    set: {
+      ...common,
+      buyerStage: 'B7_PAID',
+      sellerStage: 'S3_PO',
+      purchaseOrderId: po._id,
+      dueAt: po.dispatchDueAt,
+    },
+    buyerNote: note,
+    sellerNote: `${po.number} raised: the seller should dispatch`,
+  };
+}
+
+const creditConfirm = command(z.object({}), async (ctx) => {
+  const order = await raiseSalesOrder(ctx);
+  return creditConfirmChange(ctx, order);
 });
 
 const RELEASED_NOTE = 'The buyer did not take it: the seller may sell the stock to someone else';
@@ -972,6 +1058,7 @@ const archiveViewing = command(z.object({}), async (ctx) => {
 
 export const COMMANDS: Record<TradeActionName, Command> = {
   orderOnCall,
+  creditConfirm,
   wantIt,
   sendToSeller,
   giveQuote,

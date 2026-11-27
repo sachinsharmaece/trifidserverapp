@@ -164,7 +164,8 @@ export async function recordMargBill(ctx: CommandContext, input: z.output<typeof
     );
   }
   // 4. The buyer owes nothing.
-  if (order.paidPaise < order.totalPaise) {
+  // An order confirmed on credit is billed before he pays (that is what credit means).
+  if (!order.onCredit && order.paidPaise < order.totalPaise) {
     throw conflict('Check 4: the buyer still owes money on this order.', 'MARG_CHECK_4');
   }
   if (

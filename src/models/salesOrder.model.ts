@@ -130,6 +130,8 @@ const salesOrderSchema = new Schema(
     /** Money confirmed by Accounts against this order (Σ posted receipts). PAID once it reaches the total. */
     paidPaise: { ...intField(0, MAX_PAISE), required: true, default: 0 },
     paidAt: Date,
+    /** Reference FAST-ORDER: confirmed on the buyer's credit line. PAID here means "cleared for the PO", not money in. */
+    onCredit: Boolean,
     /** Build 4: the Marg bill (BILLED), the proof of dispatch on a trip (DISPATCHED), then delivery. */
     margBill: { type: margBillSchema, default: undefined },
     /** Reference-copy branch: did the buyer take transit insurance? Declining needs a reason. */

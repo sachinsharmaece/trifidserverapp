@@ -19,6 +19,16 @@ export { HsnCodeModel, type HsnCode } from './hsnCode.model.js';
 export { IdempotencyKeyModel, type IdempotencyKey } from './idempotencyKey.model.js';
 export { InspectionModel, type Inspection } from './inspection.model.js';
 export { JournalModel, type Journal } from './journal.model.js';
+export {
+  CreditEditModel,
+  CreditLineModel,
+  CreditReferenceModel,
+  CreditRequestModel,
+  type CreditEdit,
+  type CreditLine,
+  type CreditReference,
+  type CreditRequest,
+} from './credit.model.js';
 export { EventLogModel, type EventLog } from './eventLog.model.js';
 export { JobRunModel, type JobRun } from './jobRun.model.js';
 export { LedgerGroupModel, type LedgerGroup } from './ledgerGroup.model.js';

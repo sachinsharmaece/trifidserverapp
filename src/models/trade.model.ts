@@ -7,6 +7,7 @@ import {
   SELLER_ANSWER_KINDS,
   SELLER_STAGES,
   TRADE_SOURCES,
+  PAY_MODES,
 } from '../shared/enums.js';
 import { intField, refField, textField } from './_fields.js';
 
@@ -137,6 +138,11 @@ const tradeSchema = new Schema(
     autoConfirmed: Boolean,
     /** Reference FAST-ORDER Part B: the goods come from TriFid Stock, so there is no PO, dispatch or dock check. */
     isHouse: Boolean,
+    /** Reference FAST-ORDER Part D: CREDIT = confirmed on the buyer's credit line (the PO opens without payment). */
+    payMode: { type: String, enum: PAY_MODES },
+    /** The buyer's credit used just before and just after this credit order (for the credit log). */
+    creditUsedBeforePaise: intField(0),
+    creditUsedAfterPaise: intField(0),
     /** The Sales person who opened it (the owner, for later team scope). */
     ownerUserId: { ...refField('User'), required: true },
     lastActionAt: { type: Date, required: true },
