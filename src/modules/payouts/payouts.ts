@@ -56,11 +56,13 @@ export function payableRow(po: PoDoc) {
   const freightPaise = freightToTakeOff(po);
   const acceptedValuePaise = po.acceptedValuePaise ?? 0;
   const netPaise = acceptedValuePaise - freightPaise;
-  const waiting = !po.sellerBill
-    ? "Waiting for the seller's bill"
-    : netPaise < 1
-      ? 'The freight is more than the goods are worth'
-      : null;
+  const waiting = po.hold
+    ? `On hold: ${po.hold.reason}`
+    : !po.sellerBill
+      ? "Waiting for the seller's bill"
+      : netPaise < 1
+        ? 'The freight is more than the goods are worth'
+        : null;
   return {
     id: po.id,
     number: po.number,
@@ -138,6 +140,9 @@ async function sellerLine(poId: string, batchId: Types.ObjectId, session: Client
   const acceptedValuePaise = po.acceptedValuePaise ?? 0;
   if (po.status !== 'CHECKED' || acceptedValuePaise < 1) {
     throw conflict(`${po.number} has not passed the dock check.`, 'NOT_PAYABLE');
+  }
+  if (po.hold) {
+    throw conflict(`${po.number} is on hold: ${po.hold.reason}`, 'ON_HOLD');
   }
   if (!po.sellerBill) {
     throw conflict(`${po.number}: the seller's bill is not on file yet.`, 'NO_SELLER_BILL');

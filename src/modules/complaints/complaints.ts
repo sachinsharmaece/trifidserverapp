@@ -14,6 +14,7 @@ import { writeAudit } from '../../shared/audit.js';
 import { COMPLAINT_CATEGORIES, type ComplaintCategory } from '../../shared/enums.js';
 import { conflict, invalidField } from '../../shared/errors.js';
 import { formatRupees, splitGst } from '../../shared/money.js';
+import { clip } from '../../shared/text.js';
 import { buyerLedger, postVoucher, systemLedger } from '../books/books.js';
 import { reasonFor } from '../masters/reasons.js';
 import { objectId } from '../parties/common.js';
@@ -48,9 +49,6 @@ export const COMPLAINT_CATEGORY_LABELS: Record<ComplaintCategory, string> = {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const MAX_PAISE = 100_000_000_000;
-
-/** History notes hold 300 characters at most. */
-const clip = (text: string) => (text.length > 300 ? `${text.slice(0, 297)}...` : text);
 
 const optionalText = (max: number) =>
   z

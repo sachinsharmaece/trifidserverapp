@@ -1,39 +1,60 @@
+import type { Types } from 'mongoose';
+import { numberSetting } from '../../db/settings.js';
 import { TradeModel } from '../../models/index.js';
 import { HttpError } from '../../shared/errors.js';
 import { logger } from '../../shared/logger.js';
-import { runSystemAction } from '../trades/engine.js';
+import { runSystemAction, type SystemAction } from '../trades/engine.js';
 
 /**
  * The clocks (SRS §6.5, Q-WF-03). A clock acts when a time limit runs out and nobody pressed the button.
- * Built so far: `silenceDelivery` (Q-LOG-09): a trade at b9 whose delivery window has ended, with no complaint,
- * counts as delivered. A complaint moves the trade to b11, so a b9 trade never has one open.
+ * Two clocks act by themselves:
+ *   `silenceDelivery` (Q-LOG-09, Build 6): a trade at b9 whose delivery window has ended, with no complaint, counts as
+ *     delivered. A complaint moves the trade to b11, so a b9 trade never has one open.
+ *   `archiveViewing` (Build 7): a b1 viewing nobody touched for B1_ARCHIVE_DAYS (7) is archived.
+ * Every other clock only shows (the Controller's Today page lists what is overdue): cancelling an unpaid order,
+ * chasing a seller or closing a lost shipment stay human actions (SRS §3.8: "cancellation stays a human action").
  *
  * `runClocks()` is safe to run twice at the same time (two servers, or the timer and a person pressing Run now):
  * the engine's version check lets only one of them change a trade, and the other is skipped.
- * More clocks (an overdue seller, a b1 that is days old, a lost shipment) come with the Controller's Today queue.
  */
 
 const HOW_OFTEN_MS = 15 * 60 * 1000;
 const AT_A_TIME = 200;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Marks every b9 trade past its delivery window as delivered. Returns how many it delivered. */
-export async function runClocks(now = new Date()) {
-  const due = await TradeModel.find({ buyerStage: 'B9_DISPATCH', dueAt: { $lte: now } })
-    .sort({ dueAt: 1 })
-    .limit(AT_A_TIME);
-  let delivered = 0;
-  for (const trade of due) {
+/** Runs one system action on each trade. Returns how many it moved; a trade someone else moved first is skipped. */
+async function runOn(trades: { _id: Types.ObjectId; number: string }[], action: SystemAction) {
+  let moved = 0;
+  for (const trade of trades) {
     try {
-      await runSystemAction(trade._id, 'silenceDelivery');
-      delivered++;
+      await runSystemAction(trade._id, action);
+      moved++;
     } catch (error) {
-      // Someone moved the trade first (a complaint, or "Delivered"): nothing to do. Anything else is logged.
+      // Someone moved the trade first (a complaint, "Delivered", a touch): nothing to do. Anything else is logged.
       if (!(error instanceof HttpError && error.status === 409)) {
-        logger.error({ msg: 'silenceDelivery failed', trade: trade.number, error });
+        logger.error({ msg: `${action} failed`, trade: trade.number, error });
       }
     }
   }
-  return { delivered };
+  return moved;
+}
+
+/** Runs the clocks once. Returns how many trades it delivered and how many viewings it archived. */
+export async function runClocks(now = new Date()) {
+  const silent = await TradeModel.find({ buyerStage: 'B9_DISPATCH', dueAt: { $lte: now } })
+    .sort({ dueAt: 1 })
+    .limit(AT_A_TIME);
+  const days = await numberSetting('B1_ARCHIVE_DAYS', 7);
+  const idle = await TradeModel.find({
+    buyerStage: 'B1_VIEWING',
+    lastActionAt: { $lte: new Date(now.getTime() - days * DAY_MS) },
+  })
+    .sort({ lastActionAt: 1 })
+    .limit(AT_A_TIME);
+  return {
+    delivered: await runOn(silent, 'silenceDelivery'),
+    archived: await runOn(idle, 'archiveViewing'),
+  };
 }
 
 /** Starts the timer (every 15 minutes). Called once by server.ts; tests call `runClocks()` themselves. */

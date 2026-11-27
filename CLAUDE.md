@@ -68,6 +68,13 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
   nothing of them into a seller-side view. A system action (`systemOnly: true` in `actions.ts`, run with
   `runSystemAction`) has no person: its audit and history use actor role `SYSTEM`; `canPress` is false for everyone.
   Anything that acts by itself on a clock goes in `modules/clocks/clocks.ts`, one trade at a time through the engine.
+- Build 7 (lost in transit, hold, archive, Today): `closeLostInTransit` (`modules/dock/lostInTransit.ts`) closes a shipment
+  only once `trade.dueAt <= now`, and writes the refund, the strike and the PO's `LOST` in the engine's transaction.
+  `holdPayout` / `releaseHold` (`modules/payouts/hold.ts`) are seller side only: `view.ts` hides their history lines and
+  buttons from the buyer side, and shows only the one that applies. The other clocks (seller hold, unpaid order, late
+  dispatch or dock check) never act: they are only listed on the Today page, computed live from `trade.dueAt`
+  (`modules/today/today.ts`); do not add an alerts collection. History notes are capped at 300 characters: put the
+  person's free text last and pass the whole note through `clip()` (`shared/text.ts`).
 - Margins live in `src/modules/masters/marginCells.routes.ts`: reading needs `canSeeMargins` (the wall), writing adds
   `canEditMasters` and `requireStepUp` (`src/modules/auth/stepUp.ts`, 428 until the password was re-checked in the last 5
   minutes). Use `requireStepUp` after the role check on any route that should ask for the password again. A cell is

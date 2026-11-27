@@ -98,6 +98,16 @@ const arrivalSchema = new Schema(
   { _id: false },
 );
 
+/** Why the seller's payout is held, and who held it (the Controller, or Founder or Admin). */
+const holdSchema = new Schema(
+  {
+    reason: { ...textField(300), required: true },
+    at: { type: Date, required: true },
+    by: { ...refField('User'), required: true },
+  },
+  { _id: false },
+);
+
 /**
  * A purchase order (PO-26-0001): what we buy from the seller for one paid sales order (ARCH B3.4, A-10: one PO
  * per SO, one seller per SO). Raised ONLY by the trade engine at Gate A, when Accounts confirms that the buyer
@@ -153,6 +163,10 @@ const purchaseOrderSchema = new Schema(
     payoutBatchId: refField('PayoutBatch'),
     /** When the seller was paid (the UTR proof was typed). Set only by the engine's `recordSellerPayment`. */
     paidAt: Date,
+    /** The Controller's hold on paying the seller (Build 7): while it is set the PO cannot go into a payout batch. */
+    hold: { type: holdSchema, default: undefined },
+    /** Set when the Controller closed the shipment as lost in transit (status LOST). */
+    lostAt: Date,
     createdBy: { ...refField('User'), required: true },
     version: { ...intField(0), required: true, default: 0 },
   },

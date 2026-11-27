@@ -97,7 +97,7 @@ export const LISTING_STATUSES = ['ACTIVE', 'PAUSED', 'EXPIRED', 'WITHDRAWN'] as 
 export type ListingStatus = (typeof LISTING_STATUSES)[number];
 
 /**
- * Where a trade stands on the buyer side (SRS §3.7, ARCH B3.4). Built so far: b1 to b11, Leakage, Dock rejected.
+ * Where a trade stands on the buyer side (SRS §3.7, ARCH B3.4). Built so far: b1 to b11, Leakage, Dock rejected, Lost in transit, Archived.
  * b1 Viewing → b2 Inquiry (he wants it) → b3 Pending seller → b4 Send confirmation (the seller has answered)
  * → b5 Buyer's call (the offer was sent to him) → b6 Order confirmed (he said yes: sales order raised)
  * → b7 Paid (Accounts confirmed payment in full: the purchase order went to the seller)
@@ -107,6 +107,9 @@ export type ListingStatus = (typeof LISTING_STATUSES)[number];
  * → b11 Complaints (the buyer complained within the window; the Controller decides what to do, then it is b10 again).
  * X_LEAKAGE = the buyer said no, or dropped the order before paying; Sales may reopen it (back to b2).
  * X_DOCK_REJECTED = the dock accepted none of the goods (LOCK-40 O4); the buyer is owed a refund; Sales may reopen.
+ * X_LOST_IN_TRANSIT = the goods never reached the dock and the Controller closed the shipment (LOCK-40 O8); the buyer is
+ *   owed a full refund; Sales may reopen.
+ * X_ARCHIVED = a b1 viewing nobody touched for B1_ARCHIVE_DAYS; the system closed it. Sales opens a fresh one from the board.
  */
 export const BUYER_STAGES = [
   'B1_VIEWING',
@@ -122,6 +125,8 @@ export const BUYER_STAGES = [
   'B11_COMPLAINTS',
   'X_LEAKAGE',
   'X_DOCK_REJECTED',
+  'X_LOST_IN_TRANSIT',
+  'X_ARCHIVED',
 ] as const;
 export type BuyerStage = (typeof BUYER_STAGES)[number];
 
@@ -262,6 +267,7 @@ export type ReceiptStatus = (typeof RECEIPT_STATUSES)[number];
 /**
  * A purchase order: RAISED at Gate A → DISPATCHED (Purchase recorded leg 1) → ARRIVED (at the Indore dock)
  * → CHECKED (the dock accepted some or all of it: Gate B) or REJECTED (the dock accepted nothing, O4).
+ * LOST = the Controller closed it as lost in transit (O8): it never arrived.
  */
 export const PURCHASE_ORDER_STATUSES = [
   'RAISED',
@@ -269,6 +275,7 @@ export const PURCHASE_ORDER_STATUSES = [
   'ARRIVED',
   'CHECKED',
   'REJECTED',
+  'LOST',
 ] as const;
 export type PurchaseOrderStatus = (typeof PURCHASE_ORDER_STATUSES)[number];
 

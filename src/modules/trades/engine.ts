@@ -139,12 +139,16 @@ export async function runTradeAction(req: Request, tradeId: string, action: stri
 /** Nobody: the `userId` a system run hands to commands. `silenceDelivery` writes no user into anything. */
 const NO_USER_ID = new Types.ObjectId('000000000000000000000000');
 
+/** The actions only the system presses (`systemOnly` in actions.ts). */
+export type SystemAction = 'silenceDelivery' | 'archiveViewing';
+
 /**
- * Runs the one action only the system presses, `silenceDelivery` (Build 6): the buyer's 7-day window ended and he
- * did not complain, so the deal counts as delivered. The history and audit lines say 'SYSTEM'. Throws a 409 when
- * the trade is no longer at the right stage or someone moved it first; the clock job skips those.
+ * Runs an action only the system presses. `silenceDelivery` (Build 6): the buyer's 7-day window ended and he did not
+ * complain, so the deal counts as delivered. `archiveViewing` (Build 7): a b1 viewing nobody touched for a week. The
+ * history and audit lines say 'SYSTEM'. Throws a 409 when the trade is no longer at the right stage, the time is not up
+ * (the command checks) or someone moved it first; the clock job skips those.
  */
-export async function runSystemAction(tradeId: Types.ObjectId | string, action: 'silenceDelivery') {
+export async function runSystemAction(tradeId: Types.ObjectId | string, action: SystemAction) {
   const trade = await TradeModel.findById(tradeId);
   if (!trade) throw notFound('Trade not found.');
   if (!isAtStage(action, trade)) {
@@ -262,7 +266,11 @@ export async function openViewing(req: Request, body: unknown) {
     buyerStage: 'B1_VIEWING' as const,
   };
   const existing = await TradeModel.findOne(open);
-  if (existing) return { trade: existing, created: false };
+  if (existing) {
+    // Looking at it again counts as touching it: the idle clock (archiveViewing) starts over.
+    await TradeModel.updateOne({ _id: existing._id }, { $set: { lastActionAt: new Date() } });
+    return { trade: existing, created: false };
+  }
   try {
     const trade = await createTrade(
       req,

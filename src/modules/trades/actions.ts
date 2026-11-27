@@ -51,7 +51,11 @@ export const TRADE_ACTIONS = {
     desk: 'SALES',
     buyerFrom: ['B6_ORDER_CONFIRMED'],
   },
-  reopen: { label: 'Reopen', desk: 'SALES', buyerFrom: ['X_LEAKAGE', 'X_DOCK_REJECTED'] },
+  reopen: {
+    label: 'Reopen',
+    desk: 'SALES',
+    buyerFrom: ['X_LEAKAGE', 'X_DOCK_REJECTED', 'X_LOST_IN_TRANSIT'],
+  },
   enterPayment: { label: 'Enter payment', desk: 'SALES', buyerFrom: ['B6_ORDER_CONFIRMED'] },
   confirmPayment: {
     label: 'Confirm payment',
@@ -117,6 +121,35 @@ export const TRADE_ACTIONS = {
     label: 'Delivered (no complaint)',
     desk: 'SALES',
     buyerFrom: ['B9_DISPATCH'],
+    onCard: false,
+    systemOnly: true,
+  },
+  // Build 7: the Controller's queue (Today) and the second clock.
+  // The shipment never reached the dock and its arrival clock has run out (the command checks that).
+  closeLostInTransit: {
+    label: 'Close as lost in transit',
+    desk: 'CONTROLLER',
+    buyerFrom: ['B7_PAID'],
+    sellerFrom: ['S5_DISPATCHED'],
+  },
+  // Stop paying a seller for a while, and let him be paid again. The deal card shows only the one that applies.
+  holdPayout: {
+    label: 'Hold the payout',
+    desk: 'CONTROLLER',
+    buyerFrom: ['B8_BILLED', 'B9_DISPATCH', 'B10_DELIVERED', 'B11_COMPLAINTS'],
+    sellerFrom: ['S6_PAYMENT'],
+  },
+  releaseHold: {
+    label: 'Release the hold',
+    desk: 'CONTROLLER',
+    buyerFrom: ['B8_BILLED', 'B9_DISPATCH', 'B10_DELIVERED', 'B11_COMPLAINTS'],
+    sellerFrom: ['S6_PAYMENT'],
+  },
+  // A b1 viewing nobody touched for B1_ARCHIVE_DAYS: the clock closes it (modules/clocks).
+  archiveViewing: {
+    label: 'Archive the viewing',
+    desk: 'SALES',
+    buyerFrom: ['B1_VIEWING'],
     onCard: false,
     systemOnly: true,
   },

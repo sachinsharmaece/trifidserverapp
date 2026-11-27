@@ -409,6 +409,11 @@ window → b11) and `resolveComplaint` (the Controller, b11 → b10). `silenceDe
 `systemOnly` in `actions.ts`, so no person can press it (403 "The system does this when the time is up.") and it never
 shows on a card.
 
+The Controller's own buttons (Build 7, section "Lost in transit, the payout hold…"): `closeLostInTransit {note}` (s5 on
+the way, once the arrival time has passed → "Lost in transit" / Closed), `holdPayout {reason}` and `releaseHold` (s6,
+until the seller is paid). The second `systemOnly` action is `archiveViewing` (a b1 viewing nobody touched for 7 days →
+"Archived").
+
 To the seller (Build 5, section "Payouts"): `recordSellerPayment` (Accounts, s6 → Closed). It needs a batch and a line,
 so it is pressed from Payouts (`POST /payout-batches/:id/lines/:lineId/proof`), not from the card: `onCard: false` in
 `actions.ts` keeps its button off the deal card.
@@ -434,8 +439,9 @@ to confirm, `SELLER_HOLD_HOURS` (24) that the seller holds the stock after confi
 to dispatch once the PO is raised (b7 / s3), `TRANSIT_OVERDUE_DAYS` (4) for the goods to reach the dock, and
 `INSPECTION_HOURS` (24) for the dock to check them after arrival, and `DELIVERY_WINDOW_DAYS` (7) from the proof of
 dispatch for Sales to confirm the delivery (b9, "Delivery window ends"), and `SLA_B11_HOURS` (48) for the Controller to
-decide a complaint (b11, "Controller to decide by"). Shown as "Next" on the lists. Only the delivery clock acts by
-itself (`modules/clocks`, next sections); the other clocks still only show.
+decide a complaint (b11, "Controller to decide by"). Shown as "Next" on the lists. Only two clocks act by themselves
+(the delivery clock and the b1 archive clock, `modules/clocks`, next sections); the other clocks only show, and the
+Controller's Today page lists them once they have run out.
 
 Kept simple on purpose: the ask and the seller's answer are stored inside the trade (no separate collections); decline
 reasons are a fixed list; the buyer rate is fixed at the seller's answer. There is no `Idempotency-Key` check yet (none of the API has
@@ -714,17 +720,19 @@ questions were open, so these are our defaults: Q-SAL-05, Q-SAL-08, Q-LOG-09):
 Caps, so the books cannot be talked into a loss: a credit or refund may not take more than the **Marg bill total**
 less what earlier complaints on the order already gave back (422 `amountPaise`: "The most that can still be credited
 is ₹…"), and refunded boxes may not pass the boxes billed less earlier refunded boxes (422 `boxes`). The trade goes
-back to **b10**; the complaint is RESOLVED and kept. 3. **The delivery clock** (`silenceDelivery`, the system). A trade at b9 whose delivery window has run out with no
-complaint is marked delivered by the server (b10, history "Delivered: no complaint came within the delivery window",
-shown as "System"; audit actor role `SYSTEM`, no user id). `runClocks()` in `modules/clocks/clocks.ts` runs every
-**15 minutes** from `server.ts` unless `CLOCKS_ENABLED=false`, and `POST /clocks/run` (Controller, Founder, Admin) runs
-it now. It is safe to run twice: a trade that moved is skipped (409). With several server copies, set
-`CLOCKS_ENABLED=true` on only one of them.
+back to **b10**; the complaint is RESOLVED and kept.
+
+3. **The delivery clock** (`silenceDelivery`, the system). A trade at b9 whose delivery window has run out with no
+   complaint is marked delivered by the server (b10, history "Delivered: no complaint came within the delivery window",
+   shown as "System"; audit actor role `SYSTEM`, no user id). `runClocks()` in `modules/clocks/clocks.ts` runs every
+   **15 minutes** from `server.ts` unless `CLOCKS_ENABLED=false`, and `POST /clocks/run` (Controller, Founder, Admin) runs
+   it now. It is safe to run twice: a trade that moved is skipped (409). With several server copies, set
+   `CLOCKS_ENABLED=true` on only one of them.
 
 | Call                                                    | Who                               | What it does                                                        |
 | ------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------- |
 | `GET /complaints?status=OPEN\|RESOLVED&q&page&pageSize` | Sales, Controller, Founder, Admin | `{ counts, complaints, total, page, pageSize }` (OPEN oldest first) |
-| `POST /clocks/run`                                      | Controller, Founder, Admin        | `{ delivered }`: how many trades the clock marked delivered         |
+| `POST /clocks/run`                                      | Controller, Founder, Admin        | `{ delivered, archived }`: what the two clocks did (Build 7)        |
 
 Raising and resolving are engine buttons (`POST /trades/:id/actions/raiseComplaint` and `resolveComplaint`), so the
 stage, version and desk checks, the history line and the audit are the same as for every button.
@@ -740,9 +748,47 @@ bill could not be entered and the payout stayed blocked. It (and `recordSellerPa
 **Run `npm run db:sync`** once: it creates the `complaints` collection and its indexes.
 
 Not built yet: stock for a replacement or a return (they are recorded decisions), setting a credit off against the buyer's
-next order, Marg credit-note handling, the Controller's "Today" queue, and the other clocks that act by themselves (the
-seller's hold running out, lost in transit, an unpaid order). The scheduler is a plain in-process timer, enough for one
-server.
+next order, and Marg credit-note handling. The scheduler is a plain in-process timer, enough for one server.
+
+## Lost in transit, the payout hold, the archive clock and the Today API (Build 7)
+
+The questions were open, so these are our defaults (all written in the root `CLAUDE.md`).
+
+**Lost in transit** (`closeLostInTransit {note}`, `modules/dock/lostInTransit.ts`). Goods dispatched (b7 / s5 on the way)
+that never reach the dock. Only the Controller (Founder and Admin too) presses it, and only once the arrival clock has
+run out (`trade.dueAt`, set at dispatch from `TRANSIT_OVERDUE_DAYS`): earlier it is 409 `NOT_OVERDUE`. The note is
+required (at most 250 characters). One transaction does all of this: the PO becomes `LOST` (`lostAt`), a seller strike
+is written (kind `LOST_IN_TRANSIT`), and **one refund** is created for every box at the buyer's rate ("Lost in
+transit: N boxes (SO-…)"), paid later from Payouts like any refund. The trade goes to the buyer stage **Lost in
+transit** and the seller stage Closed, and the clock is cleared. Nothing is owed to the seller: no purchase voucher was
+ever posted, and there is no return note (nothing came back). Sales may `reopen` the deal (back to b2).
+
+**The payout hold** (`holdPayout {reason}` and `releaseHold`, `modules/payouts/hold.ts`). The Controller (Founder and
+Admin too) can stop paying a seller from s6 (after the dock check) until he is paid; the reason is required (at most 250
+characters). The stage does not move. A held PO shows `waiting: "On hold: <reason>"` in To pay and cannot go into a
+batch (409 `ON_HOLD`). Refusals: 409 `ALREADY_ON_HOLD`, `ALREADY_PAID`, `ALREADY_IN_BATCH` (cancel the batch first),
+and `NOT_ON_HOLD` on a release. The hold is **seller side only**: Sales never sees the buttons, the PO or the history
+line (`view.ts` leaves the two history lines out for the buyer side). The deal card shows only the button that applies
+(Hold, or Release). The PO list has `onHold`, and the PO carries `hold {reason, at}` and `lostAt`.
+
+**The archive clock** (`archiveViewing`, the system). A b1 viewing nobody touched for `B1_ARCHIVE_DAYS` (7) is moved to
+the buyer stage **Archived** by `runClocks()`; its history says "Archived: nobody touched this viewing for 7 days"
+(actor "System"). Opening the same viewing again from the rate board counts as touching it. An archived viewing cannot
+be reopened: Sales opens a fresh one from the board. `runClocks()` now returns `{ delivered, archived }`.
+
+**The other clocks only show.** The seller's hold running out, an unpaid order, a late dispatch, a late dock check and a
+late complaint decision never act by themselves ("cancellation stays a human action", SRS §3.8). They are listed on the
+Today page, worked out live from `trade.dueAt` every time, so there is no alerts collection and nothing to keep in step.
+
+| Call         | Who                        | What it does                                                                                                                                                                                       |
+| ------------ | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /today` | Controller, Founder, Admin | `{ now, lostInTransit[], overdue[], complaints {open, overdue}, held[], archiveDays }`: overdue shipments (with PO, boxes, trade version), other overdue clocks with the desk to act, held payouts |
+
+The Today page names both buyers and sellers, so it is for the supervisors only (Sales, Purchase, Accounts and Logistics
+get 403). The buttons on it are the same engine actions as on the deal card.
+
+**No `npm run db:sync` is needed for Build 7:** there is no new collection or index. The new fields on `purchase_orders`
+(`hold`, `lostAt`) are optional, and the new stages and the PO status `LOST` are only new values of existing fields.
 
 ## Left out for now
 
@@ -754,5 +800,5 @@ Parties not built yet: opening ledgers, seller KYC documents (Q-PUR-01), the bul
 (Q-DATA-01), placeholder parties, and automatic classification at the first order.
 Listings not built yet: a daily job to expire
 listings (the sweep inside the API does it for now), editing a listing, and a seller's own `/sellers/:id/listings` view.
-Trades not built yet: a job that closes b1 trades nobody touched, and the clocks that should act when they run out
-(only the delivery clock does).
+Trades not built yet: the registers, dashboards and reports (Build 8), and hand-added receipts, journals and bank
+reconciliation (Build 9).

@@ -8,6 +8,7 @@ import { clocksRouter } from '../modules/clocks/clocks.routes.js';
 import { complaintsRouter } from '../modules/complaints/complaints.routes.js';
 import { dockRouter } from '../modules/dock/dock.routes.js';
 import { payoutsRouter } from '../modules/payouts/payouts.routes.js';
+import { todayRouter } from '../modules/today/today.routes.js';
 import { tripsRouter } from '../modules/trips/trips.routes.js';
 import { paymentsRouter } from '../modules/payments/payments.routes.js';
 import { purchaseOrdersRouter } from '../modules/purchaseOrders/purchaseOrders.routes.js';
@@ -80,3 +81,5 @@ apiRouter.use(payoutsRouter);
 // "Run now" button for the clocks.
 apiRouter.use(complaintsRouter);
 apiRouter.use(clocksRouter);
+// Build 7: the Controller's Today page (what ran past its time, lost-in-transit candidates, held payouts).
+apiRouter.use(todayRouter);

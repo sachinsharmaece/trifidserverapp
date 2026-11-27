@@ -13,6 +13,7 @@ import {
 import { DECLINE_REASONS, type SkuClass } from '../../shared/enums.js';
 import { conflict, invalidField } from '../../shared/errors.js';
 import { formatRupees } from '../../shared/money.js';
+import { clip } from '../../shared/text.js';
 import { reasonFor } from '../masters/reasons.js';
 import { objectId } from '../parties/common.js';
 import { computeBuyerRate, loadMargins, pricingTierOf } from '../pricing/pricing.js';
@@ -24,6 +25,8 @@ import {
   recordArrival as saveArrival,
 } from '../dock/dock.js';
 import { margBillInput, recordMargBill as saveMargBill } from '../billing/billing.js';
+import { closeLostInTransit as saveLost, lostInput, lostNotes } from '../dock/lostInTransit.js';
+import { holdInput, holdPayout as saveHold, releaseHold as saveRelease } from '../payouts/hold.js';
 import {
   raiseComplaint as saveComplaint,
   raiseInput as complaintInput,
@@ -694,6 +697,51 @@ const recordSellerPayment = command(sellerPaymentInput, async (ctx, input) => {
   return { set: { sellerStage: 'S_CLOSED' }, buyerNote: '', sellerNote: note };
 });
 
+// ---------------------------------------------------------------------------------------------------------------
+// Build 7: Lost in transit, a hold on a seller's payout, and the b1 archive clock
+
+/**
+ * s5 On the way → Closed (Controller): the goods never reached the dock and the arrival clock has run out (O8).
+ * The buyer is refunded in full, the seller gets a strike, nothing is owed to the seller. Sales may reopen the deal.
+ */
+const closeLostInTransit = command(lostInput, async (ctx, input) => {
+  const result = await saveLost(ctx, input);
+  return {
+    set: { buyerStage: 'X_LOST_IN_TRANSIT', sellerStage: 'S_CLOSED' },
+    unset: ['dueAt'],
+    ...lostNotes(result, input),
+  };
+});
+
+/** s6 (Controller): do not pay this seller for now. The stage does not move; the PO shows "On hold: reason". */
+const holdPayout = command(holdInput, async (ctx, input) => {
+  await saveHold(ctx, input);
+  return { set: {}, buyerNote: '', sellerNote: clip(`Payout held: ${input.reason}`) };
+});
+
+/** s6 (Controller): the seller may be paid again. */
+const releaseHold = command(z.object({}), async (ctx) => {
+  const { reason } = await saveRelease(ctx);
+  return { set: {}, buyerNote: '', sellerNote: clip(`Payout hold released (was: ${reason})`) };
+});
+
+/**
+ * b1 → Archived: nobody touched this viewing for B1_ARCHIVE_DAYS. Only the system presses it (modules/clocks).
+ * The viewing never had a seller, an order or money, so nothing else changes; Sales opens a new one from the board.
+ */
+const archiveViewing = command(z.object({}), async (ctx) => {
+  const days = await numberSetting('B1_ARCHIVE_DAYS', 7);
+  if (ctx.trade.lastActionAt.getTime() > ctx.now.getTime() - days * DAY_MS) {
+    throw conflict('This viewing was touched lately.', 'NOT_IDLE');
+  }
+  return {
+    set: { buyerStage: 'X_ARCHIVED' },
+    unset: ['dueAt'],
+    buyerNote: `Archived: nobody touched this viewing for ${days} days`,
+    sellerNote: '',
+  };
+});
+
 export const COMMANDS: Record<TradeActionName, Command> = {
   wantIt,
   sendToSeller,
@@ -719,4 +767,8 @@ export const COMMANDS: Record<TradeActionName, Command> = {
   raiseComplaint,
   resolveComplaint,
   silenceDelivery,
+  closeLostInTransit,
+  holdPayout,
+  releaseHold,
+  archiveViewing,
 };

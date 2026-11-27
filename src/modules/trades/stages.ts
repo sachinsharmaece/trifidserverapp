@@ -15,6 +15,8 @@ export const BUYER_STAGE_LABELS: Record<BuyerStage, string> = {
   B11_COMPLAINTS: 'b11 Complaint',
   X_LEAKAGE: 'Leakage',
   X_DOCK_REJECTED: 'Dock rejected',
+  X_LOST_IN_TRANSIT: 'Lost in transit',
+  X_ARCHIVED: 'Archived',
 };
 
 export const SELLER_STAGE_LABELS: Record<SellerStage, string> = {

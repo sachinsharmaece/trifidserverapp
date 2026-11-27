@@ -47,7 +47,7 @@ export function canSeeTrade(trade: Pick<Trade, 'sellerStage'>, role: Role): bool
 }
 
 /** Who must act next, and by when (shown as a clock on cards and queues). */
-function dueOf(trade: TradeDoc) {
+export function dueOf(trade: TradeDoc) {
   if (!trade.dueAt) return null;
   if (trade.sellerStage === 'S0_DEMAND')
     return { at: trade.dueAt, label: 'Purchase to find a seller' };
@@ -66,20 +66,30 @@ function dueOf(trade: TradeDoc) {
   return { at: trade.dueAt, label: 'Due' };
 }
 
-/** The buttons for this trade: every action possible at its stage, pressable by its desk (or Founder/Admin). */
-function actionsFor(trade: TradeDoc, role: Role) {
-  return TRADE_ACTION_NAMES.filter((name) => showsOnCard(name) && isAtStage(name, trade)).map(
-    (name) => {
-      const rule = TRADE_ACTIONS[name];
-      const allowed = canPress(role, name);
-      return {
-        name,
-        label: rule.label,
-        allowed,
-        ...(allowed ? {} : { reason: `${DESK_NAMES[rule.desk] ?? rule.desk} does this` }),
-      };
-    },
-  );
+/**
+ * The buttons for this trade: every action possible at its stage, pressable by its desk (or Founder/Admin).
+ * `payoutHeld` is whether the seller's payout is on hold; null for a reader who does not see the seller side.
+ * The hold buttons are seller side: only the one that applies now is shown, and Sales sees neither.
+ */
+function actionsFor(trade: TradeDoc, role: Role, payoutHeld: boolean | null) {
+  const showsNow = (name: string) =>
+    name === 'holdPayout'
+      ? payoutHeld === false
+      : name === 'releaseHold'
+        ? payoutHeld === true
+        : true;
+  return TRADE_ACTION_NAMES.filter(
+    (name) => showsOnCard(name) && isAtStage(name, trade) && showsNow(name),
+  ).map((name) => {
+    const rule = TRADE_ACTIONS[name];
+    const allowed = canPress(role, name);
+    return {
+      name,
+      label: rule.label,
+      allowed,
+      ...(allowed ? {} : { reason: `${DESK_NAMES[rule.desk] ?? rule.desk} does this` }),
+    };
+  });
 }
 
 /** The order's payments, what is still due (total − confirmed) and what may still be entered (− waiting ones). */
@@ -96,8 +106,14 @@ async function paymentsSummary(order: {
   return { payments, balanceDuePaise, openPaise: balanceDuePaise - waiting };
 }
 
+/** History lines only the seller side may see: a hold on the seller's payout is never shown to Sales. */
+const SELLER_ONLY_EVENTS = ['holdPayout', 'releaseHold'];
+
 async function historyFor(trade: TradeDoc, role: Role) {
-  const events = await TradeEventModel.find({ tradeId: trade._id }).sort({ at: 1 });
+  const found = await TradeEventModel.find({ tradeId: trade._id }).sort({ at: 1 });
+  const events = seesSellerSide(role)
+    ? found
+    : found.filter((event) => !SELLER_ONLY_EVENTS.includes(event.action));
   const users = await UserModel.find({
     _id: { $in: events.flatMap((event) => (event.actorId ? [event.actorId] : [])) },
   });
@@ -120,6 +136,13 @@ export async function tradeView(trade: TradeDoc, role: Role) {
   const sku = trade.skuId ? await SkuModel.findById(trade.skuId) : null;
   const listing = trade.listingId ? await ListingModel.findById(trade.listingId) : null;
 
+  // The purchase order is read once here: its hold decides the buttons, and the seller side below shows it.
+  const purchaseOrder =
+    seesSellerSide(role) && trade.purchaseOrderId
+      ? await PurchaseOrderModel.findById(trade.purchaseOrderId)
+      : null;
+  const payoutHeld = seesSellerSide(role) ? Boolean(purchaseOrder?.hold) : null;
+
   const view = {
     id: trade.id,
     number: trade.number,
@@ -131,7 +154,7 @@ export async function tradeView(trade: TradeDoc, role: Role) {
     boxesWanted: trade.boxesWanted ?? null,
     ask: trade.ask ? { reason: trade.ask.reason, note: trade.ask.note ?? null } : null,
     due: dueOf(trade),
-    actions: actionsFor(trade, role),
+    actions: actionsFor(trade, role, payoutHeld),
     history: await historyFor(trade, role),
     version: trade.version,
     lastActionAt: trade.lastActionAt,
@@ -224,9 +247,6 @@ export async function tradeView(trade: TradeDoc, role: Role) {
   let sellerSide = {};
   if (seesSellerSide(role)) {
     const seller = trade.sellerId ? await SellerModel.findById(trade.sellerId) : null;
-    const purchaseOrder = trade.purchaseOrderId
-      ? await PurchaseOrderModel.findById(trade.purchaseOrderId)
-      : null;
     const answer = trade.sellerAnswer;
     sellerSide = {
       seller: seller ? { id: seller.id, number: seller.number, firmName: seller.firmName } : null,

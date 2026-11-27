@@ -120,6 +120,8 @@ export function purchaseOrderRow(po: PurchaseOrderDoc) {
     dispatchDueAt: po.dispatchDueAt,
     /** When the seller was paid (the bank proof was typed), else null. */
     paidAt: po.paidAt ?? null,
+    /** The Controller's hold on paying the seller (Build 7): shown as a badge. */
+    onHold: Boolean(po.hold),
     createdAt: po.createdAt,
   };
 }
@@ -128,6 +130,9 @@ export function purchaseOrderRow(po: PurchaseOrderDoc) {
 function dockFacts(po: PurchaseOrderDoc) {
   const leg1 = po.leg1;
   return {
+    /** Why the seller's payout is held, if it is (seller side only, like everything on a PO). */
+    hold: po.hold ? { reason: po.hold.reason, at: po.hold.at } : null,
+    lostAt: po.lostAt ?? null,
     leg1: leg1
       ? {
           mode: leg1.mode,
