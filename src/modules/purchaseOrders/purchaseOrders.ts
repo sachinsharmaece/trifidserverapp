@@ -12,6 +12,7 @@ import { writeAudit } from '../../shared/audit.js';
 import type { Role } from '../../shared/enums.js';
 import { requireRole } from '../auth/requireRole.js';
 import type { CommandContext } from '../trades/commands.js';
+import { payoutOfPo } from '../payouts/payouts.js';
 
 /**
  * Purchase orders (PO-26-0001). Raised ONLY by the trade engine at Gate A (`confirmPayment`, when the buyer has
@@ -117,6 +118,8 @@ export function purchaseOrderRow(po: PurchaseOrderDoc) {
     item: line ? `${line.productName} · ${line.packLabel} × ${line.boxes} boxes` : '',
     totalPaise: po.totalPaise,
     dispatchDueAt: po.dispatchDueAt,
+    /** When the seller was paid (the bank proof was typed), else null. */
+    paidAt: po.paidAt ?? null,
     createdAt: po.createdAt,
   };
 }
@@ -178,6 +181,7 @@ export function purchaseOrderSummary(po: PurchaseOrderDoc) {
     status: po.status,
     totalPaise: po.totalPaise,
     dispatchDueAt: po.dispatchDueAt,
+    paidAt: po.paidAt ?? null,
     lines: po.lines.map((line) => ({
       lineNo: line.lineNo,
       productName: line.productName,
@@ -200,6 +204,8 @@ export async function purchaseOrderView(po: PurchaseOrderDoc) {
   return {
     ...purchaseOrderRow(po),
     ...dockFacts(po),
+    /** Where the seller's payment is: in a batch, released, or paid with its UTR (Build 5). */
+    payout: await payoutOfPo(po),
     inspection: inspection
       ? {
           outcome: inspection.outcome,

@@ -23,6 +23,8 @@ const lineSchema = new Schema(
  * Goods accepted at the dock (PURCHASE PV-26-0001), ₹27,000 at 18% GST within MP: Dr Purchase ₹22,881.36 ·
  * Dr Input CGST ₹2,059.32 · Dr Input SGST ₹2,059.32 · Cr the seller ₹27,000.
  * The Marg bill to the buyer (SALES SV-26-0001): Dr the buyer · Cr Sales (taxable) · Cr Output CGST + SGST (or IGST).
+ * Paying a seller (PAYMENT PY-26-0001): Dr the seller · Cr our bank (· Cr Freight for the freight we paid at Indore).
+ * Refunding a buyer (PAYMENT): Dr the buyer · Cr our bank.
  *
  * Posted vouchers are never changed or deleted (append-only, like audit_events). A mistake is undone later by a
  * mirror REVERSAL voucher. Only modules/books/books.ts writes vouchers (`postVoucher`).
@@ -41,7 +43,11 @@ const voucherSchema = new Schema(
     source: {
       type: new Schema(
         {
-          type: { type: String, enum: ['RECEIPT', 'INSPECTION', 'MARG_BILL'], required: true },
+          type: {
+            type: String,
+            enum: ['RECEIPT', 'INSPECTION', 'MARG_BILL', 'PAYOUT_LINE'],
+            required: true,
+          },
           id: { type: Schema.Types.ObjectId, required: true },
           number: { type: String, required: true },
         },

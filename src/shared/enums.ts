@@ -67,6 +67,7 @@ export const COUNTER_PREFIXES = [
   'RV',
   'PV',
   'SV',
+  'PY',
   'T',
 ] as const;
 export type CounterPrefix = (typeof COUNTER_PREFIXES)[number];
@@ -126,7 +127,7 @@ export type BuyerStage = (typeof BUYER_STAGES)[number];
  *      (S5_ARRIVED; the design has one s5, split here so the dock's two steps are clear);
  * s6 = the dock checked the goods: the seller is to be paid for what was accepted (payouts come later);
  * S_RELEASED = the buyer did not take it: the seller may sell the stock to someone else;
- * S_CLOSED = the dock accepted nothing (LOCK-40 O4): the seller side is over.
+ * S_CLOSED = the seller side is over: the dock accepted nothing (LOCK-40 O4), or the seller has been paid.
  */
 export const SELLER_STAGES = [
   'S0_DEMAND',
@@ -287,6 +288,21 @@ export type TripStatus = (typeof TRIP_STATUSES)[number];
 export const BOOK_WITH_MODES = ['TRANSPORT', 'BUS', 'DIRECT'] as const;
 export type BookWithMode = (typeof BOOK_WITH_MODES)[number];
 
-/** A refund owed to a buyer. Paying it (PAYMENT voucher) comes with payouts (Q-ACC-11/12). */
-export const REFUND_STATUSES = ['DUE'] as const;
+/** A refund owed to a buyer: DUE, then PAID when its payout line gets the bank proof (Build 5). */
+export const REFUND_STATUSES = ['DUE', 'PAID'] as const;
 export type RefundStatus = (typeof REFUND_STATUSES)[number];
+
+/**
+ * A payout batch (PAYB-26-0001): Accounts builds it (DRAFT), Founder or Admin releases it (RELEASED; someone other
+ * than the builder, after re-typing the password), or the builder cancels it while still DRAFT (CANCELLED).
+ */
+export const PAYOUT_BATCH_STATUSES = ['DRAFT', 'RELEASED', 'CANCELLED'] as const;
+export type PayoutBatchStatus = (typeof PAYOUT_BATCH_STATUSES)[number];
+
+/** A line pays a SELLER for a checked PO (PAYOUT) or gives a BUYER a refund back (REFUND). */
+export const PAYOUT_LINE_TYPES = ['PAYOUT', 'REFUND'] as const;
+export type PayoutLineType = (typeof PAYOUT_LINE_TYPES)[number];
+
+/** A line: DRAFT → PROOF_PENDING (batch released: pay at the bank) → PAID (the UTR is typed: Q-ACC-11). */
+export const PAYOUT_LINE_STATUSES = ['DRAFT', 'PROOF_PENDING', 'PAID'] as const;
+export type PayoutLineStatus = (typeof PAYOUT_LINE_STATUSES)[number];

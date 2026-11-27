@@ -21,11 +21,13 @@ import {
   TRADE_ACTION_NAMES,
   canPress,
   isAtStage,
+  showsOnCard,
 } from './actions.js';
 import type { TradeDoc } from './commands.js';
 import { acceptedLines, margBillView } from '../billing/billing.js';
 import { refundsOf } from '../dock/dock.js';
 import { paymentsOf } from '../payments/payments.js';
+import { payoutOfPo } from '../payouts/payouts.js';
 import { purchaseOrderSummary } from '../purchaseOrders/purchaseOrders.js';
 import { deliveryOf } from '../trips/trips.js';
 
@@ -63,16 +65,18 @@ function dueOf(trade: TradeDoc) {
 
 /** The buttons for this trade: every action possible at its stage, pressable by its desk (or Founder/Admin). */
 function actionsFor(trade: TradeDoc, role: Role) {
-  return TRADE_ACTION_NAMES.filter((name) => isAtStage(name, trade)).map((name) => {
-    const rule = TRADE_ACTIONS[name];
-    const allowed = canPress(role, name);
-    return {
-      name,
-      label: rule.label,
-      allowed,
-      ...(allowed ? {} : { reason: `${DESK_NAMES[rule.desk] ?? rule.desk} does this` }),
-    };
-  });
+  return TRADE_ACTION_NAMES.filter((name) => showsOnCard(name) && isAtStage(name, trade)).map(
+    (name) => {
+      const rule = TRADE_ACTIONS[name];
+      const allowed = canPress(role, name);
+      return {
+        name,
+        label: rule.label,
+        allowed,
+        ...(allowed ? {} : { reason: `${DESK_NAMES[rule.desk] ?? rule.desk} does this` }),
+      };
+    },
+  );
 }
 
 /** The order's payments, what is still due (total − confirmed) and what may still be entered (− waiting ones). */
@@ -165,7 +169,7 @@ export async function tradeView(trade: TradeDoc, role: Role) {
       ...(order
         ? await paymentsSummary(order)
         : { payments: [], balanceDuePaise: null, openPaise: null }),
-      // Money owed back to the buyer after the dock check (paid later, with payouts).
+      // Money owed back to the buyer after the dock check, and whether a payout batch has paid it.
       refunds: order ? await refundsOf(order._id) : [],
       // From the dock check on (b8): what was accepted at the buyer's rate, the Marg bill, the trip, delivery.
       billing:
@@ -228,6 +232,8 @@ export async function tradeView(trade: TradeDoc, role: Role) {
         : null,
       // The purchase order (b7 / s3 onward): seller side only, it holds the seller's rate.
       purchaseOrder: purchaseOrder ? purchaseOrderSummary(purchaseOrder) : null,
+      // Where the seller's payment is (Build 5): seller side only, it is the seller's money.
+      payout: purchaseOrder ? await payoutOfPo(purchaseOrder) : null,
       sellerAnswer: answer
         ? {
             kind: answer.kind,

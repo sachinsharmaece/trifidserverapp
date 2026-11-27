@@ -25,6 +25,7 @@ import {
 } from '../dock/dock.js';
 import { margBillInput, recordMargBill as saveMargBill } from '../billing/billing.js';
 import { confirmReceipt, logReceipt, rejectReceipt } from '../payments/payments.js';
+import { recordSellerPayment as savePayment, sellerPaymentInput } from '../payouts/payouts.js';
 import {
   dispatchInput,
   leg1Summary,
@@ -45,7 +46,8 @@ import { earliestExpiryMonth, monthsFromNow } from './stages.js';
  * A command never saves the trade itself. The only other writes are the records a step makes for the trade, all
  * inside the same transaction (`session`): the sales order (`buyerYes`, `leakAfterOrder`), the payment entry, its
  * RECEIPT voucher and the purchase order (`enterPayment`, `confirmPayment`, `rejectPayment`), and the PO's dispatch,
- * seller bill, arrival and dock check with what the check writes (`recordDispatch` … `inspectLot`).
+ * seller bill, arrival and dock check with what the check writes (`recordDispatch` … `inspectLot`), and the
+ * seller's payout proof (`recordSellerPayment`: PAYMENT voucher, PO paid, payout line paid).
  */
 
 /** A trade as loaded from the database. */
@@ -641,6 +643,12 @@ const confirmDelivery = command(z.object({}), async (ctx) => {
   };
 });
 
+/** s6 → Closed: Accounts types the bank's UTR for the seller's line in a released payout batch (Q-ACC-11). */
+const recordSellerPayment = command(sellerPaymentInput, async (ctx, input) => {
+  const { note } = await savePayment(ctx, input);
+  return { set: { sellerStage: 'S_CLOSED' }, buyerNote: '', sellerNote: note };
+});
+
 export const COMMANDS: Record<TradeActionName, Command> = {
   wantIt,
   sendToSeller,
@@ -662,4 +670,5 @@ export const COMMANDS: Record<TradeActionName, Command> = {
   recordMargBill,
   recordPod,
   confirmDelivery,
+  recordSellerPayment,
 };

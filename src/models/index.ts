@@ -5,7 +5,7 @@
  * Built so far: system collections + masters (ARCH §B3.1–B3.2) + sellers, buyers and listings (§B3.3) + trades,
  * their history, sales and purchase orders (§B3.4, stages b1–b8 / s0–s6) + the books: ledger groups, ledgers,
  * vouchers and receipts (§B3.5) + the dock: inspections, return notes, seller strikes and refunds due (§B3.7).
- * + the Marg bill (on the sales order) and trips with POD (Build 4). Not yet: seller payouts.
+ * + the Marg bill (on the sales order) and trips with POD (Build 4) + payout batches (Build 5).
  */
 export { AuditEventModel, type AuditEvent } from './auditEvent.model.js';
 export { BuyerModel, type Buyer } from './buyer.model.js';
@@ -19,6 +19,7 @@ export { LedgerModel, type Ledger } from './ledger.model.js';
 export { ListingModel, type Listing } from './listing.model.js';
 export { ManufacturerModel, type Manufacturer } from './manufacturer.model.js';
 export { MarginCellModel, type MarginCell } from './marginCell.model.js';
+export { PayoutBatchModel, type PayoutBatch } from './payoutBatch.model.js';
 export { ProductModel, type Product } from './product.model.js';
 export { PurchaseOrderModel, type PurchaseOrder } from './purchaseOrder.model.js';
 export { ReasonCodeModel, type ReasonCode } from './reasonCode.model.js';

@@ -55,6 +55,12 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
   (`recordMargBill`, `recordPod`); the SALES voucher and the order's `margBill` are written in the same transaction.
   A Marg bill may be lower than the accepted boxes at the buyer's rate, never higher (Q-ACC-02). Adding, removing and
   checking out bills change only the trip (its own `version`). Trip rows never carry firm names or money.
+- Payouts (`src/modules/payouts/`): a batch is built (DRAFT), released by Founder or Admin who did not build it, after
+  `requireStepUp`, then each line is PAID only when its UTR is typed (Q-ACC-11). A seller's proof is the engine action
+  `recordSellerPayment` (`onCard: false`, no button on the card); its PAYMENT voucher (`PY-`), the line, the PO's `paidAt`
+  and the seller stage are written in the engine's transaction. A refund's proof runs in its own transaction. Claim a PO or
+  refund with `updateOne({_id, payoutBatchId: null, ...})`, never read-then-write. A batch names firms: only Accounts,
+  Controller, Founder, Admin read it; Sales, Purchase and Logistics see only a line's `payout` facts on their own side.
 - Margins live in `src/modules/masters/marginCells.routes.ts`: reading needs `canSeeMargins` (the wall), writing adds
   `canEditMasters` and `requireStepUp` (`src/modules/auth/stepUp.ts`, 428 until the password was re-checked in the last 5
   minutes). Use `requireStepUp` after the role check on any route that should ask for the password again. A cell is

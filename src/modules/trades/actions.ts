@@ -16,6 +16,8 @@ interface ActionRule {
   buyerFrom: readonly BuyerStage[];
   /** When given, the seller side must also be at one of these stages. */
   sellerFrom?: readonly SellerStage[];
+  /** false: it is done from its own screen (it needs more than a card can ask), so the deal card shows no button. */
+  onCard?: false;
 }
 
 export const TRADE_ACTIONS = {
@@ -88,9 +90,23 @@ export const TRADE_ACTIONS = {
   recordMargBill: { label: 'Marg bill', desk: 'ACCOUNTS', buyerFrom: ['B8_BILLED'] },
   recordPod: { label: 'Proof of dispatch', desk: 'LOGISTICS', buyerFrom: ['B8_BILLED'] },
   confirmDelivery: { label: 'Delivered', desk: 'SALES', buyerFrom: ['B9_DISPATCH'] },
+  // Build 5: the bank proof for a seller's line in a released payout batch (Accounts, from the Payouts screen).
+  recordSellerPayment: {
+    label: 'Seller payment proof',
+    desk: 'ACCOUNTS',
+    buyerFrom: ['B8_BILLED', 'B9_DISPATCH', 'B10_DELIVERED'],
+    sellerFrom: ['S6_PAYMENT'],
+    onCard: false,
+  },
 } as const satisfies Record<string, ActionRule>;
 
 export type TradeActionName = keyof typeof TRADE_ACTIONS;
+
+/** Whether the deal card shows a button for this action (a few are done from their own screen). */
+export function showsOnCard(action: TradeActionName): boolean {
+  const rule: ActionRule = TRADE_ACTIONS[action];
+  return rule.onCard !== false;
+}
 export const TRADE_ACTION_NAMES = Object.keys(TRADE_ACTIONS) as TradeActionName[];
 
 export function isTradeAction(name: string): name is TradeActionName {

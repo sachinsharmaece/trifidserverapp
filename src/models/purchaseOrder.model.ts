@@ -149,6 +149,10 @@ const purchaseOrderSchema = new Schema(
     /** accepted boxes × units per box × landed rate: what the seller is owed (the PURCHASE voucher). */
     acceptedValuePaise: intField(0, MAX_PAISE),
     inspectedAt: Date,
+    /** The payout batch that is paying the seller (set while the batch is live, kept once paid; Build 5). */
+    payoutBatchId: refField('PayoutBatch'),
+    /** When the seller was paid (the UTR proof was typed). Set only by the engine's `recordSellerPayment`. */
+    paidAt: Date,
     createdBy: { ...refField('User'), required: true },
     version: { ...intField(0), required: true, default: 0 },
   },

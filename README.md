@@ -63,6 +63,7 @@ deleted. Enums are in `src/shared/enums.ts`, GSTIN/IFSC/HSN/pincode checks in `s
 | Books    | `ledger_groups`, `ledgers`, `vouchers` (append-only)                                                                                   |
 | Dock     | `inspections` (append-only), `return_notes`, `refunds`, `seller_strikes`                                                               |
 | Trips    | `trips` (one vehicle leaving the dock with its Marg bills and their PODs)                                                              |
+| Payouts  | `payout_batches` (a batch of seller payments and buyer refunds, its lines kept inside it)                                              |
 
 First time on a database (after `.env` points at it):
 
@@ -105,7 +106,7 @@ src/
   middleware/          requestId (more later: idempotency)
   routes/index.ts      the /api/v1 router — mount feature modules here
   modules/<feature>/   one folder per feature (health, auth, users, masters, parties, listings, pricing, trades,
-                       salesOrders, payments, purchaseOrders, books, dock, billing, trips today)
+                       salesOrders, payments, purchaseOrders, books, dock, billing, trips, payouts today)
   shared/              errors (HttpError + error envelope), audit (writeAudit), mongo (duplicate-key helper), logger,
                        shutdown, enums, validators
   types/               Express type additions (req.requestId, req.user)
@@ -354,6 +355,7 @@ s3 ─ Record dispatch (Purchase) ─▶ s5 On the way ─ Goods arrived (Logist
                                   └ nothing accepted ─▶ Dock rejected + Closed ─ Reopen (Sales) ─▶ b2
 b8 ─ Marg bill (Accounts) ─▶ b8 (waiting for a trip) ─ Proof of dispatch (Logistics, trip out) ─▶ b9 Dispatched
 b9 ─ Delivered (Sales) ─▶ b10 Delivered
+s6 ─ Payout batch built (Accounts) ─ released (Founder/Admin) ─ UTR typed (Accounts) ─▶ seller Closed (paid)
 ```
 
 | File               | What is in it                                                                                                                              |
@@ -400,6 +402,10 @@ After the PO (Build 3, next sections): `recordDispatch` and `recordSellerBill` (
 To the buyer (Build 4, sections "Marg bill" and "Trips"): `recordMargBill` (Accounts, b8, from To be billed),
 `recordPod {ref, date}` (Logistics, b8 → b9, from Trips) and `confirmDelivery {}` (Sales, b9 → b10: the order is
 DELIVERED).
+
+To the seller (Build 5, section "Payouts"): `recordSellerPayment` (Accounts, s6 → Closed). It needs a batch and a line,
+so it is pressed from Payouts (`POST /payout-batches/:id/lines/:lineId/proof`), not from the card: `onCard: false` in
+`actions.ts` keeps its button off the deal card.
 
 **Who presses.** Each action belongs to one desk (Sales, Purchase, Accounts or Logistics). Founder and Admin may press every button too,
 because they have every right (Q-ROL-01, `canPress` in `actions.ts`). The Controller sees both sides but presses nothing
@@ -499,7 +505,8 @@ Double entry (LOCK-41; Q-ACC-09: **the vouchers are the only books**, no separat
 - **Vouchers**: one money event each: `RV-26-0001` for a receipt (Dr bank · Cr buyer), `PV-26-0001` for goods
   accepted at the dock (Dr Purchase (taxable) · Dr Input CGST + SGST, or IGST across states · Cr the seller; the
   tax split is stored in `gst`), `SV-26-0001` for a Marg bill (Dr the buyer · Cr Sales (taxable) · Cr Output CGST +
-  SGST, or IGST). Two or more lines, each a debit or a credit, Σ Dr =
+  SGST, or IGST), `PY-26-0001` for a payout (Dr the seller · Cr bank (what he is paid) · Cr Freight (what we paid
+  at Indore), or Dr the buyer · Cr bank for a refund). Two or more lines, each a debit or a credit, Σ Dr =
   Σ Cr (checked by `postVoucher` and the model), one voucher per source (unique index), append-only (a mistake will be
   undone by a mirror REVERSAL voucher, later). Only `books.ts` writes vouchers.
 - A ledger's balance is the sum of its voucher lines, worked out when asked (fine for TriFid's volume; a cached
@@ -513,8 +520,9 @@ Double entry (LOCK-41; Q-ACC-09: **the vouchers are the only books**, no separat
 | `GET /ledgers?q=`                | Accounts, Controller, Founder, Admin        | Every ledger with group, Dr and Cr totals and balance                          |
 | `GET /ledgers/:id/statement`     | the same                                    | Its voucher lines, oldest first, with the running balance                      |
 
-Not built yet: PAYMENT (seller payouts, refunds) vouchers, journals with approval,
-reversals, opening balances, bank reconciliation (instead of day close), and the registers.
+Not built yet: journals with approval, reversals, opening balances, bank reconciliation (instead of day close), and
+the registers. The Freight ledger is credited when a seller is paid (we took the freight off his money), but the
+matching debit, our own payment to the transporter, is not booked yet, so it shows a credit balance for now.
 
 ## Purchase orders (modules/purchaseOrders)
 
@@ -559,7 +567,7 @@ What the check writes, in the engine's transaction: the inspection (`inspections
 changed; corrections come later, with voucher reversal); accepted > 0 → the **PURCHASE voucher** (accepted × the
 seller's landed rate) and b7 → b8 To be billed, s5 → s6 Checked; damaged or leaking boxes → a REJECTED **return note**;
 extra boxes → an EXCESS return note (`RTN-26-0001`, due in `RETURN_NOTE_DAYS`, 30); short, damaged and leaking boxes →
-a **refund due** to the buyer (`refunds`, `REF-26-0001`, at his order's rate; paying it comes with payouts); nothing
+a **refund due** to the buyer (`refunds`, `REF-26-0001`, at his order's rate; paid from Payouts); nothing
 accepted (O4) → no voucher, a **seller strike** (`seller_strikes`), the buyer side → Dock rejected (Sales may Reopen) and
 the seller side → Closed.
 
@@ -573,7 +581,7 @@ the seller side → Closed.
 
 Refunds due are on the buyer side of the wall: the deal card (Sales) and `GET /sales-orders/:id` list them. Not built
 yet: photos (Q-ARC-02), check corrections, Lost in transit (O8, Controller), the overdue jobs, the return-freight debit
-to the seller, and paying refunds.
+to the seller. Refunds are paid from Payouts (next section).
 
 ## Marg bill (modules/billing)
 
@@ -631,6 +639,49 @@ Trips show **no firm names and no money** (Logistics sees neither). Not built ye
 master (typed per trip for now), photos of the POD (Q-ARC-02), the auto "delivered" after the window (Q-LOG-09),
 complaints (Q-SAL-05/08), and the delivery challan PDF.
 
+## Payouts (modules/payouts)
+
+Money going out of our bank: sellers for the goods the dock accepted, and buyers for refunds due (SRS-PAY-06..09,
+LOCK-41 Part D). Decided 26 Nov 2026 (Q-ACC-03, 05, 11, 12):
+
+1. **Build** (Accounts, Founder, Admin): pick checked POs and refunds due, and the bank account the money leaves from.
+   The batch (`PAYB-26-0001`) is a **DRAFT**. Each PO or refund can be in one live batch (`payoutBatchId` on it).
+2. **Release** (Founder or Admin only; the Controller looks): needs the password re-check (`requireStepUp`, 428
+   `STEP_UP_REQUIRED`), and **never the person who built it** (403, maker ≠ checker, even for Founder and Admin).
+   Every line becomes `PROOF_PENDING`. Releasing posts nothing and marks nothing paid.
+3. **Proof** (Accounts, Founder, Admin): the bank's UTR (6 to 30 letters or digits; spaces and dashes are dropped, capitals
+   kept) and the date it was paid (not in the future). **Only now is the line PAID** (Q-ACC-11, "no proof, not paid").
+4. **Cancel**: only while DRAFT. The claims on the POs and refunds are let go, so they can go in another batch.
+
+**What a seller is paid:** the accepted value (what the PURCHASE voucher credited to him) less the freight we paid at
+Indore when leg 1 was `TO_PAY`. A PO is payable when it is `CHECKED`, something was accepted, **the seller's bill is on
+file** (409 `NO_SELLER_BILL`) and the freight is less than the goods (422). A PO the dock rejected is 409 `NOT_PAYABLE`.
+
+**A seller's proof** is the engine action **`recordSellerPayment`** (Accounts, s6 → Closed) with the trade's version, so
+the engine's checks, history line and audit run as for every other button. In its transaction: the **PAYMENT voucher**
+(`PY-26-0001`: Dr the seller (the accepted value) · Cr the bank (what he is paid) · Cr Freight), the line PAID with its
+voucher number, the PO's `paidAt` (it stays CHECKED), and the seller side Closed. The buyer side is not touched.
+**A refund's proof** posts Dr the buyer · Cr bank, marks the line and the refund PAID (`refund.pay` audit line).
+
+| Call                                           | Who                                  | What it does                                                                                          |
+| ---------------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `GET /payouts/payables`                        | Accounts, Controller, Founder, Admin | `{ purchaseOrders, refunds }` not in a batch; a PO that cannot be batched yet says why (`waiting`)    |
+| `GET /payout-batches?status&q&page&pageSize`   | the same                             | Batches, newest first (`status` DRAFT, RELEASED, CANCELLED; `q` finds a number, firm or reference)    |
+| `POST /payout-batches`                         | Accounts, Founder, Admin             | `{ bankLedgerId, purchaseOrderIds, refundIds }` → 201 `{ batch }`. One bad line stops the whole batch |
+| `POST /payout-batches/:id/cancel`              | the same                             | `{ version }`, DRAFT only (409 `NOT_DRAFT`, 409 `STALE_BATCH`)                                        |
+| `POST /payout-batches/:id/release`             | Founder, Admin (after the step-up)   | `{ version }` → RELEASED                                                                              |
+| `POST /payout-batches/:id/lines/:lineId/proof` | Accounts, Founder, Admin             | `{ utr, paidOn }`. 409 `NOT_RELEASED`, 409 `ALREADY_PAID`                                             |
+
+Other refusals: 409 `ALREADY_IN_BATCH` (taken by another batch or already paid), 422 `bankLedgerId` (not an active
+bank account). A batch names sellers and buyers, so Sales, Purchase and Logistics get 403 on all of it. What they may
+read is a **line's facts**: the seller side of the deal card and `GET /purchase-orders/:id` carry `payout` (batch
+number, status, amounts, UTR, date; Purchase side only), and a refund on the deal card and `GET /sales-orders/:id` has
+its own `status` (DUE or PAID) and `payout` (Sales side only). A PO row carries `paidAt`.
+
+Not built yet: payout run times (Q-ACC-06, `PAYOUT_RUN_TIMES` is not enforced), putting a seller on hold, the
+return-freight debit to the seller, photos or a screenshot of the proof (Q-ARC-02), bank statement import and
+reconciliation, and refunds for b6 leakage or complaints (Q-ACC-05).
+
 ## Left out for now
 
 MFA (step-up is a password re-check for now), a per-IP rate limit on login, a breached-password check, and "forgot
@@ -641,5 +692,5 @@ Parties not built yet: opening ledgers, seller KYC documents (Q-PUR-01), the bul
 (Q-DATA-01), placeholder parties, and automatic classification at the first order.
 Listings not built yet: a daily job to expire
 listings (the sweep inside the API does it for now), editing a listing, and a seller's own `/sellers/:id/listings` view.
-Trades not built yet: complaints after delivery (Q-SAL-05/08), seller payouts and refunds,
+Trades not built yet: complaints after delivery (Q-SAL-05/08),
 a job that closes b1 trades nobody touched, and anything that acts when a clock runs out.

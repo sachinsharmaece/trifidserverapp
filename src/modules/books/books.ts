@@ -138,10 +138,13 @@ export interface VoucherLineInput {
   crPaise?: number;
 }
 
-/** The number series for each voucher type (SRS-ACC-01). RECEIPT, PURCHASE and SALES are posted so far. */
-const SERIES = { RECEIPT: 'RV', PURCHASE: 'PV', SALES: 'SV' } as const satisfies Partial<
-  Record<VoucherType, 'RV' | 'PV' | 'SV'>
->;
+/** The number series for each voucher type (SRS-ACC-01). RECEIPT, PURCHASE, SALES and PAYMENT are posted so far. */
+const SERIES = {
+  RECEIPT: 'RV',
+  PURCHASE: 'PV',
+  SALES: 'SV',
+  PAYMENT: 'PY',
+} as const satisfies Partial<Record<VoucherType, 'RV' | 'PV' | 'SV' | 'PY'>>;
 
 /**
  * Write one voucher: two or more lines, each a debit or a credit, debits = credits (the model checks it too).
@@ -153,7 +156,11 @@ export async function postVoucher(
     type: keyof typeof SERIES;
     date: string;
     narration: string;
-    source: { type: 'RECEIPT' | 'INSPECTION' | 'MARG_BILL'; id: Types.ObjectId; number: string };
+    source: {
+      type: 'RECEIPT' | 'INSPECTION' | 'MARG_BILL' | 'PAYOUT_LINE';
+      id: Types.ObjectId;
+      number: string;
+    };
     lines: VoucherLineInput[];
     /** PURCHASE and SALES vouchers: the tax inside the total. */
     gst?: GstSplit & { taxBp: number };

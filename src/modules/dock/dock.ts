@@ -20,6 +20,7 @@ import { istDate } from '../payments/payments.js';
 import { purchaseOrderOf, savePurchaseOrder } from '../purchaseOrders/dispatch.js';
 import type { CommandContext } from '../trades/commands.js';
 import { monthsFromNow } from '../trades/stages.js';
+import { payoutsOfRefunds } from '../payouts/payouts.js';
 
 /**
  * The Indore dock (LOCK-40 Part A, SRS-LOG-01..05). Two engine steps, pressed by Logistics from the Dock screen:
@@ -439,6 +440,7 @@ export async function inspectLot(ctx: CommandContext, input: InspectionInput) {
 /** The refunds owed on a sales order (buyer side of the wall: they tell our selling price). */
 export async function refundsOf(salesOrderId: Types.ObjectId) {
   const refunds = await RefundModel.find({ salesOrderId }).sort({ createdAt: 1 });
+  const payouts = await payoutsOfRefunds(refunds);
   return refunds.map((refund) => ({
     id: refund.id,
     number: refund.number,
@@ -447,6 +449,8 @@ export async function refundsOf(salesOrderId: Types.ObjectId) {
     amountPaise: refund.amountPaise,
     status: refund.status,
     createdAt: refund.createdAt,
+    /** Where its payout is: in a batch, released, or paid with the UTR (Build 5). */
+    payout: payouts.get(refund.id) ?? null,
   }));
 }
 

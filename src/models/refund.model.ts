@@ -8,8 +8,8 @@ const MAX_PAISE = 100_000_000_000; // ₹100 crore
  * Money we owe a buyer back (REF-26-0001): boxes the dock found short, damaged or leaking, at the buyer's rate
  * on his sales order (LOCK-40 A2, BR-38). Buyer side of the wall: it holds our selling price.
  *
- * Only recorded as DUE for now. Paying it (to the account the money came from, a PAYMENT voucher Dr Buyer · Cr
- * Bank, BR-42) comes with payouts, which wait on Q-ACC-11/12.
+ * It is DUE until a payout batch pays it (to the account the money came from; the PAYMENT voucher is Dr Buyer ·
+ * Cr Bank, BR-42), then PAID. The UTR and date live on the batch line.
  */
 const refundSchema = new Schema(
   {
@@ -22,6 +22,9 @@ const refundSchema = new Schema(
     boxes: { ...intField(1, 1_000_000), required: true },
     amountPaise: { ...intField(1, MAX_PAISE), required: true },
     status: { type: String, enum: REFUND_STATUSES, required: true, default: 'DUE' },
+    /** The payout batch that is paying it (set while the batch is live, kept once paid; cleared if it is cancelled). */
+    payoutBatchId: refField('PayoutBatch'),
+    paidAt: Date,
     createdBy: { ...refField('User'), required: true },
   },
   { collection: 'refunds', timestamps: true, versionKey: false },
