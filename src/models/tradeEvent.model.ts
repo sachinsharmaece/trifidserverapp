@@ -1,5 +1,5 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
-import { BUYER_STAGES, ROLES, SELLER_STAGES } from '../shared/enums.js';
+import { ACTOR_ROLES, BUYER_STAGES, SELLER_STAGES } from '../shared/enums.js';
 import { refField, textField } from './_fields.js';
 
 /**
@@ -11,8 +11,14 @@ const tradeEventSchema = new Schema(
     tradeId: { ...refField('Trade'), required: true },
     /** The engine action, like 'wantIt'. */
     action: { type: String, required: true },
-    actorId: { ...refField('User'), required: true },
-    actorRole: { type: String, enum: ROLES, required: true },
+    /** The person. Empty when the system acted (actorRole 'SYSTEM': the delivery clock). */
+    actorId: {
+      ...refField('User'),
+      required: function (this: { actorRole?: string }) {
+        return this.actorRole !== 'SYSTEM';
+      },
+    },
+    actorRole: { type: String, enum: ACTOR_ROLES, required: true },
     buyerStageBefore: { type: String, enum: BUYER_STAGES },
     buyerStageAfter: { type: String, enum: BUYER_STAGES },
     sellerStageBefore: { type: String, enum: SELLER_STAGES },

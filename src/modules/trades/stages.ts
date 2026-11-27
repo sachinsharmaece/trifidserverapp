@@ -12,6 +12,7 @@ export const BUYER_STAGE_LABELS: Record<BuyerStage, string> = {
   B8_BILLED: 'b8 Billing',
   B9_DISPATCH: 'b9 Dispatched',
   B10_DELIVERED: 'b10 Delivered',
+  B11_COMPLAINTS: 'b11 Complaint',
   X_LEAKAGE: 'Leakage',
   X_DOCK_REJECTED: 'Dock rejected',
 };

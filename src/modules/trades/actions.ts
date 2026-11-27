@@ -18,6 +18,8 @@ interface ActionRule {
   sellerFrom?: readonly SellerStage[];
   /** false: it is done from its own screen (it needs more than a card can ask), so the deal card shows no button. */
   onCard?: false;
+  /** true: only the system presses it, when a clock runs out (no person, not even Founder or Admin). */
+  systemOnly?: true;
 }
 
 export const TRADE_ACTIONS = {
@@ -71,7 +73,8 @@ export const TRADE_ACTIONS = {
   recordSellerBill: {
     label: 'Seller bill',
     desk: 'PURCHASE',
-    buyerFrom: ['B7_PAID', 'B8_BILLED'],
+    // The buyer side moves on without waiting for the seller's bill (b9 to b11), so the bill may come late.
+    buyerFrom: ['B7_PAID', 'B8_BILLED', 'B9_DISPATCH', 'B10_DELIVERED', 'B11_COMPLAINTS'],
     sellerFrom: ['S3_PO', 'S5_DISPATCHED', 'S5_ARRIVED', 'S6_PAYMENT'],
   },
   recordArrival: {
@@ -94,9 +97,28 @@ export const TRADE_ACTIONS = {
   recordSellerPayment: {
     label: 'Seller payment proof',
     desk: 'ACCOUNTS',
-    buyerFrom: ['B8_BILLED', 'B9_DISPATCH', 'B10_DELIVERED'],
+    buyerFrom: ['B8_BILLED', 'B9_DISPATCH', 'B10_DELIVERED', 'B11_COMPLAINTS'],
     sellerFrom: ['S6_PAYMENT'],
     onCard: false,
+  },
+  // Build 6: complaints after dispatch. Sales raises one within the delivery window; the Controller decides.
+  raiseComplaint: {
+    label: 'Buyer complains',
+    desk: 'SALES',
+    buyerFrom: ['B9_DISPATCH', 'B10_DELIVERED'],
+  },
+  resolveComplaint: {
+    label: 'Resolve the complaint',
+    desk: 'CONTROLLER',
+    buyerFrom: ['B11_COMPLAINTS'],
+  },
+  // The delivery window ended with no complaint: the clock marks the trade delivered (Q-LOG-09, modules/clocks).
+  silenceDelivery: {
+    label: 'Delivered (no complaint)',
+    desk: 'SALES',
+    buyerFrom: ['B9_DISPATCH'],
+    onCard: false,
+    systemOnly: true,
   },
 } as const satisfies Record<string, ActionRule>;
 
@@ -124,12 +146,14 @@ export function isAtStage(
   return trade.sellerStage ? rule.sellerFrom.includes(trade.sellerStage) : false;
 }
 
-/** Founder and Admin have every right, so they may press any desk's button (client decision, 23 Nov 2026). */
+/** Founder and Admin have every right, so they may press any desk's button (client decision, 23 Nov 2026), except the system's. */
 export const PRESS_ANY_BUTTON_ROLES: readonly Role[] = ['FOUNDER', 'ADMIN'];
 
 /** May this role press this action's button? Its own desk, or Founder/Admin. */
 export function canPress(role: Role, action: TradeActionName): boolean {
-  return role === TRADE_ACTIONS[action].desk || PRESS_ANY_BUTTON_ROLES.includes(role);
+  const rule: ActionRule = TRADE_ACTIONS[action];
+  if (rule.systemOnly) return false;
+  return role === rule.desk || PRESS_ANY_BUTTON_ROLES.includes(role);
 }
 
 /** Names people see for the desks, as in "Purchase does this". */
@@ -138,6 +162,7 @@ export const DESK_NAMES: Partial<Record<Role, string>> = {
   PURCHASE: 'Purchase',
   ACCOUNTS: 'Accounts',
   LOGISTICS: 'Logistics',
+  CONTROLLER: 'Controller',
 };
 
 /** Labels for the history: the actions above plus the two that create a trade. */

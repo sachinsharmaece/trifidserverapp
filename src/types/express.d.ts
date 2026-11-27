@@ -6,6 +6,8 @@ declare global {
       requestId: string;
       /** The signed-in user. Set by `requireAuth`, so it exists only on routes that use it. */
       user?: import('../modules/auth/currentUser.js').CurrentUser;
+      /** True only on the made-up request of a system job (the clocks): it acts as 'SYSTEM', not as a person. */
+      systemRun?: true;
     }
   }
 }

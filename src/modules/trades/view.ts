@@ -25,6 +25,7 @@ import {
 } from './actions.js';
 import type { TradeDoc } from './commands.js';
 import { acceptedLines, margBillView } from '../billing/billing.js';
+import { complaintsOf } from '../complaints/complaints.js';
 import { refundsOf } from '../dock/dock.js';
 import { paymentsOf } from '../payments/payments.js';
 import { payoutOfPo } from '../payouts/payouts.js';
@@ -60,6 +61,8 @@ function dueOf(trade: TradeDoc) {
     return { at: trade.dueAt, label: 'Arrives at the dock by' };
   if (trade.sellerStage === 'S5_ARRIVED') return { at: trade.dueAt, label: 'Dock check by' };
   if (trade.buyerStage === 'B9_DISPATCH') return { at: trade.dueAt, label: 'Delivery window ends' };
+  if (trade.buyerStage === 'B11_COMPLAINTS')
+    return { at: trade.dueAt, label: 'Controller to decide by' };
   return { at: trade.dueAt, label: 'Due' };
 }
 
@@ -95,12 +98,17 @@ async function paymentsSummary(order: {
 
 async function historyFor(trade: TradeDoc, role: Role) {
   const events = await TradeEventModel.find({ tradeId: trade._id }).sort({ at: 1 });
-  const users = await UserModel.find({ _id: { $in: events.map((event) => event.actorId) } });
+  const users = await UserModel.find({
+    _id: { $in: events.flatMap((event) => (event.actorId ? [event.actorId] : [])) },
+  });
   return events.map((event) => ({
     at: event.at,
     action: event.action,
     label: HISTORY_LABELS[event.action] ?? event.action,
-    by: users.find((user) => user._id.equals(event.actorId))?.name ?? '',
+    by:
+      event.actorRole === 'SYSTEM'
+        ? 'System'
+        : (users.find((user) => user._id.equals(event.actorId))?.name ?? ''),
     ...(seesBuyerSide(role) && event.buyerNote ? { buyerNote: event.buyerNote } : {}),
     ...(seesSellerSide(role) && event.sellerNote ? { sellerNote: event.sellerNote } : {}),
   }));
@@ -171,9 +179,13 @@ export async function tradeView(trade: TradeDoc, role: Role) {
         : { payments: [], balanceDuePaise: null, openPaise: null }),
       // Money owed back to the buyer after the dock check, and whether a payout batch has paid it.
       refunds: order ? await refundsOf(order._id) : [],
+      // Complaints on this trade (Build 6), oldest first, and the last moment the buyer may still complain.
+      complaints: await complaintsOf({ tradeId: trade._id }),
+      complaintByAt: trade.complaintByAt ?? null,
       // From the dock check on (b8): what was accepted at the buyer's rate, the Marg bill, the trip, delivery.
       billing:
-        order && ['B8_BILLED', 'B9_DISPATCH', 'B10_DELIVERED'].includes(trade.buyerStage)
+        order &&
+        ['B8_BILLED', 'B9_DISPATCH', 'B10_DELIVERED', 'B11_COMPLAINTS'].includes(trade.buyerStage)
           ? {
               accepted: await acceptedLines(order),
               margBill: margBillView(order),

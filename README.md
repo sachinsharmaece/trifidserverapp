@@ -53,17 +53,18 @@ percentages in basis points (`…Bp`, 1800 = 18%), dates in UTC, `_id` never sho
 like `SO-26-0001` from `nextDocumentNumber()` in `src/db/documentNumbers.ts`). Records are deactivated, never
 deleted. Enums are in `src/shared/enums.ts`, GSTIN/IFSC/HSN/pincode checks in `src/shared/validators.ts`.
 
-| Area     | Collections                                                                                                                            |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| System   | `users`, `sessions` (TTL), `counters`, `idempotency_keys` (TTL 72 h), `audit_events` (append-only), `settings`                         |
-| Masters  | `company` (single document), `manufacturers`, `technicals`, `hsn_codes`, `products`, `skus`, `tehsils`, `reason_codes`, `margin_cells` |
-| Parties  | `sellers`, `buyers` (each party's dealerships are kept on the party itself)                                                            |
-| Listings | `listings` (a seller's offer of one pack)                                                                                              |
-| Trades   | `trades`, `trade_events` (append-only), `sales_orders`, `receipts`, `purchase_orders`                                                  |
-| Books    | `ledger_groups`, `ledgers`, `vouchers` (append-only)                                                                                   |
-| Dock     | `inspections` (append-only), `return_notes`, `refunds`, `seller_strikes`                                                               |
-| Trips    | `trips` (one vehicle leaving the dock with its Marg bills and their PODs)                                                              |
-| Payouts  | `payout_batches` (a batch of seller payments and buyer refunds, its lines kept inside it)                                              |
+| Area       | Collections                                                                                                                            |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| System     | `users`, `sessions` (TTL), `counters`, `idempotency_keys` (TTL 72 h), `audit_events` (append-only), `settings`                         |
+| Masters    | `company` (single document), `manufacturers`, `technicals`, `hsn_codes`, `products`, `skus`, `tehsils`, `reason_codes`, `margin_cells` |
+| Parties    | `sellers`, `buyers` (each party's dealerships are kept on the party itself)                                                            |
+| Listings   | `listings` (a seller's offer of one pack)                                                                                              |
+| Trades     | `trades`, `trade_events` (append-only), `sales_orders`, `receipts`, `purchase_orders`                                                  |
+| Books      | `ledger_groups`, `ledgers`, `vouchers` (append-only)                                                                                   |
+| Dock       | `inspections` (append-only), `return_notes`, `refunds`, `seller_strikes`                                                               |
+| Trips      | `trips` (one vehicle leaving the dock with its Marg bills and their PODs)                                                              |
+| Payouts    | `payout_batches` (a batch of seller payments and buyer refunds, its lines kept inside it)                                              |
+| Complaints | `complaints` (a buyer's complaint after dispatch, and the Controller's decision on it)                                                 |
 
 First time on a database (after `.env` points at it):
 
@@ -106,7 +107,7 @@ src/
   middleware/          requestId (more later: idempotency)
   routes/index.ts      the /api/v1 router — mount feature modules here
   modules/<feature>/   one folder per feature (health, auth, users, masters, parties, listings, pricing, trades,
-                       salesOrders, payments, purchaseOrders, books, dock, billing, trips, payouts today)
+                       salesOrders, payments, purchaseOrders, books, dock, billing, trips, payouts, complaints, clocks today)
   shared/              errors (HttpError + error envelope), audit (writeAudit), mongo (duplicate-key helper), logger,
                        shutdown, enums, validators
   types/               Express type additions (req.requestId, req.user)
@@ -403,6 +404,11 @@ To the buyer (Build 4, sections "Marg bill" and "Trips"): `recordMargBill` (Acco
 `recordPod {ref, date}` (Logistics, b8 → b9, from Trips) and `confirmDelivery {}` (Sales, b9 → b10: the order is
 DELIVERED).
 
+After the goods are out (Build 6, section "Complaints and clocks"): `raiseComplaint` (Sales, b9 or b10, inside the delivery
+window → b11) and `resolveComplaint` (the Controller, b11 → b10). `silenceDelivery` is the system's own action: it is
+`systemOnly` in `actions.ts`, so no person can press it (403 "The system does this when the time is up.") and it never
+shows on a card.
+
 To the seller (Build 5, section "Payouts"): `recordSellerPayment` (Accounts, s6 → Closed). It needs a batch and a line,
 so it is pressed from Payouts (`POST /payout-batches/:id/lines/:lineId/proof`), not from the card: `onCard: false` in
 `actions.ts` keeps its button off the deal card.
@@ -427,8 +433,9 @@ to confirm, `SELLER_HOLD_HOURS` (24) that the seller holds the stock after confi
 `PAYMENT_WINDOW_HOURS` (24) for the buyer to pay once his order is raised (b6), `SLA_S3_HOURS` (8) for the seller
 to dispatch once the PO is raised (b7 / s3), `TRANSIT_OVERDUE_DAYS` (4) for the goods to reach the dock, and
 `INSPECTION_HOURS` (24) for the dock to check them after arrival, and `DELIVERY_WINDOW_DAYS` (7) from the proof of
-dispatch for Sales to confirm the delivery (b9, "Delivery window ends"). Shown as "Next" on the lists; nothing happens
-automatically when one runs out yet (no silent "delivered" after the window: Q-LOG-09).
+dispatch for Sales to confirm the delivery (b9, "Delivery window ends"), and `SLA_B11_HOURS` (48) for the Controller to
+decide a complaint (b11, "Controller to decide by"). Shown as "Next" on the lists. Only the delivery clock acts by
+itself (`modules/clocks`, next sections); the other clocks still only show.
 
 Kept simple on purpose: the ask and the seller's answer are stored inside the trade (no separate collections); decline
 reasons are a fixed list; the buyer rate is fixed at the seller's answer. There is no `Idempotency-Key` check yet (none of the API has
@@ -636,8 +643,7 @@ company, named), `BUS` (a bus parcel) or `DIRECT` (we deliver). A bill is on one
 | `POST /trips/:id/bills/:salesOrderId/pod`    | the same                              | `{ version (the trade's), ref, date }` → `recordPod` → `{ trip }`                      |
 
 Trips show **no firm names and no money** (Logistics sees neither). Not built yet: a vehicle register and transporter
-master (typed per trip for now), photos of the POD (Q-ARC-02), the auto "delivered" after the window (Q-LOG-09),
-complaints (Q-SAL-05/08), and the delivery challan PDF.
+master (typed per trip for now), photos of the POD (Q-ARC-02), and the delivery challan PDF.
 
 ## Payouts (modules/payouts)
 
@@ -680,7 +686,63 @@ its own `status` (DUE or PAID) and `payout` (Sales side only). A PO row carries 
 
 Not built yet: payout run times (Q-ACC-06, `PAYOUT_RUN_TIMES` is not enforced), putting a seller on hold, the
 return-freight debit to the seller, photos or a screenshot of the proof (Q-ARC-02), bank statement import and
-reconciliation, and refunds for b6 leakage or complaints (Q-ACC-05).
+reconciliation, and refunds for b6 leakage (a complaint refund is paid from here too: Build 6).
+
+## Complaints and clocks (modules/complaints, modules/clocks)
+
+A buyer may complain for **7 days after the proof of dispatch** (`DELIVERY_WINDOW_DAYS`). Decided 27 Nov 2026 (the
+questions were open, so these are our defaults: Q-SAL-05, Q-SAL-08, Q-LOG-09):
+
+1. **Raise** (`raiseComplaint`, Sales; Founder and Admin too). Allowed at **b9 or b10**, until `trade.complaintByAt`
+   (fixed at the POD; older trades fall back to dispatch + the setting). After it: 409 `COMPLAINT_WINDOW_OVER`. It takes
+   a `category` (damaged on arrival, boxes short, wrong item, quality, other), a **reason** from the reason codes
+   (context `COMPLAINT`, turned on), optional `boxes` (not more than were billed) and a description. The trade goes to
+   **b11 Complaint**, the Controller's clock `SLA_B11_HOURS` (48) starts, and the complaint is `CMP-26-0001`, status OPEN.
+   Raised at b9, the buyer plainly has the goods, so deciding it also marks the order DELIVERED. One open complaint per
+   trade at a time (b11 has no Raise button).
+2. **Resolve** (`resolveComplaint`, the Controller; Founder and Admin too). The note is required and **Sales reads it**,
+   so it must not name the seller. One of five outcomes (Q-SAL-05: one model):
+
+| Outcome       | Needs  | What happens                                                                                              |
+| ------------- | ------ | --------------------------------------------------------------------------------------------------------- |
+| `NO_ACTION`   | note   | Recorded only: the complaint was not accepted                                                             |
+| `CREDIT`      | rupees | A **credit note**: JOURNAL voucher `JV-26-0001` (Dr Sales and GST, Cr the buyer), source type `COMPLAINT` |
+| `REPLACEMENT` | boxes  | Recorded only: we send new boxes (no stock moves yet)                                                     |
+| `RETURN`      | boxes  | Recorded only: he sends boxes back (no stock moves yet)                                                   |
+| `REFUND`      | boxes  | A **refund** row (`REF-`, `complaintId` set) at his rate × boxes, to be paid from **Payouts**             |
+
+Caps, so the books cannot be talked into a loss: a credit or refund may not take more than the **Marg bill total**
+less what earlier complaints on the order already gave back (422 `amountPaise`: "The most that can still be credited
+is ₹…"), and refunded boxes may not pass the boxes billed less earlier refunded boxes (422 `boxes`). The trade goes
+back to **b10**; the complaint is RESOLVED and kept. 3. **The delivery clock** (`silenceDelivery`, the system). A trade at b9 whose delivery window has run out with no
+complaint is marked delivered by the server (b10, history "Delivered: no complaint came within the delivery window",
+shown as "System"; audit actor role `SYSTEM`, no user id). `runClocks()` in `modules/clocks/clocks.ts` runs every
+**15 minutes** from `server.ts` unless `CLOCKS_ENABLED=false`, and `POST /clocks/run` (Controller, Founder, Admin) runs
+it now. It is safe to run twice: a trade that moved is skipped (409). With several server copies, set
+`CLOCKS_ENABLED=true` on only one of them.
+
+| Call                                                    | Who                               | What it does                                                        |
+| ------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------- |
+| `GET /complaints?status=OPEN\|RESOLVED&q&page&pageSize` | Sales, Controller, Founder, Admin | `{ counts, complaints, total, page, pageSize }` (OPEN oldest first) |
+| `POST /clocks/run`                                      | Controller, Founder, Admin        | `{ delivered }`: how many trades the clock marked delivered         |
+
+Raising and resolving are engine buttons (`POST /trades/:id/actions/raiseComplaint` and `resolveComplaint`), so the
+stage, version and desk checks, the history line and the audit are the same as for every button.
+
+**The wall.** Complaints are **buyer side only**: Sales, the Controller, Founder and Admin. Purchase, Accounts and
+Logistics get 403 on `/complaints`; the deal card sent to Purchase has no `complaints` and no note, and the seller never
+hears about the complaint (the history there shows only the label, "Buyer complains", without the note). The sales order
+page carries `complaints` for everyone who may read the order (Accounts too).
+
+**One real bug found on the way:** `recordSellerBill` was refused once the buyer side had moved past b8, so a late seller
+bill could not be entered and the payout stayed blocked. It (and `recordSellerPayment`) now work from b8 through b11.
+
+**Run `npm run db:sync`** once: it creates the `complaints` collection and its indexes.
+
+Not built yet: stock for a replacement or a return (they are recorded decisions), setting a credit off against the buyer's
+next order, Marg credit-note handling, the Controller's "Today" queue, and the other clocks that act by themselves (the
+seller's hold running out, lost in transit, an unpaid order). The scheduler is a plain in-process timer, enough for one
+server.
 
 ## Left out for now
 
@@ -692,5 +754,5 @@ Parties not built yet: opening ledgers, seller KYC documents (Q-PUR-01), the bul
 (Q-DATA-01), placeholder parties, and automatic classification at the first order.
 Listings not built yet: a daily job to expire
 listings (the sweep inside the API does it for now), editing a listing, and a seller's own `/sellers/:id/listings` view.
-Trades not built yet: complaints after delivery (Q-SAL-05/08),
-a job that closes b1 trades nobody touched, and anything that acts when a clock runs out.
+Trades not built yet: a job that closes b1 trades nobody touched, and the clocks that should act when they run out
+(only the delivery clock does).

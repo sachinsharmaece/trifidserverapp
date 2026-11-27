@@ -9,7 +9,12 @@ import {
   VoucherModel,
 } from '../../models/index.js';
 import { writeAudit } from '../../shared/audit.js';
-import type { LedgerGroupName, LedgerSystemKey, VoucherType } from '../../shared/enums.js';
+import type {
+  LedgerGroupName,
+  LedgerSystemKey,
+  VoucherSourceType,
+  VoucherType,
+} from '../../shared/enums.js';
 import type { GstSplit } from '../../shared/money.js';
 
 /**
@@ -138,13 +143,17 @@ export interface VoucherLineInput {
   crPaise?: number;
 }
 
-/** The number series for each voucher type (SRS-ACC-01). RECEIPT, PURCHASE, SALES and PAYMENT are posted so far. */
+/**
+ * The number series for each voucher type (SRS-ACC-01). RECEIPT, PURCHASE, SALES and PAYMENT are posted so far, and
+ * JOURNAL for the credit note a complaint's outcome posts (Build 6; hand-typed journals come with a later build).
+ */
 const SERIES = {
   RECEIPT: 'RV',
   PURCHASE: 'PV',
   SALES: 'SV',
   PAYMENT: 'PY',
-} as const satisfies Partial<Record<VoucherType, 'RV' | 'PV' | 'SV' | 'PY'>>;
+  JOURNAL: 'JV',
+} as const satisfies Partial<Record<VoucherType, 'RV' | 'PV' | 'SV' | 'PY' | 'JV'>>;
 
 /**
  * Write one voucher: two or more lines, each a debit or a credit, debits = credits (the model checks it too).
@@ -157,12 +166,12 @@ export async function postVoucher(
     date: string;
     narration: string;
     source: {
-      type: 'RECEIPT' | 'INSPECTION' | 'MARG_BILL' | 'PAYOUT_LINE';
+      type: VoucherSourceType;
       id: Types.ObjectId;
       number: string;
     };
     lines: VoucherLineInput[];
-    /** PURCHASE and SALES vouchers: the tax inside the total. */
+    /** PURCHASE, SALES and credit-note vouchers: the tax inside the total. */
     gst?: GstSplit & { taxBp: number };
     userId: Types.ObjectId;
     now: Date;

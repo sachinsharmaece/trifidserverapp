@@ -130,6 +130,8 @@ const tradeSchema = new Schema(
 
     /** The clock for whoever acts next, from Settings (SRS-TRD-04). Empty = no clock at this stage. */
     dueAt: Date,
+    /** The buyer may complain until then (DELIVERY_WINDOW_DAYS after the proof of dispatch). Kept after delivery. */
+    complaintByAt: Date,
 
     /** The Sales person who opened it (the owner, for later team scope). */
     ownerUserId: { ...refField('User'), required: true },

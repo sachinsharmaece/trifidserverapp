@@ -15,6 +15,7 @@ import type { Role } from '../../shared/enums.js';
 import { conflict } from '../../shared/errors.js';
 import { HOME_STATE_CODE, splitGst } from '../../shared/money.js';
 import { margBillView } from '../billing/billing.js';
+import { complaintsOf } from '../complaints/complaints.js';
 import { refundsOf } from '../dock/dock.js';
 import { paymentsOf } from '../payments/payments.js';
 import { deliveryOf } from '../trips/trips.js';
@@ -270,6 +271,7 @@ export async function salesOrderView(order: SalesOrderDoc, role: Role) {
     payments: (await paymentsOf(order._id)).map(({ enteredById: _hidden, ...payment }) => payment),
     // Money owed back to the buyer after the dock check (paid later, with payouts).
     refunds: await refundsOf(order._id),
+    complaints: await complaintsOf({ salesOrderId: order._id }),
     // Build 4: the Marg bill, the trip and delivery.
     margBill: margBillView(order),
     delivery: await deliveryOf(order),

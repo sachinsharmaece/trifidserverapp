@@ -1,5 +1,5 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
-import { VOUCHER_TYPES } from '../shared/enums.js';
+import { VOUCHER_SOURCE_TYPES, VOUCHER_TYPES } from '../shared/enums.js';
 import { intField, refField, textField } from './_fields.js';
 
 const MAX_PAISE = 100_000_000_000; // ₹100 crore
@@ -25,6 +25,7 @@ const lineSchema = new Schema(
  * The Marg bill to the buyer (SALES SV-26-0001): Dr the buyer · Cr Sales (taxable) · Cr Output CGST + SGST (or IGST).
  * Paying a seller (PAYMENT PY-26-0001): Dr the seller · Cr our bank (· Cr Freight for the freight we paid at Indore).
  * Refunding a buyer (PAYMENT): Dr the buyer · Cr our bank.
+ * A credit note after a complaint (JOURNAL JV-26-0001): Dr Sales (taxable) · Dr Output GST · Cr the buyer.
  *
  * Posted vouchers are never changed or deleted (append-only, like audit_events). A mistake is undone later by a
  * mirror REVERSAL voucher. Only modules/books/books.ts writes vouchers (`postVoucher`).
@@ -45,7 +46,7 @@ const voucherSchema = new Schema(
         {
           type: {
             type: String,
-            enum: ['RECEIPT', 'INSPECTION', 'MARG_BILL', 'PAYOUT_LINE'],
+            enum: VOUCHER_SOURCE_TYPES,
             required: true,
           },
           id: { type: Schema.Types.ObjectId, required: true },

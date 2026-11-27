@@ -5,15 +5,15 @@ import { numberSetting } from '../../db/settings.js';
 import {
   BuyerModel,
   ListingModel,
-  ReasonCodeModel,
   SellerModel,
   SkuModel,
   type Trade,
   type TradeModel,
 } from '../../models/index.js';
-import { DECLINE_REASONS, type ReasonCodeContext, type SkuClass } from '../../shared/enums.js';
+import { DECLINE_REASONS, type SkuClass } from '../../shared/enums.js';
 import { conflict, invalidField } from '../../shared/errors.js';
 import { formatRupees } from '../../shared/money.js';
+import { reasonFor } from '../masters/reasons.js';
 import { objectId } from '../parties/common.js';
 import { computeBuyerRate, loadMargins, pricingTierOf } from '../pricing/pricing.js';
 import {
@@ -24,6 +24,12 @@ import {
   recordArrival as saveArrival,
 } from '../dock/dock.js';
 import { margBillInput, recordMargBill as saveMargBill } from '../billing/billing.js';
+import {
+  raiseComplaint as saveComplaint,
+  raiseInput as complaintInput,
+  resolveComplaint as saveResolution,
+  resolveInput as resolutionInput,
+} from '../complaints/complaints.js';
 import { confirmReceipt, logReceipt, rejectReceipt } from '../payments/payments.js';
 import { recordSellerPayment as savePayment, sellerPaymentInput } from '../payouts/payouts.js';
 import {
@@ -47,7 +53,8 @@ import { earliestExpiryMonth, monthsFromNow } from './stages.js';
  * inside the same transaction (`session`): the sales order (`buyerYes`, `leakAfterOrder`), the payment entry, its
  * RECEIPT voucher and the purchase order (`enterPayment`, `confirmPayment`, `rejectPayment`), and the PO's dispatch,
  * seller bill, arrival and dock check with what the check writes (`recordDispatch` … `inspectLot`), and the
- * seller's payout proof (`recordSellerPayment`: PAYMENT voucher, PO paid, payout line paid).
+ * seller's payout proof (`recordSellerPayment`: PAYMENT voucher, PO paid, payout line paid), and a buyer's complaint
+ * and its resolution (`raiseComplaint`, `resolveComplaint`: the complaint, the credit note, the refund).
  */
 
 /** A trade as loaded from the database. */
@@ -338,15 +345,6 @@ const giveQuote = command(quoteInput, async ({ trade, userId, now }, input) => {
 // ---------------------------------------------------------------------------------------------------------------
 // Sales again: the buyer's answer (FR-ORD-02)
 
-/** A reason picked from the reason codes master: it must exist, be turned on and belong to this dropdown. */
-async function reasonFor(reasonCodeId: string, context: ReasonCodeContext) {
-  const reason = await ReasonCodeModel.findById(reasonCodeId);
-  if (!reason?.active || reason.context !== context) {
-    throw invalidField('reasonCodeId', 'Choose a reason from the list.');
-  }
-  return reason;
-}
-
 const reasonInput = z.object({ reasonCodeId: objectId, note: optionalText(300) });
 
 /**
@@ -625,8 +623,10 @@ const recordMargBill = command(margBillInput, async (ctx, input) => {
 const recordPod = command(podInput, async (ctx, input) => {
   const { tripCode, via } = await savePod(ctx, input);
   const days = await numberSetting('DELIVERY_WINDOW_DAYS', 7);
+  // The delivery window is also the complaint window: both end at the same moment (kept after delivery).
+  const windowEnds = new Date(ctx.now.getTime() + days * DAY_MS);
   return {
-    set: { buyerStage: 'B9_DISPATCH', dueAt: new Date(ctx.now.getTime() + days * DAY_MS) },
+    set: { buyerStage: 'B9_DISPATCH', dueAt: windowEnds, complaintByAt: windowEnds },
     buyerNote: `Dispatched to the buyer on trip ${tripCode}: ${via}`,
     sellerNote: '',
   };
@@ -639,6 +639,51 @@ const confirmDelivery = command(z.object({}), async (ctx) => {
     set: { buyerStage: 'B10_DELIVERED' },
     unset: ['dueAt'],
     buyerNote: 'Delivered: the buyer has the goods',
+    sellerNote: '',
+  };
+});
+
+/**
+ * b9/b10 → b11 Complaint: Sales records the buyer's complaint inside the delivery window (7 days after the proof of
+ * dispatch). The silence clock stops; the Controller is due to decide within SLA_B11_HOURS.
+ */
+const raiseComplaint = command(complaintInput, async (ctx, input) => {
+  const { resolveByAt, note } = await saveComplaint(ctx, input);
+  return {
+    set: { buyerStage: 'B11_COMPLAINTS', dueAt: resolveByAt },
+    buyerNote: note,
+    sellerNote: '',
+  };
+});
+
+/**
+ * b11 → b10 Delivered: the Controller decides (no action, credit, replacement, return or refund). A credit or
+ * refund posts a credit note; a refund also waits in Payouts. Sales reads the decision on the card.
+ */
+const resolveComplaint = command(resolutionInput, async (ctx, input) => {
+  const { deliver, note } = await saveResolution(ctx, input);
+  if (deliver) await markDelivered(ctx);
+  return {
+    set: { buyerStage: 'B10_DELIVERED' },
+    unset: ['dueAt'],
+    buyerNote: note,
+    sellerNote: '',
+  };
+});
+
+/**
+ * b9 → b10 Delivered, by the system (Q-LOG-09): the 7-day window ended and no complaint came. Only the clock
+ * (modules/clocks) presses it, as 'SYSTEM'; nobody can press it by hand.
+ */
+const silenceDelivery = command(z.object({}), async (ctx) => {
+  if (!ctx.trade.dueAt || ctx.trade.dueAt > ctx.now) {
+    throw conflict('The delivery window has not ended yet.', 'WINDOW_OPEN');
+  }
+  await markDelivered(ctx);
+  return {
+    set: { buyerStage: 'B10_DELIVERED' },
+    unset: ['dueAt'],
+    buyerNote: 'Delivered: no complaint came within the delivery window',
     sellerNote: '',
   };
 });
@@ -671,4 +716,7 @@ export const COMMANDS: Record<TradeActionName, Command> = {
   recordPod,
   confirmDelivery,
   recordSellerPayment,
+  raiseComplaint,
+  resolveComplaint,
+  silenceDelivery,
 };

@@ -15,6 +15,10 @@ export const ROLES = [
 ] as const;
 export type Role = (typeof ROLES)[number];
 
+/** Who did something: a person (by role) or the system itself (the clock jobs, Build 6). */
+export const ACTOR_ROLES = [...ROLES, 'SYSTEM'] as const;
+export type ActorRole = (typeof ACTOR_ROLES)[number];
+
 export const SESSION_STATES = ['MFA_PENDING', 'ACTIVE'] as const;
 export type SessionState = (typeof SESSION_STATES)[number];
 
@@ -68,6 +72,7 @@ export const COUNTER_PREFIXES = [
   'PV',
   'SV',
   'PY',
+  'JV',
   'T',
 ] as const;
 export type CounterPrefix = (typeof COUNTER_PREFIXES)[number];
@@ -92,13 +97,14 @@ export const LISTING_STATUSES = ['ACTIVE', 'PAUSED', 'EXPIRED', 'WITHDRAWN'] as 
 export type ListingStatus = (typeof LISTING_STATUSES)[number];
 
 /**
- * Where a trade stands on the buyer side (SRS §3.7, ARCH B3.4). Built so far: b1 to b10, Leakage, Dock rejected.
+ * Where a trade stands on the buyer side (SRS §3.7, ARCH B3.4). Built so far: b1 to b11, Leakage, Dock rejected.
  * b1 Viewing → b2 Inquiry (he wants it) → b3 Pending seller → b4 Send confirmation (the seller has answered)
  * → b5 Buyer's call (the offer was sent to him) → b6 Order confirmed (he said yes: sales order raised)
  * → b7 Paid (Accounts confirmed payment in full: the purchase order went to the seller)
  * → b8 Billing (B8_BILLED: the dock checked the goods; Accounts keys the Marg bill, Logistics puts it on a trip)
  * → b9 Dispatched (B9_DISPATCH: proof of dispatch recorded; the 7-day delivery window runs)
- * → b10 Delivered (Sales confirmed delivery).
+ * → b10 Delivered (Sales confirmed delivery, or the 7-day window passed in silence)
+ * → b11 Complaints (the buyer complained within the window; the Controller decides what to do, then it is b10 again).
  * X_LEAKAGE = the buyer said no, or dropped the order before paying; Sales may reopen it (back to b2).
  * X_DOCK_REJECTED = the dock accepted none of the goods (LOCK-40 O4); the buyer is owed a refund; Sales may reopen.
  */
@@ -113,6 +119,7 @@ export const BUYER_STAGES = [
   'B8_BILLED',
   'B9_DISPATCH',
   'B10_DELIVERED',
+  'B11_COMPLAINTS',
   'X_LEAKAGE',
   'X_DOCK_REJECTED',
 ] as const;
@@ -200,7 +207,8 @@ export type LedgerGroupName = (typeof LEDGER_GROUPS)[number];
 
 /**
  * Kinds of voucher and their number series (SRS-ACC-01). Posted so far: RECEIPT (RV-26-0001, a buyer's payment),
- * PURCHASE (PV-26-0001, goods accepted at the dock) and SALES (SV-26-0001, the Marg bill to the buyer).
+ * PURCHASE (PV-26-0001, goods accepted at the dock), SALES (SV-26-0001, the Marg bill to the buyer), PAYMENT
+ * (PY-26-0001, a seller or a refund paid) and JOURNAL (JV-26-0001, a complaint's credit note).
  */
 export const VOUCHER_TYPES = [
   'RECEIPT',
@@ -211,6 +219,16 @@ export const VOUCHER_TYPES = [
   'REVERSAL',
 ] as const;
 export type VoucherType = (typeof VOUCHER_TYPES)[number];
+
+/** What a voucher was posted for (its `source.type`): one automatic voucher per source. */
+export const VOUCHER_SOURCE_TYPES = [
+  'RECEIPT',
+  'INSPECTION',
+  'MARG_BILL',
+  'PAYOUT_LINE',
+  'COMPLAINT',
+] as const;
+export type VoucherSourceType = (typeof VOUCHER_SOURCE_TYPES)[number];
 
 /**
  * Ledgers that automatic postings find by key, not by name (ARCH B3.5). Each is made the first time it is needed
@@ -306,3 +324,31 @@ export type PayoutLineType = (typeof PAYOUT_LINE_TYPES)[number];
 /** A line: DRAFT → PROOF_PENDING (batch released: pay at the bank) → PAID (the UTR is typed: Q-ACC-11). */
 export const PAYOUT_LINE_STATUSES = ['DRAFT', 'PROOF_PENDING', 'PAID'] as const;
 export type PayoutLineStatus = (typeof PAYOUT_LINE_STATUSES)[number];
+
+/** What a buyer complains about (ARCH ComplaintCategory). */
+export const COMPLAINT_CATEGORIES = [
+  'DAMAGE_ON_ARRIVAL',
+  'SHORTAGE',
+  'WRONG_ITEM',
+  'QUALITY_COMPLAINT',
+  'OTHER',
+] as const;
+export type ComplaintCategory = (typeof COMPLAINT_CATEGORIES)[number];
+
+/** A complaint is OPEN until the Controller resolves it with an outcome. */
+export const COMPLAINT_STATUSES = ['OPEN', 'RESOLVED'] as const;
+export type ComplaintStatus = (typeof COMPLAINT_STATUSES)[number];
+
+/**
+ * What the Controller decides (SRS §6.4, Q-SAL-05 default). NO_ACTION: the complaint is not accepted. CREDIT: an
+ * amount is credited to the buyer's account. REFUND: boxes are paid back through a payout batch. REPLACEMENT and
+ * RETURN: recorded for the desks to act on (the stock side of both comes with a later build).
+ */
+export const COMPLAINT_OUTCOMES = [
+  'NO_ACTION',
+  'CREDIT',
+  'REPLACEMENT',
+  'RETURN',
+  'REFUND',
+] as const;
+export type ComplaintOutcome = (typeof COMPLAINT_OUTCOMES)[number];

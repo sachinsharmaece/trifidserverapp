@@ -4,6 +4,8 @@ import { listingsRouter } from '../modules/listings/listings.routes.js';
 import { boardRouter } from '../modules/pricing/board.routes.js';
 import { booksRouter } from '../modules/books/books.routes.js';
 import { billingRouter } from '../modules/billing/billing.routes.js';
+import { clocksRouter } from '../modules/clocks/clocks.routes.js';
+import { complaintsRouter } from '../modules/complaints/complaints.routes.js';
 import { dockRouter } from '../modules/dock/dock.routes.js';
 import { payoutsRouter } from '../modules/payouts/payouts.routes.js';
 import { tripsRouter } from '../modules/trips/trips.routes.js';
@@ -74,3 +76,7 @@ apiRouter.use(dockRouter);
 apiRouter.use(billingRouter);
 apiRouter.use(tripsRouter);
 apiRouter.use(payoutsRouter);
+// Build 6: complaints after dispatch (the Controller's queue; the engine actions raise and resolve them) and the
+// "Run now" button for the clocks.
+apiRouter.use(complaintsRouter);
+apiRouter.use(clocksRouter);

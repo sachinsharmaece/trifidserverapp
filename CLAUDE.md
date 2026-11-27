@@ -61,6 +61,13 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
   and the seller stage are written in the engine's transaction. A refund's proof runs in its own transaction. Claim a PO or
   refund with `updateOne({_id, payoutBatchId: null, ...})`, never read-then-write. A batch names firms: only Accounts,
   Controller, Founder, Admin read it; Sales, Purchase and Logistics see only a line's `payout` facts on their own side.
+- Complaints and clocks (`src/modules/complaints/`, `src/modules/clocks/`): a complaint is raised and resolved only by
+  the engine actions `raiseComplaint` (Sales, b9/b10, inside `trade.complaintByAt`) and `resolveComplaint` (Controller,
+  b11); the routes only read. A CREDIT posts a JOURNAL voucher (`JV-`, source `COMPLAINT`), a REFUND creates a `refunds`
+  row that Payouts pays; both are capped by the Marg bill and earlier complaints. Complaints are buyer side only: build
+  nothing of them into a seller-side view. A system action (`systemOnly: true` in `actions.ts`, run with
+  `runSystemAction`) has no person: its audit and history use actor role `SYSTEM`; `canPress` is false for everyone.
+  Anything that acts by itself on a clock goes in `modules/clocks/clocks.ts`, one trade at a time through the engine.
 - Margins live in `src/modules/masters/marginCells.routes.ts`: reading needs `canSeeMargins` (the wall), writing adds
   `canEditMasters` and `requireStepUp` (`src/modules/auth/stepUp.ts`, 428 until the password was re-checked in the last 5
   minutes). Use `requireStepUp` after the role check on any route that should ask for the password again. A cell is
