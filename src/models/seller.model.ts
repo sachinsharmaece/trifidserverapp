@@ -1,3 +1,4 @@
+import { SELLER_TIERS } from '../shared/enums.js';
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { IFSC_PATTERN, isValidGstin, normaliseKey } from '../shared/validators.js';
 import { refField, textField } from './_fields.js';
@@ -45,9 +46,12 @@ const sellerSchema = new Schema(
         uppercase: true,
         match: [IFSC_PATTERN, 'ifsc is not valid'],
       },
-      bankName: { ...textField(100), required: true },
+      /** Optional on the reference-copy branch (the reference form does not ask for it). */
+      bankName: textField(100),
       holderName: { ...textField(150), required: true },
     },
+    /** NEW → VERIFIED → TRUSTED, changed by hand by Purchase or the Controller (reference LOCK-42 L42.5). */
+    tier: { type: String, enum: SELLER_TIERS, required: true, default: 'NEW' },
     /** Dealerships: the manufacturers this seller is a dealer of. */
     manufacturerIds: { type: [refField('Manufacturer')], default: [] },
     active: { type: Boolean, required: true, default: true },

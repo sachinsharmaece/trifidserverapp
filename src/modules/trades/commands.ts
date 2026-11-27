@@ -218,7 +218,7 @@ const confirmInput = z.object({
 
 /**
  * The listed seller confirms (s1; buyer b3 → b4): boxes up to what the buyer wants, the exact expiry month, and
- * the batch when it is the seller's own stock. Fixes the buyer's rate and starts the seller's hold clock.
+ * the batch if he gives one. Fixes the buyer's rate and starts the seller's hold clock.
  */
 const confirmStock = command(confirmInput, async ({ trade, userId, now }, input) => {
   const listing = await listingOf(trade);
@@ -230,9 +230,7 @@ const confirmStock = command(confirmInput, async ({ trade, userId, now }, input)
     );
   }
   await checkExpiry(input.expiryMonth, now);
-  if (listing.provenance === 'OWN_STOCK' && !input.batchNumber) {
-    throw invalidField('batchNumber', 'Enter the batch number: this is the seller’s own stock.');
-  }
+  // Reference-copy branch: the batch number is always optional, even for the seller's own stock (as the reference).
   const sku = await SkuModel.findById(listing.skuId).orFail();
   const landed = listing.ratePaisePerUnit;
   return {

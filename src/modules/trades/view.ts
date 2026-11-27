@@ -323,6 +323,9 @@ export async function tradeRows(trades: TradeDoc[], side: 'buyer' | 'seller') {
       boxesWanted: trade.boxesWanted ?? null,
       due: dueOf(trade),
       lastActionAt: trade.lastActionAt,
+      /** For screens that act straight from a list row (the reference Confirmations screen). */
+      version: trade.version,
+      source: trade.source,
     };
   });
 }

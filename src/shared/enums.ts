@@ -468,3 +468,11 @@ export const INTEGRITY_CHECKS = [
   'VOUCHER_SOURCE',
 ] as const;
 export type IntegrityCheck = (typeof INTEGRITY_CHECKS)[number];
+
+/** A seller's tier (reference-copy branch, reference LOCK-42 L42.5). */
+export const SELLER_TIERS = ['NEW', 'VERIFIED', 'TRUSTED'] as const;
+export type SellerTier = (typeof SELLER_TIERS)[number];
+
+/** A Stock PO (reference-copy branch): waits for the Controller, then is issued to the seller. */
+export const STOCK_PO_STATUSES = ['PENDING_APPROVAL', 'ISSUED'] as const;
+export type StockPoStatus = (typeof STOCK_PO_STATUSES)[number];

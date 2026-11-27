@@ -37,6 +37,7 @@ export { SellerStrikeModel, type SellerStrike } from './sellerStrike.model.js';
 export { SessionModel, type Session } from './session.model.js';
 export { SettingModel, type Setting } from './setting.model.js';
 export { SkuModel, type Sku } from './sku.model.js';
+export { StockPurchaseOrderModel, type StockPurchaseOrder } from './stockPurchaseOrder.model.js';
 export { TechnicalModel, type Technical } from './technical.model.js';
 export { TehsilModel, type Tehsil } from './tehsil.model.js';
 export { TradeEventModel, type TradeEvent } from './tradeEvent.model.js';

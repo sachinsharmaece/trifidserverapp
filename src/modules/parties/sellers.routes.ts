@@ -7,6 +7,7 @@ import { onlyChanged, writeAudit } from '../../shared/audit.js';
 import { encryptText, hashText } from '../../shared/encryption.js';
 import { conflict, notFound } from '../../shared/errors.js';
 import { escapeRegex, failIfDuplicate } from '../../shared/mongo.js';
+import { SELLER_TIERS } from '../../shared/enums.js';
 import { IFSC_PATTERN, normaliseKey } from '../../shared/validators.js';
 import { currentUserOf, requireAuth } from '../auth/requireAuth.js';
 import { nameField } from '../masters/fields.js';
@@ -43,8 +44,9 @@ const bankShape = {
     .trim()
     .toUpperCase()
     .regex(IFSC_PATTERN, 'An IFSC code is 4 letters, a zero, then 6 letters or digits.'),
-  bankName: nameField('the bank name', 100),
-  holderName: nameField('the account holder name', 150),
+  // Optional on the reference-copy branch: the reference form asks only for the number and IFSC.
+  bankName: nameField('the bank name', 100).optional(),
+  holderName: nameField('the account holder name', 150).optional(),
 };
 
 const sellerShape = {
@@ -73,6 +75,7 @@ const updateBody = z
     // On update the account number is optional: leave it out to keep the saved one.
     bank: z.object({ ...bankShape, accountNumber: bankShape.accountNumber.optional() }).partial(),
     active: z.boolean(),
+    tier: z.enum(SELLER_TIERS),
   })
   .partial()
   .refine((body) => Object.keys(body).length > 0, 'Nothing to change.');
@@ -98,7 +101,9 @@ function toSeller(seller: SellerDoc, tehsil: TehsilSummary | null) {
       holderName: seller.bank?.holderName ?? '',
     },
     manufacturerIds: seller.manufacturerIds.map(String),
+    tier: seller.tier,
     active: seller.active,
+    createdAt: seller.createdAt,
   };
 }
 
@@ -122,6 +127,7 @@ function auditFields(seller: SellerDoc) {
     holderName: seller.bank?.holderName ?? '',
     accountLast4: seller.bank?.accountLast4 ?? '',
     manufacturerIds: seller.manufacturerIds.map(String).sort(),
+    tier: seller.tier,
     active: seller.active,
   };
 }
@@ -243,8 +249,8 @@ sellersRouter.post('/sellers', async (req, res) => {
             accountHash,
             accountLast4: body.bank.accountNumber.slice(-4),
             ifsc: body.bank.ifsc,
-            bankName: body.bank.bankName,
-            holderName: body.bank.holderName,
+            ...(body.bank.bankName ? { bankName: body.bank.bankName } : {}),
+            holderName: body.bank.holderName ?? body.firmName,
           },
           manufacturerIds,
           createdBy: currentUserOf(req).id,
