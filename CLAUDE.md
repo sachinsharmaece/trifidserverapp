@@ -110,3 +110,20 @@ MongoDB must be a replica set (transactions). `.env` holds secrets: never print,
   with `encryptText()` (`src/shared/encryption.ts`); return only `accountLast4`, never the number or the locked text.
 - Mongoose 9: pre hooks are async or throw (no `next`); use `doc.validate()`, not the deprecated `validateSync()`.
 - Keep TypeScript on 5.9.x (typescript-eslint does not support 7). No new dependency without saying why.
+
+## The `reference-copy` branch
+
+This branch copies the reference admin (`D:\trifid\trifid_reference\Admin`, **read only: never change it**) screen by
+screen. Read `docs/REFERENCE_COPY.md` first: which build put what where, and every place we differ from the reference.
+On this branch the reference wins over the older notes above when they disagree.
+
+- Reference-only modules: `credit/`, `fastOrder/` (event log in `fastOrder/eventLog.ts`, `logEvent`), `sellLeads/`,
+  `pricing/skuMargins.routes.ts` (a live SKU cell beats the Parent margin in `loadMargins().rateFor`), `dormancy/`,
+  `parties/staffScope.ts` (`ownerScopeFilter`) and `portal/`.
+- Routes that must answer "as if it does not exist" use a small local guard that throws `notFound` for other roles
+  (`rolesOr404` in seller leads, `viewersOnly` in the SKU matrix).
+- Portal routes never use `requireAuth`: they use `requirePartySession('BUYER' | 'SELLER')` and `partyOf(req)`, and
+  every query is filtered by the signed-in firm's id. Never show the other side of the wall or a staff note there.
+- New buyers get a holder through `assignNewParty()` (does nothing while `DORMANCY_ENABLED` is not "true"). Any new
+  place that creates a buyer must call it too.
+- A reference rule you cannot copy as it is: add it to `docs/REFERENCE_COPY.md` and to the route's doc comment.

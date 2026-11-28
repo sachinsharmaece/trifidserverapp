@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { MarginCellModel, UserModel } from '../../models/index.js';
+import { MarginCellModel, SkuMarginCellModel, SkuModel, UserModel } from '../../models/index.js';
 import { writeAudit } from '../../shared/audit.js';
 import { BUYER_TIERS, SKU_CLASSES, type BuyerTier, type SkuClass } from '../../shared/enums.js';
 import { badRequest, conflict } from '../../shared/errors.js';
@@ -94,7 +94,14 @@ marginCellsRouter.get('/margin-cells', async (_req, res) => {
       BUYER_TIERS.indexOf(a.buyerTier) - BUYER_TIERS.indexOf(b.buyerTier) ||
       b.effectiveFrom.localeCompare(a.effectiveFrom),
   );
-  res.json({ cells: rows });
+  // Reference SKU-MATRIX A2 warning: how many SKUs (per class) carry an ACTIVE SKU price matrix cell, so the screen can
+  // say "N SKUs override this class". Read only; counts each SKU once.
+  const active = await SkuMarginCellModel.find({ status: 'ACTIVE' }, { skuId: 1 });
+  const skus = await SkuModel.find({ _id: { $in: active.map((c) => c.skuId) } }, { skuClass: 1 });
+  const overridesByClass: Record<string, number> = { A: 0, B: 0, C: 0 };
+  for (const sku of skus)
+    overridesByClass[sku.skuClass] = (overridesByClass[sku.skuClass] ?? 0) + 1;
+  res.json({ cells: rows, overridesByClass });
 });
 
 /**
