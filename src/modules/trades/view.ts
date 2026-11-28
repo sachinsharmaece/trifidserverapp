@@ -14,7 +14,7 @@ import {
 import type { Types } from 'mongoose';
 import type { Role } from '../../shared/enums.js';
 import { BUYER_SIDE_ROLES, SELLER_SIDE_ROLES } from '../parties/permissions.js';
-import { computeBuyerRate, loadMargins, pricingTierOf } from '../pricing/pricing.js';
+import { loadMargins, pricingTierOf } from '../pricing/pricing.js';
 import {
   DESK_NAMES,
   HISTORY_LABELS,
@@ -203,8 +203,7 @@ export async function tradeView(trade: TradeDoc, role: Role) {
     let boardOffer = null;
     if (listing && sku && !trade.offer) {
       const { tier, indicative } = pricingTierOf(buyer);
-      const marginBp = (await loadMargins()).marginFor(sku.skuClass, tier);
-      const rate = marginBp === null ? null : computeBuyerRate(listing.ratePaisePerUnit, marginBp);
+      const rate = (await loadMargins()).rateFor(sku, tier, listing.ratePaisePerUnit);
       boardOffer = {
         buyerRatePaisePerUnit: rate,
         unitsPerBox: listing.unitsPerBoxSnapshot,

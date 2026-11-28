@@ -514,7 +514,7 @@ export const MANUAL_AUTO_OFF_REASONS = [
 ] as const;
 
 /** The event log's cross-cutting groups (reference lib/eventlog.ts): credit and listing events. */
-export const EVENT_CATEGORIES = ['CREDIT', 'LISTING'] as const;
+export const EVENT_CATEGORIES = ['CREDIT', 'LISTING', 'PRICING', 'SELL_LEAD'] as const;
 export type EventCategory = (typeof EVENT_CATEGORIES)[number];
 
 /** Credit (reference FAST-ORDER LOCK-42 Part C). */
@@ -531,3 +531,20 @@ export const CREDIT_EDIT_STATUSES = ['PENDING', 'APPLIED', 'REJECTED'] as const;
 export const CREDIT_DAYS = [7, 15] as const;
 /** How the buyer pays for an order: before the PO (the usual), or on his credit line. */
 export const PAY_MODES = ['PAY_FIRST', 'CREDIT'] as const;
+
+/** A SKU price-matrix cell's life (reference LOCK-39): Admin drafts, submits; a different Admin approves or rejects. */
+export const SKU_MARGIN_STATUSES = ['DRAFT', 'PENDING', 'ACTIVE', 'REJECTED'] as const;
+
+/** A seller lead (reference LOCK-39 Part B): a buyer who also has stock to sell, pushed to Purchase. */
+export const SELL_LEAD_STATUSES = [
+  'NEW',
+  'CLAIMED',
+  'CONTACTED',
+  'ACCEPTED',
+  'ONBOARDED',
+  'REJECTED',
+  'ALREADY_SELLER',
+] as const;
+export type SellLeadStatus = (typeof SELL_LEAD_STATUSES)[number];
+export const SELL_LEAD_OPEN = ['NEW', 'CLAIMED', 'CONTACTED', 'ACCEPTED'] as const;
+export const SELL_LEAD_SOURCES = ['SALES_PUSH', 'PURCHASE_MANUAL'] as const;

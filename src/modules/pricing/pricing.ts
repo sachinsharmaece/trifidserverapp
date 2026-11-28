@@ -1,4 +1,4 @@
-import { MarginCellModel } from '../../models/index.js';
+import { MarginCellModel, SkuMarginCellModel } from '../../models/index.js';
 import type { BuyerTier, SkuClass } from '../../shared/enums.js';
 
 /**
@@ -17,6 +17,17 @@ export function computeBuyerRate(landedPaisePerUnit: number, marginBp: number): 
 /** The margin in use for each class × tier at one moment. `null` means no cell has started yet for that pair. */
 export interface MarginTable {
   marginFor: (skuClass: SkuClass, tier: BuyerTier) => number | null;
+  /**
+   * The buyer's rate per unit for one pack (reference LOCK-39 resolveMargin): a live SKU price-matrix cell (₹ per
+   * unit) wins; otherwise the Parent cell (class × tier, %). `null` when neither exists.
+   */
+  rateFor: (
+    sku: { id: string; skuClass: SkuClass },
+    tier: BuyerTier,
+    landedPaisePerUnit: number,
+  ) => number | null;
+  /** Where the margin came from for this pack and tier: a SKU cell or the Parent. */
+  sourceFor: (sku: { id: string; skuClass: SkuClass }, tier: BuyerTier) => 'SKU' | 'PARENT' | null;
 }
 
 /**
@@ -32,7 +43,38 @@ export async function loadMargins(at: Date = new Date()): Promise<MarginTable> {
     const key = `${cell.skuClass}:${cell.buyerTier}`;
     if (!inUse.has(key)) inUse.set(key, cell.marginBp); // newest first, so the first one seen wins
   }
-  return { marginFor: (skuClass, tier) => inUse.get(`${skuClass}:${tier}`) ?? null };
+  // Live SKU cells: approved, started, not ended. The newest start wins.
+  const skuCells = await SkuMarginCellModel.find({
+    status: 'ACTIVE',
+    effectiveFrom: { $lte: at },
+    $or: [
+      { effectiveTo: null },
+      { effectiveTo: { $exists: false } },
+      { effectiveTo: { $gte: at } },
+    ],
+  }).sort({ effectiveFrom: -1 });
+  const skuInUse = new Map<string, number>();
+  for (const cell of skuCells) {
+    const key = `${String(cell.skuId)}:${cell.buyerTier}`;
+    if (!skuInUse.has(key)) skuInUse.set(key, cell.marginPaisePerUnit);
+  }
+  const marginFor = (skuClass: SkuClass, tier: BuyerTier) =>
+    inUse.get(`${skuClass}:${tier}`) ?? null;
+  return {
+    marginFor,
+    rateFor: (sku, tier, landed) => {
+      const perUnit = skuInUse.get(`${sku.id}:${tier}`);
+      if (perUnit !== undefined) return landed + perUnit;
+      const bp = marginFor(sku.skuClass, tier);
+      return bp === null ? null : computeBuyerRate(landed, bp);
+    },
+    sourceFor: (sku, tier) =>
+      skuInUse.has(`${sku.id}:${tier}`)
+        ? 'SKU'
+        : marginFor(sku.skuClass, tier) === null
+          ? null
+          : 'PARENT',
+  };
 }
 
 /**

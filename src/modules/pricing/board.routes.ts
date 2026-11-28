@@ -14,7 +14,7 @@ import { normaliseKey } from '../../shared/validators.js';
 import { requireAuth } from '../auth/requireAuth.js';
 import { pagingShape } from '../parties/common.js';
 import { canUseBuyers } from '../parties/permissions.js';
-import { computeBuyerRate, loadMargins, pricingTierOf } from './pricing.js';
+import { loadMargins, pricingTierOf } from './pricing.js';
 
 /**
  * The Sales rate board: what we can offer one buyer today, and at what rate (FR-SAL-02).
@@ -75,9 +75,9 @@ boardRouter.get('/buyers/:id/board', requireAuth, canUseBuyers, async (req, res)
     const sku = skus.find((s) => s.id === String(listing.skuId));
     const product = sku && products.find((p) => p.id === String(sku.productId));
     if (!sku || !product) return []; // its pack or product has been turned off
-    const margin = margins.marginFor(sku.skuClass, tier);
-    // The listing's rate is already the landed rate per unit (an Ex offer has had its COL added).
-    const rate = margin === null ? null : computeBuyerRate(listing.ratePaisePerUnit, margin);
+    // The listing's rate is already the landed rate per unit (an Ex offer has had its COL added). A live SKU
+    // price-matrix cell wins over the Parent matrix.
+    const rate = margins.rateFor(sku, tier, listing.ratePaisePerUnit);
     return [
       {
         id: listing.id,

@@ -6,6 +6,7 @@ import { SellerModel, type Seller } from '../../models/index.js';
 import { onlyChanged, writeAudit } from '../../shared/audit.js';
 import { encryptText, hashText } from '../../shared/encryption.js';
 import { conflict, notFound } from '../../shared/errors.js';
+import { linkOnboardedSeller } from '../sellLeads/sellLeads.routes.js';
 import { escapeRegex, failIfDuplicate } from '../../shared/mongo.js';
 import { SELLER_TIERS } from '../../shared/enums.js';
 import { IFSC_PATTERN, normaliseKey } from '../../shared/validators.js';
@@ -68,6 +69,11 @@ const createBody = z.object({
   address: sellerShape.address.optional(),
   manufacturerIds: sellerShape.manufacturerIds.optional(),
   bank: z.object(bankShape),
+  /** Reference LOCK-39: registered from a seller lead ("Start seller onboarding"): the lead becomes ONBOARDED. */
+  sellLeadId: z
+    .string()
+    .regex(/^[a-f0-9]{24}$/)
+    .optional(),
 });
 const updateBody = z
   .object({
@@ -261,6 +267,7 @@ sellersRouter.post('/sellers', async (req, res) => {
       { session },
     ).catch(failIfDuplicate(DUPLICATE_MESSAGE, 'SELLER_EXISTS'));
     if (!created) throw new Error('Seller was not created.');
+    if (body.sellLeadId) await linkOnboardedSeller(req, body.sellLeadId, created._id, session);
     await writeAudit(req, {
       action: 'seller.create',
       entityType: 'Seller',

@@ -18,7 +18,7 @@ import { formatRupees } from '../../shared/money.js';
 import { clip } from '../../shared/text.js';
 import { reasonFor } from '../masters/reasons.js';
 import { objectId } from '../parties/common.js';
-import { computeBuyerRate, loadMargins, pricingTierOf } from '../pricing/pricing.js';
+import { loadMargins, pricingTierOf } from '../pricing/pricing.js';
 import {
   arrivalInput,
   correctInspection as saveCorrection,
@@ -142,12 +142,17 @@ async function checkExpiry(month: string, now: Date): Promise<void> {
  * The rate Sales offers the buyer, fixed when the seller answers (buyer side of the wall).
  * Same pricing as the rate board: landed rate + the margin for the pack's class and the buyer's tier.
  */
-async function offerFor(trade: TradeDoc, skuClass: SkuClass, landedPaise: number, now: Date) {
+async function offerFor(
+  trade: TradeDoc,
+  sku: { id: string; skuClass: SkuClass },
+  landedPaise: number,
+  now: Date,
+) {
   const buyer = await BuyerModel.findById(trade.buyerId).orFail();
   const { tier, indicative } = pricingTierOf(buyer);
-  const marginBp = (await loadMargins(now)).marginFor(skuClass, tier);
   return {
-    buyerRatePaisePerUnit: marginBp === null ? null : computeBuyerRate(landedPaise, marginBp),
+    // A live SKU price-matrix cell wins over the Parent matrix (reference LOCK-39).
+    buyerRatePaisePerUnit: (await loadMargins(now)).rateFor(sku, tier, landedPaise),
     tier,
     indicative,
   };
@@ -200,7 +205,7 @@ async function autoConfirmChange(
       ...(house ? {} : { sellerStage: 'S1_CONFIRMATION' as const }),
       sellerId: listing.sellerId,
       sellerAnswer,
-      offer: await offerFor(trade, sku.skuClass, listing.ratePaisePerUnit, now),
+      offer: await offerFor(trade, sku, listing.ratePaisePerUnit, now),
       dueAt: await hoursFrom(now, 'SELLER_HOLD_HOURS'),
       autoConfirmed: true,
       isHouse: house,
@@ -310,7 +315,7 @@ const confirmStock = command(confirmInput, async ({ trade, userId, now }, input)
         byUserId: userId,
         at: now,
       },
-      offer: await offerFor(trade, sku.skuClass, landed, now),
+      offer: await offerFor(trade, sku, landed, now),
       dueAt: await hoursFrom(now, 'SELLER_HOLD_HOURS'),
     },
     buyerNote: `Seller confirmed ${input.boxes} boxes, expiry ${input.expiryMonth}`,
@@ -402,7 +407,7 @@ const giveQuote = command(quoteInput, async ({ trade, userId, now }, input) => {
         byUserId: userId,
         at: now,
       },
-      offer: await offerFor(trade, sku.skuClass, input.landedPaisePerUnit, now),
+      offer: await offerFor(trade, sku, input.landedPaisePerUnit, now),
       dueAt: await hoursFrom(now, 'SELLER_HOLD_HOURS'),
     },
     buyerNote: `Seller found: ${offered} boxes of ${sku.packLabel}, expiry ${input.expiryMonth}`,
@@ -429,7 +434,7 @@ const sendToBuyer = command(z.object({}), async ({ trade, now }) => {
   let newOffer = null;
   if (rate === null) {
     const sku = await SkuModel.findById(trade.skuId).orFail();
-    newOffer = await offerFor(trade, sku.skuClass, answer.landedPaisePerUnit, now);
+    newOffer = await offerFor(trade, sku, answer.landedPaisePerUnit, now);
     rate = newOffer.buyerRatePaisePerUnit;
     if (rate === null) {
       throw conflict(
