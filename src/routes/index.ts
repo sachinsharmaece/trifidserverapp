@@ -36,6 +36,7 @@ import { logisticsRouter } from '../modules/logistics/logistics.routes.js';
 import { fastOrderRouter } from '../modules/fastOrder/fastOrder.routes.js';
 import { creditRouter } from '../modules/credit/credit.routes.js';
 import { skuMarginsRouter } from '../modules/pricing/skuMargins.routes.js';
+import { dormancyRouter } from '../modules/dormancy/dormancy.routes.js';
 import { sellLeadsRouter } from '../modules/sellLeads/sellLeads.routes.js';
 import { healthRouter } from '../modules/health/health.routes.js';
 
@@ -61,6 +62,7 @@ apiRouter.use(fastOrderRouter);
 apiRouter.use(creditRouter);
 apiRouter.use(skuMarginsRouter);
 apiRouter.use(sellLeadsRouter);
+apiRouter.use(dormancyRouter);
 
 // /api/v1/company, /manufacturers, /technicals, /hsn-codes, /products, /skus, /tehsils and /reason-codes: the masters.
 // Everyone signed in can read them; only Founder and Admin can change them.

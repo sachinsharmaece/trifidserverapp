@@ -514,7 +514,7 @@ export const MANUAL_AUTO_OFF_REASONS = [
 ] as const;
 
 /** The event log's cross-cutting groups (reference lib/eventlog.ts): credit and listing events. */
-export const EVENT_CATEGORIES = ['CREDIT', 'LISTING', 'PRICING', 'SELL_LEAD'] as const;
+export const EVENT_CATEGORIES = ['CREDIT', 'LISTING', 'PRICING', 'SELL_LEAD', 'DORMANCY'] as const;
 export type EventCategory = (typeof EVENT_CATEGORIES)[number];
 
 /** Credit (reference FAST-ORDER LOCK-42 Part C). */
@@ -548,3 +548,35 @@ export const SELL_LEAD_STATUSES = [
 export type SellLeadStatus = (typeof SELL_LEAD_STATUSES)[number];
 export const SELL_LEAD_OPEN = ['NEW', 'CLAIMED', 'CONTACTED', 'ACCEPTED'] as const;
 export const SELL_LEAD_SOURCES = ['SALES_PUSH', 'PURCHASE_MANUAL'] as const;
+
+/**
+ * The dormant policy (reference LOCK-34): who holds which buyer. A holding is a LEAD (a new party), a CLAIM (an
+ * ordered party taken from the Pool) or BOOK (a party that orders). `via` says how the holder got it.
+ */
+export const HOLDING_KINDS = ['LEAD', 'CLAIM', 'BOOK'] as const;
+export type HoldingKind = (typeof HOLDING_KINDS)[number];
+export const HOLDING_VIAS = [
+  'INTAKE',
+  'OWN_CALL',
+  'POOL_CLAIM',
+  'DESK_ASSIGN',
+  'GO_LIVE',
+  'CONVERSION',
+] as const;
+export type HoldingVia = (typeof HOLDING_VIAS)[number];
+export const INTAKE_SOURCES = ['META', 'FA', 'APP', 'CALL', 'STAFF', 'IMPORT'] as const;
+export type IntakeSource = (typeof INTAKE_SOURCES)[number];
+export const HOLDING_ENDS = ['ORDERED', 'BILLED', 'RELEASED'] as const;
+export type HoldingEnd = (typeof HOLDING_ENDS)[number];
+
+/** Why a party went (reference lib/dormancy/reasons.ts): call outcomes, with the labels the reason picker shows. */
+export const RELEASE_REASONS: { value: CallOutcome; label: string }[] = [
+  { value: 'ASKED_FOR_RATE', label: 'Asked for a rate' },
+  { value: 'NO_STOCK', label: "Wants something we don't have" },
+  { value: 'PRICE_OBJECTION', label: 'Rate too high' },
+  { value: 'ALREADY_HOLDS_STOCK', label: 'Already holds stock' },
+  { value: 'BUYS_DIRECT', label: 'Buys direct from the company' },
+  { value: 'CALLBACK_LATER', label: 'Not now, call later' },
+  { value: 'NO_ANSWER', label: 'No answer' },
+  { value: 'WRONG_NUMBER', label: 'Wrong number' },
+];

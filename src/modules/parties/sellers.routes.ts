@@ -26,6 +26,7 @@ import {
   tehsilSummaries,
   type TehsilSummary,
 } from './common.js';
+import { ownerScopeFilter } from './staffScope.js';
 import { canUseSellers } from './permissions.js';
 
 /** Sellers: the firms TriFid buys from. Only Purchase and the supervisors may see them (see permissions.ts). */
@@ -198,7 +199,13 @@ sellersRouter.get('/sellers', async (req, res) => {
         ],
       }
     : {};
-  const filter = { ...search, ...(active ? { active: active === 'true' } : {}) };
+  const scope = await ownerScopeFilter(currentUserOf(req));
+  const filter = {
+    ...(Object.keys(search).length && Object.keys(scope).length
+      ? { $and: [search, scope] }
+      : { ...search, ...scope }),
+    ...(active ? { active: active === 'true' } : {}),
+  };
 
   const [total, sellers] = await Promise.all([
     SellerModel.countDocuments(filter),
@@ -262,6 +269,7 @@ sellersRouter.post('/sellers', async (req, res) => {
           },
           manufacturerIds,
           createdBy: currentUserOf(req).id,
+          acquiredById: currentUserOf(req).id,
         },
       ],
       { session },

@@ -25,6 +25,8 @@ import {
   tehsilSummaries,
   type TehsilSummary,
 } from './common.js';
+import { assignNewParty, dormancyEnabled } from '../dormancy/dormancy.js';
+import { ownerScopeFilter } from './staffScope.js';
 import { canUseBuyers } from './permissions.js';
 
 /** Buyers: the firms TriFid sells to. Only Sales and the supervisors may see them (see permissions.ts). */
@@ -183,7 +185,13 @@ buyersRouter.get('/buyers', async (req, res) => {
         ],
       }
     : {};
-  const filter = { ...search, ...(active ? { active: active === 'true' } : {}) };
+  const scope = await ownerScopeFilter(currentUserOf(req));
+  const filter = {
+    ...(Object.keys(search).length && Object.keys(scope).length
+      ? { $and: [search, scope] }
+      : { ...search, ...scope }),
+    ...(active ? { active: active === 'true' } : {}),
+  };
 
   const [total, buyers] = await Promise.all([
     BuyerModel.countDocuments(filter),
@@ -221,6 +229,9 @@ buyersRouter.post('/buyers', async (req, res) => {
   if (duplicate) throw duplicate;
   const stateCode = await stateCodeFor(body.gstin, body.tehsilId);
 
+  // Dormant policy on: the holder is chosen by the dormancy module below (reference acquiredByUserId is a mirror of
+  // the holding); off: the person who registered the buyer owns it.
+  const dormancyOn = await dormancyEnabled();
   const buyer = await mongoose.connection.transaction(async (session) => {
     const number = await nextPartyNumber('BUY', { session });
     const [created] = await BuyerModel.create(
@@ -240,6 +251,7 @@ buyersRouter.post('/buyers', async (req, res) => {
           traderFlag: body.traderFlag,
           manufacturerIds,
           createdBy: currentUserOf(req).id,
+          ...(dormancyOn ? {} : { acquiredById: currentUserOf(req).id }),
         },
       ],
       { session },
@@ -255,6 +267,8 @@ buyersRouter.post('/buyers', async (req, res) => {
     });
     return created;
   });
+  // Reference LOCK-34 §4.5: every place that creates a buyer gives it a holder. Does nothing with the policy off.
+  await assignNewParty(buyer._id, 'STAFF', currentUserOf(req).id);
 
   res.status(201).json({ buyer: await withTehsil(buyer) });
 });

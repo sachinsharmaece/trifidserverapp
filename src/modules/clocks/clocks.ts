@@ -1,4 +1,5 @@
 import { runDailyCreditJob } from '../credit/credit.js';
+import { runDormancyClocks } from '../dormancy/dormancy.js';
 import type { Types } from 'mongoose';
 import { numberSetting } from '../../db/settings.js';
 import { TradeModel } from '../../models/index.js';
@@ -68,6 +69,15 @@ async function runCreditJobIfDue(now = new Date()) {
   await runDailyCreditJob(now);
 }
 
+/** The dormancy clock (reference LOCK-34 §7, modules/dormancy): once per Indian day, on the first tick of the day. */
+let dormancyDay = '';
+async function runDormancyIfDue(now = new Date()) {
+  const day = new Date(now.getTime() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  if (day === dormancyDay) return;
+  dormancyDay = day;
+  await runDormancyClocks(now);
+}
+
 /**
  * Starts the timer (every 15 minutes). Called once by server.ts; tests call `runClocks()` themselves.
  * The same timer also starts the nightly integrity check: from 2 am Indian time, once a day (Build 8).
@@ -80,6 +90,9 @@ export function startClocks() {
     );
     runCreditJobIfDue().catch((error: unknown) =>
       logger.error({ msg: 'The daily credit job failed', error }),
+    );
+    runDormancyIfDue().catch((error: unknown) =>
+      logger.error({ msg: 'The dormancy clock failed', error }),
     );
   }, HOW_OFTEN_MS);
   timer.unref(); // never keeps the server alive on its own

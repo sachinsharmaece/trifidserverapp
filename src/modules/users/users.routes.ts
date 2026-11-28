@@ -290,10 +290,16 @@ usersRouter.patch('/users/:id/position', canAddStaff, async (req, res) => {
 });
 
 /**
- * PATCH /users/:id/receiving-leads  { on }  ->  { user }. LOCK-34 §4.8: the Sales Team Leader's switch per caller
- * (Admin, Controller and Founder here, as in the reference). Off stops new buyers being assigned to this person.
+ * PATCH /users/:id/receiving-leads  { on }  ->  { user }. LOCK-34 §4.8: the Sales Team Leader's switch per caller.
+ * Admin, Controller and Founder, and the Sales Team Leader himself (position TM), as in the reference. Off stops new
+ * buyers being assigned to this person; what he already holds stays with him.
  */
-usersRouter.patch('/users/:id/receiving-leads', canAddStaff, async (req, res) => {
+usersRouter.patch('/users/:id/receiving-leads', async (req, res) => {
+  const actor = currentUserOf(req);
+  const isSupervisor = ['ADMIN', 'CONTROLLER', 'FOUNDER'].includes(actor.role);
+  if (!isSupervisor && !(actor.role === 'SALES' && actor.position === 'TM')) {
+    throw forbidden('Only the Sales Team Leader or an admin can do this');
+  }
   const { on } = z.object({ on: z.boolean() }).parse(req.body);
   const user = await findStaffMember(req.params.id);
   if (user.role !== 'SALES') throw invalidField('on', 'Only Sales staff receive leads');

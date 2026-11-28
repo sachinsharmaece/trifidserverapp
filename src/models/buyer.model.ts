@@ -49,6 +49,11 @@ const buyerSchema = new Schema(
     manufacturerIds: { type: [refField('Manufacturer')], default: [] },
     active: { type: Boolean, required: true, default: true },
     createdBy: refField('User'),
+    /**
+     * Who holds this buyer now (reference acquiredByUserId). The creator, or with the dormant policy on, the holder
+     * the dormancy module chose; empty while the buyer is in the Pool. Staff hierarchy scope filters on it.
+     */
+    acquiredById: refField('User'),
   },
   { collection: 'buyers', timestamps: true },
 );

@@ -47,6 +47,8 @@ export { SalesOrderModel, type SalesOrder } from './salesOrder.model.js';
 export { SellLeadModel, type SellLead } from './sellLead.model.js';
 export { SellerModel, type Seller } from './seller.model.js';
 export { SellerStrikeModel, type SellerStrike } from './sellerStrike.model.js';
+export { HoldingModel, type Holding } from './holding.model.js';
+export { PoolReviewModel, type PoolReview } from './poolReview.model.js';
 export { SessionModel, type Session } from './session.model.js';
 export { SettingModel, type Setting } from './setting.model.js';
 export { SkuMarginCellModel, type SkuMarginCell } from './skuMarginCell.model.js';

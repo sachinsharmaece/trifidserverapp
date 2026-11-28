@@ -63,6 +63,8 @@ const sellerSchema = new Schema(
     manufacturerIds: { type: [refField('Manufacturer')], default: [] },
     active: { type: Boolean, required: true, default: true },
     createdBy: refField('User'),
+    /** Who brought this seller in (reference acquiredByUserId): the creator. Staff hierarchy scope filters on it. */
+    acquiredById: refField('User'),
   },
   { collection: 'sellers', timestamps: true },
 );
