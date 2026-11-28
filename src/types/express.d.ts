@@ -8,6 +8,8 @@ declare global {
       user?: import('../modules/auth/currentUser.js').CurrentUser;
       /** True only on the made-up request of a system job (the clocks): it acts as 'SYSTEM', not as a person. */
       systemRun?: true;
+      /** The signed-in buyer or seller on a portal route. Set by `requirePartySession` (modules/portal). */
+      party?: import('../modules/portal/session.js').PartySessionInfo;
     }
   }
 }

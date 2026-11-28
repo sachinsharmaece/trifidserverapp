@@ -514,7 +514,14 @@ export const MANUAL_AUTO_OFF_REASONS = [
 ] as const;
 
 /** The event log's cross-cutting groups (reference lib/eventlog.ts): credit and listing events. */
-export const EVENT_CATEGORIES = ['CREDIT', 'LISTING', 'PRICING', 'SELL_LEAD', 'DORMANCY'] as const;
+export const EVENT_CATEGORIES = [
+  'CREDIT',
+  'LISTING',
+  'PRICING',
+  'SELL_LEAD',
+  'DORMANCY',
+  'PORTAL',
+] as const;
 export type EventCategory = (typeof EVENT_CATEGORIES)[number];
 
 /** Credit (reference FAST-ORDER LOCK-42 Part C). */
@@ -580,3 +587,7 @@ export const RELEASE_REASONS: { value: CallOutcome; label: string }[] = [
   { value: 'NO_ANSWER', label: 'No answer' },
   { value: 'WRONG_NUMBER', label: 'Wrong number' },
 ];
+
+/** Buyer and seller portal logins (reference buyer-seller-portal): which side a login belongs to. */
+export const PARTY_TYPES = ['BUYER', 'SELLER'] as const;
+export type PartyType = (typeof PARTY_TYPES)[number];
